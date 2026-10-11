@@ -26,11 +26,11 @@ function NewInvoiceInner() {
   const searchParams = useSearchParams();
 
   const [activeFY, setActiveFY] = useState<string>('2026-27');
-  const [customerName, setCustomerName] = useState<string>('Acme India Technologies Pvt Ltd');
-  const [customerGstin, setCustomerGstin] = useState<string>('29ABCDE1234F1Z5');
+  const [customerName, setCustomerName] = useState<string>('');
+  const [customerGstin, setCustomerGstin] = useState<string>('');
   const [placeOfSupply, setPlaceOfSupply] = useState<string>('29'); // 29 = Karnataka (Intra-state)
-  const [invoiceNumber, setInvoiceNumber] = useState<string>('INV-2025-001');
-  const [invoiceDate, setInvoiceDate] = useState<string>('2026-10-01');
+  const [invoiceNumber, setInvoiceNumber] = useState<string>('');
+  const [invoiceDate, setInvoiceDate] = useState<string>(() => new Date().toISOString().split('T')[0]);
   const [dateError, setDateError] = useState<string | null>(null);
 
   // Upload & OCR Scan State
@@ -43,16 +43,16 @@ function NewInvoiceInner() {
   const [lineItems, setLineItems] = useState<LineItem[]>([
     {
       id: 'item-1',
-      description: 'Software Consulting & Development Services',
+      description: '',
       hsn_sac: '998314',
-      unit_price: 16000.00,
+      unit_price: 0.00,
       quantity: 1,
       gst_rate: 18,
-      taxable_amount: 16000.00,
-      cgst_amount: 1440.00,
-      sgst_amount: 1440.00,
+      taxable_amount: 0.00,
+      cgst_amount: 0.00,
+      sgst_amount: 0.00,
       igst_amount: 0.00,
-      total_amount: 18880.00
+      total_amount: 0.00
     }
   ]);
 

@@ -36,14 +36,14 @@ interface StatutoryDoc {
 }
 
 export default function CompanyProfileSettingsPage() {
-  const [legalName, setLegalName] = useState('Acme Labs Pvt Ltd');
-  const [tradeName, setTradeName] = useState('ACME TECHNOLOGIES');
-  const [cin, setCin] = useState('U72900KA2025PTC189012');
-  const [pan, setPan] = useState('AABCK9012F');
+  const [legalName, setLegalName] = useState('');
+  const [tradeName, setTradeName] = useState('');
+  const [cin, setCin] = useState('');
+  const [pan, setPan] = useState('');
   const [tan, setTan] = useState('');
   const [gstin, setGstin] = useState('');
   const [stateCode, setStateCode] = useState('29');
-  const [registeredOffice, setRegisteredOffice] = useState('Indiranagar, Bengaluru - 560038, Karnataka, India');
+  const [registeredOffice, setRegisteredOffice] = useState('');
   const [logoPreview, setLogoPreview] = useState<string | null>(null);
 
   const [statutoryDocs, setStatutoryDocs] = useState<StatutoryDoc[]>([]);

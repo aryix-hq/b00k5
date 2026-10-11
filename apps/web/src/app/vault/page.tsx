@@ -221,12 +221,12 @@ export default function DocumentLockerPage() {
                 <p className="font-mono text-sm font-bold text-white">
                   {statutoryProfile.authorized_capital_inr
                     ? `₹${statutoryProfile.authorized_capital_inr.toLocaleString('en-IN')}`
-                    : '₹10,00,000'}
+                    : 'Pending MOA Upload'}
                 </p>
                 <p className="text-[10px] text-slate-500">
                   {statutoryProfile.total_equity_shares
                     ? `${statutoryProfile.total_equity_shares.toLocaleString('en-IN')} shares of ₹${statutoryProfile.face_value_inr || 10}`
-                    : 'Clause V Invariant'}
+                    : 'Upload MOA to extract'}
                 </p>
               </div>
 
@@ -235,7 +235,7 @@ export default function DocumentLockerPage() {
                   <Users className="w-3.5 h-3.5 text-sky-400" /> Board Meeting Quorum (AOA)
                 </span>
                 <p className="font-semibold text-slate-200 truncate">
-                  {statutoryProfile.board_meeting_quorum || '1/3rd strength or 2 directors'}
+                  {statutoryProfile.board_meeting_quorum || 'Pending AOA Upload'}
                 </p>
                 <p className="text-[10px] text-slate-500">Sec 174 Compliance Rule</p>
               </div>
@@ -245,10 +245,10 @@ export default function DocumentLockerPage() {
                   <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" /> Statutory Auditor (ADT-1)
                 </span>
                 <p className="font-semibold text-slate-200 truncate">
-                  {statutoryProfile.auditor_firm_name || 'Auditor Appointed'}
+                  {statutoryProfile.auditor_firm_name || statutoryProfile.auditor_name || 'Pending ADT-1 Upload'}
                 </p>
                 <p className="text-[10px] font-mono text-slate-400">
-                  FRN: {statutoryProfile.auditor_frn || '012948N'}
+                  FRN: {statutoryProfile.auditor_frn || 'Not Uploaded'}
                 </p>
               </div>
 
@@ -256,11 +256,11 @@ export default function DocumentLockerPage() {
                 <span className="text-slate-500 flex items-center gap-1.5">
                   <Building2 className="w-3.5 h-3.5 text-purple-400" /> Business Commencement
                 </span>
-                <p className="font-semibold text-emerald-400">
-                  {statutoryProfile.business_commencement?.status || 'INC-20A Declared'}
+                <p className={`font-semibold ${statutoryProfile.business_commencement?.status || statutoryProfile.inc20a_verified ? 'text-emerald-400' : 'text-amber-400'}`}>
+                  {statutoryProfile.business_commencement?.status || (statutoryProfile.inc20a_verified ? 'INC-20A Declared' : 'Pending Form INC-20A')}
                 </p>
                 <p className="text-[10px] text-slate-500">
-                  SRN: {statutoryProfile.srn || 'SRN0098421'}
+                  SRN: {statutoryProfile.srn || 'Not Uploaded'}
                 </p>
               </div>
             </div>

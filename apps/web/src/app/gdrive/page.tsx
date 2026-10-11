@@ -353,9 +353,15 @@ export default function GDriveSyncPage() {
                 <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded bg-sky-950 text-sky-400 border border-sky-800/60">
                   Background Daemon: b00k5_worker_sync
                 </span>
-                <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800/60">
-                  {gdriveConfig?.configured ? 'OAuth2 / Service Account Ready' : 'Virtual Mirror Active'}
-                </span>
+                {gdriveConfig?.configured ? (
+                  <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800/60">
+                    Google Drive Connected
+                  </span>
+                ) : (
+                  <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded bg-amber-950/60 text-amber-400 border border-amber-700/60">
+                    Not Configured — Credentials Required
+                  </span>
+                )}
               </div>
               <h2 className="text-xl font-bold text-white flex items-center gap-2 mt-1">
                 <Cloud className="w-6 h-6 text-sky-400" />
@@ -377,11 +383,12 @@ export default function GDriveSyncPage() {
               </button>
               <button
                 onClick={handleTriggerSync}
-                disabled={syncing}
+                disabled={syncing || !gdriveConfig?.configured}
+                title={!gdriveConfig?.configured ? 'Upload Google Drive credentials below first' : 'Sync All to Google Drive'}
                 className="px-4 py-2 bg-sky-600 hover:bg-sky-500 disabled:bg-slate-800 disabled:text-slate-500 text-white text-xs font-semibold rounded-lg flex items-center gap-2 shadow-sm transition-all"
               >
                 <RefreshCw className={`w-4 h-4 ${syncing ? 'animate-spin' : ''}`} />
-                {syncing ? 'Dispatching Sync Daemon...' : 'Sync All to Google Drive'}
+                {syncing ? 'Dispatching Sync Daemon...' : gdriveConfig?.configured ? 'Sync All to Google Drive' : 'Upload Credentials to Sync'}
               </button>
             </div>
           </div>
@@ -397,29 +404,47 @@ export default function GDriveSyncPage() {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             <div className="p-5 bg-slate-900 border border-slate-800 rounded-xl space-y-1">
               <span className="text-xs text-slate-400 font-medium flex items-center gap-1.5">
-                <HardDrive className="w-4 h-4 text-emerald-400" /> Daemon Worker Status
+                <HardDrive className={`w-4 h-4 ${gdriveConfig?.configured ? 'text-emerald-400' : 'text-amber-400'}`} /> Google Drive Sync Status
               </span>
-              <div className="text-base font-bold text-emerald-400 flex items-center gap-1.5 pt-1">
-                <div className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
-                <span>Active &amp; Online</span>
-              </div>
-              <p className="text-[10px] font-mono text-slate-500 mt-1">Queue: celery@gdrive_queue</p>
+              {gdriveConfig?.configured ? (
+                <>
+                  <div className="text-base font-bold text-emerald-400 flex items-center gap-1.5 pt-1">
+                    <div className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
+                    <span>Active &amp; Connected</span>
+                  </div>
+                  <p className="text-[10px] font-mono text-slate-500 mt-1">Queue: celery@gdrive_queue</p>
+                </>
+              ) : (
+                <>
+                  <div className="text-base font-bold text-amber-400 flex items-center gap-1.5 pt-1">
+                    <div className="w-2.5 h-2.5 rounded-full bg-amber-500" />
+                    <span>Not Configured</span>
+                  </div>
+                  <p className="text-[10px] font-mono text-slate-500 mt-1">Awaiting credentials.json upload</p>
+                </>
+              )}
             </div>
 
             <div className="p-5 bg-slate-900 border border-slate-800 rounded-xl space-y-1">
               <span className="text-xs text-slate-400 font-medium">Synced Documents</span>
               <div className="text-2xl font-bold text-white font-mono">
-                {mirroredFiles.length > 0 ? mirroredFiles.length : (dashboard?.total_files_synced ?? 0)}
+                {gdriveConfig?.configured ? (mirroredFiles.length > 0 ? mirroredFiles.length : (dashboard?.total_files_synced ?? 0)) : 0}
               </div>
-              <p className="text-[11px] text-emerald-400 flex items-center gap-1">
-                <ShieldCheck className="w-3 h-3" /> SHA-256 Checksums Verified
-              </p>
+              {gdriveConfig?.configured ? (
+                <p className="text-[11px] text-emerald-400 flex items-center gap-1">
+                  <ShieldCheck className="w-3 h-3" /> SHA-256 Checksums Verified
+                </p>
+              ) : (
+                <p className="text-[11px] text-slate-500">
+                  No credentials uploaded yet
+                </p>
+              )}
             </div>
 
             <div className="p-5 bg-slate-900 border border-slate-800 rounded-xl space-y-1">
               <span className="text-xs text-slate-400 font-medium">Pending Queue</span>
               <div className="text-2xl font-bold text-sky-400 font-mono">
-                {dashboard?.pending_sync ?? 0}
+                {gdriveConfig?.configured ? (dashboard?.pending_sync ?? 0) : 0}
               </div>
               <p className="text-[11px] text-slate-500">Sub-100ms Ingestion Latency</p>
             </div>
@@ -427,9 +452,13 @@ export default function GDriveSyncPage() {
             <div className="p-5 bg-slate-900 border border-slate-800 rounded-xl space-y-1">
               <span className="text-xs text-slate-400 font-medium">Target Google Drive Root</span>
               <div className="text-sm font-semibold text-white truncate pt-1">
-                /b00k5/{dashboard?.legal_name?.substring(0, 18) || 'Acme_Labs'}...
+                {gdriveConfig?.configured
+                  ? `/b00k5/${dashboard?.legal_name?.substring(0, 18) || 'Vault'}...`
+                  : 'Not Connected'}
               </div>
-              <p className="text-[10px] text-slate-500">Auto-created Cloud Root</p>
+              <p className="text-[10px] text-slate-500">
+                {gdriveConfig?.configured ? 'Cloud Root Folder Active' : 'Connect Service Account Below'}
+              </p>
             </div>
           </div>
 
@@ -744,9 +773,15 @@ export default function GDriveSyncPage() {
                       <Folder className="w-4 h-4 text-amber-400 shrink-0" />
                       <span className="truncate">{path}</span>
                     </div>
-                    <span className="text-[10px] font-sans text-emerald-400 px-2 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 shrink-0">
-                      Mirrored
-                    </span>
+                    {gdriveConfig?.configured ? (
+                      <span className="text-[10px] font-sans text-emerald-400 px-2 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 shrink-0">
+                        Mirrored
+                      </span>
+                    ) : (
+                      <span className="text-[10px] font-sans text-amber-400 px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/20 shrink-0">
+                        Pending Credentials
+                      </span>
+                    )}
                   </div>
                 ))}
               </div>
@@ -758,13 +793,13 @@ export default function GDriveSyncPage() {
                 <div>
                   <h3 className="text-sm font-semibold text-white flex items-center gap-2">
                     <Clock className="w-4 h-4 text-sky-400" />
-                    Mirrored Cloud Archive ({mirroredFiles.length} files)
+                    Mirrored Cloud Archive ({gdriveConfig?.configured ? mirroredFiles.length : 0} files)
                   </h3>
                   <p className="text-xs text-slate-400 mt-0.5">
                     Live statutory files mirrored in storage hierarchy with SHA-256 integrity proofs.
                   </p>
                 </div>
-                {mirroredFiles.length > 0 && (
+                {gdriveConfig?.configured && mirroredFiles.length > 0 && (
                   <button
                     onClick={handleDownloadArchive}
                     disabled={downloadingArchive}
@@ -780,6 +815,14 @@ export default function GDriveSyncPage() {
                 <div className="py-8 text-center text-xs text-slate-500 flex items-center justify-center gap-2">
                   <RefreshCw className="w-4 h-4 animate-spin text-sky-400" />
                   <span>Scanning mirrored storage hierarchy...</span>
+                </div>
+              ) : !gdriveConfig?.configured ? (
+                <div className="py-8 px-4 text-center border border-dashed border-amber-500/30 bg-amber-950/10 rounded-xl space-y-3">
+                  <AlertTriangle className="w-8 h-8 text-amber-400 mx-auto" />
+                  <p className="text-xs font-semibold text-amber-300">Google Drive Not Connected</p>
+                  <p className="text-xs text-slate-400 max-w-md mx-auto">
+                    Upload your Service Account JSON key (<code className="text-sky-400">credentials.json</code>) in Step 1 above and click <strong>Save &amp; Authorize Service Account</strong> to activate Google Drive synchronization.
+                  </p>
                 </div>
               ) : mirroredFiles.length === 0 ? (
                 <div className="py-8 text-center border border-dashed border-slate-800 rounded-xl space-y-3">

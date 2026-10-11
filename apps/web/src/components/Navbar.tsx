@@ -4,7 +4,7 @@ import React, { useEffect, useState, useRef } from 'react';
 import { Building2, Shield, User as UserIcon, Users, LogOut, Calendar, ChevronDown, Settings, Cloud, FolderLock, Check, AlertTriangle } from 'lucide-react';
 
 export function Navbar() {
-  const [companyName, setCompanyName] = useState('Acme Labs Pvt Ltd');
+  const [companyName, setCompanyName] = useState('Organization');
   const [cin, setCin] = useState('');
   const [role, setRole] = useState('Owner / Founder');
   const [selectedFY, setSelectedFY] = useState('FY 2026-2027');
@@ -32,7 +32,21 @@ export function Navbar() {
         })
           .then(res => res.ok ? res.json() : null)
           .then(data => {
-            if (data) setCurrentUser(data);
+            if (data) {
+              setCurrentUser(data);
+              if (data.tenants && data.tenants.length > 0) {
+                const activeTid = localStorage.getItem('b00k5_tenant_id');
+                const matched = data.tenants.find((t: any) => t.id === activeTid) || data.tenants[0];
+                if (matched) {
+                  setCompanyName(matched.legal_name);
+                  localStorage.setItem('b00k5_legal_name', matched.legal_name);
+                  if (matched.cin) {
+                    setCin(matched.cin);
+                    localStorage.setItem('b00k5_cin', matched.cin);
+                  }
+                }
+              }
+            }
           })
           .catch(() => {});
       }

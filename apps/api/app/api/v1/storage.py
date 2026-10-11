@@ -185,6 +185,30 @@ from app.models.vault import DocumentVault
 from app.models.bank import BankStatement
 from app.models.cloud_sync import CloudSyncLedger
 
+def is_tenant_gdrive_configured(tenant: Tenant) -> bool:
+    """
+    Returns True ONLY when the tenant has explicitly uploaded/configured Google Drive credentials
+    (Service Account JSON key, OAuth2 refresh token, or explicit Google Connect).
+    """
+    gdrive_cfg = (tenant.statutory_profile or {}).get("gdrive_config", {})
+    if not gdrive_cfg:
+        return False
+    sa_json = gdrive_cfg.get("service_account_json")
+    if sa_json:
+        try:
+            import json
+            data = json.loads(sa_json) if isinstance(sa_json, str) else sa_json
+            if isinstance(data, dict) and data.get("client_email") and data.get("private_key"):
+                return True
+        except Exception:
+            pass
+    if gdrive_cfg.get("oauth2_refresh_token") and gdrive_cfg.get("oauth2_client_id"):
+        return True
+    if gdrive_cfg.get("connected") and gdrive_cfg.get("auth_type") == "google_oauth" and gdrive_cfg.get("client_email"):
+        return True
+    return False
+
+
 @router.get("/gdrive-status")
 async def get_gdrive_sync_dashboard(
     tenant: Tenant = Depends(get_current_tenant),
@@ -192,14 +216,16 @@ async def get_gdrive_sync_dashboard(
 ):
     """
     Returns live Google Drive synchronization telemetry, canonical hierarchy,
-    and background worker status.
+    and background worker status. Reports 'unconfigured' when no credentials are uploaded.
     """
+    is_configured = is_tenant_gdrive_configured(tenant)
+
     # Query sync ledger records
     stmt = select(CloudSyncLedger).where(CloudSyncLedger.tenant_id == tenant.id)
     res = await db.execute(stmt)
     records = res.scalars().all()
 
-    total_synced = sum(1 for r in records if r.status == 'synced')
+    total_synced = sum(1 for r in records if r.status == 'synced') if is_configured else 0
     pending_sync = sum(1 for r in records if r.status in ('pending', 'queued'))
     failed_sync = sum(1 for r in records if r.status == 'failed')
 
@@ -218,28 +244,48 @@ async def get_gdrive_sync_dashboard(
         f"/b00k5/{safe_name}/Board Governance & SS-1 Minutes/"
     ]
 
+    if not is_configured:
+        return {
+            "status": "unconfigured",
+            "configured": False,
+            "daemon_status": "awaiting_credentials",
+            "worker_queue": "b00k5_worker_sync (Standby — Credentials Not Uploaded)",
+            "local_mirror_active": False,
+            "remote_storage_backend": "Not Configured (Upload Service Account JSON)",
+            "tenant_id": str(tenant.id),
+            "legal_name": tenant.legal_name,
+            "total_documents_in_vault": len(vault_docs),
+            "total_files_synced": 0,
+            "pending_sync": 0,
+            "failed_sync": 0,
+            "canonical_hierarchy": hierarchy,
+            "recent_syncs": []
+        }
+
     return {
         "status": "connected",
+        "configured": True,
+        "daemon_status": "active",
         "worker_queue": "b00k5_worker_sync (Celery gdrive_queue)",
         "local_mirror_active": True,
         "remote_storage_backend": "Google Drive API v3 (Multi-tenant hierarchy)",
         "tenant_id": str(tenant.id),
         "legal_name": tenant.legal_name,
         "total_documents_in_vault": len(vault_docs),
-        "total_files_synced": max(total_synced, len(vault_docs)),
+        "total_files_synced": total_synced,
         "pending_sync": pending_sync,
         "failed_sync": failed_sync,
         "canonical_hierarchy": hierarchy,
         "recent_syncs": [
             {
-                "file_name": doc.document_name,
-                "category": doc.category,
-                "gdrive_path": f"/b00k5/{safe_name}/{doc.category}/{doc.document_name}",
-                "status": "synced",
-                "sha256": doc.sha256_hash,
-                "synced_at": doc.created_at.isoformat()
+                "file_name": r.file_name,
+                "category": r.category,
+                "gdrive_path": f"{r.gdrive_folder_path}/{r.file_name}",
+                "status": r.status,
+                "sha256": r.sha256_checksum,
+                "synced_at": r.synced_at.isoformat() if r.synced_at else r.created_at.isoformat()
             }
-            for doc in vault_docs[:10]
+            for r in records[:10]
         ]
     }
 
@@ -395,8 +441,13 @@ async def trigger_full_gdrive_sync(
 ):
     """
     Triggers an immediate sweep synchronizing all vault files, bank statements,
-    and statutory manifests to Google Drive / Sovereign Mirror.
+    and statutory manifests to Google Drive. Requires configured Google Drive credentials.
     """
+    if not is_tenant_gdrive_configured(tenant):
+        raise HTTPException(
+            status_code=400,
+            detail="Google Drive credentials not configured. Please upload your Service Account JSON key first."
+        )
     sync_res = await perform_full_tenant_sync(tenant, db)
     return {
         "success": True,
@@ -411,13 +462,22 @@ async def list_gdrive_files(
     tenant: Tenant = Depends(get_current_tenant)
 ):
     """
-    Returns actual files created and mirrored in Google Drive / Sovereign Mirror.
+    Returns actual files created and mirrored in Google Drive.
+    Returns empty list when Google Drive credentials have not been configured.
     """
+    safe_name = tenant.legal_name.replace(" ", "_")
+    if not is_tenant_gdrive_configured(tenant):
+        return {
+            "files_count": 0,
+            "configured": False,
+            "root_folder": f"b00k5_{safe_name}",
+            "files": []
+        }
     client = get_tenant_gdrive_client(tenant)
     files = client.list_all_files()
-    safe_name = tenant.legal_name.replace(" ", "_")
     return {
         "files_count": len(files),
+        "configured": True,
         "root_folder": f"b00k5_{safe_name}",
         "files": files
     }
@@ -459,6 +519,7 @@ async def get_gdrive_config(
 ):
     """
     DEF-02: Returns current Google Drive integration configuration and connection state.
+    Only reports configured=True when valid credentials have been uploaded.
     """
     gdrive_cfg = (tenant.statutory_profile or {}).get("gdrive_config", {})
     sa_json = gdrive_cfg.get("service_account_json")
@@ -468,29 +529,32 @@ async def get_gdrive_config(
         try:
             import json
             data = json.loads(sa_json) if isinstance(sa_json, str) else sa_json
-            if not client_email:
-                client_email = data.get("client_email", "")
-            if not project_id:
-                project_id = data.get("project_id", "")
+            if isinstance(data, dict):
+                if not client_email:
+                    client_email = data.get("client_email", "")
+                if not project_id:
+                    project_id = data.get("project_id", "")
         except Exception:
             pass
 
-    is_connected = bool(gdrive_cfg.get("connected") or sa_json or gdrive_cfg.get("oauth2_refresh_token") or client_email)
-    client = get_tenant_gdrive_client(tenant)
-    is_live_cloud = getattr(client, "service", None) is not None
+    is_connected = is_tenant_gdrive_configured(tenant)
+    is_live_cloud = False
+    if is_connected:
+        client = get_tenant_gdrive_client(tenant)
+        is_live_cloud = getattr(client, "service", None) is not None
 
     return {
         "configured": is_connected,
         "live_cloud": is_live_cloud,
-        "backend": "Google Drive API v3 (Live Cloud)" if is_live_cloud else "Virtual Local Mirror",
-        "auth_type": gdrive_cfg.get("auth_type", "service_account" if sa_json else "mirror"),
-        "client_email": client_email,
-        "project_id": project_id,
+        "backend": "Google Drive API v3 (Live Cloud)" if is_live_cloud else ("Credentials Configured" if is_connected else "Not Configured"),
+        "auth_type": gdrive_cfg.get("auth_type", "service_account" if sa_json else "none") if is_connected else "none",
+        "client_email": client_email if is_connected else "",
+        "project_id": project_id if is_connected else "",
         "root_folder": gdrive_cfg.get("root_folder", f"b00k5_{tenant.legal_name.replace(' ', '_')}"),
         "root_folder_id": gdrive_cfg.get("root_folder_id", ""),
         "status": "connected" if is_connected else "unconfigured",
-        "last_tested_at": gdrive_cfg.get("last_tested_at"),
-        "permissions": gdrive_cfg.get("permissions", [])
+        "last_tested_at": gdrive_cfg.get("last_tested_at") if is_connected else None,
+        "permissions": gdrive_cfg.get("permissions", []) if is_connected else []
     }
 
 @router.post("/gdrive-config")
@@ -583,7 +647,13 @@ async def test_gdrive_connection(
 ):
     """
     Validates connectivity with Google Drive API v3 via Service Account.
+    Requires credentials to be configured first.
     """
+    if not is_tenant_gdrive_configured(tenant):
+        raise HTTPException(
+            status_code=400,
+            detail="Google Drive credentials are not configured. Please upload and save your Service Account JSON key first."
+        )
     gdrive_cfg = (tenant.statutory_profile or {}).get("gdrive_config", {})
     client = get_tenant_gdrive_client(tenant)
     test_res = client.test_connection()

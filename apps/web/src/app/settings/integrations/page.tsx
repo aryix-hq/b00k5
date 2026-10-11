@@ -23,13 +23,26 @@ export default function IntegrationsSettingsPage() {
   const [backupStatus, setBackupStatus] = useState<string | null>(null);
   const [logs, setLogs] = useState<BackupLog[]>([]);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [gdriveConfigured, setGdriveConfigured] = useState<boolean>(false);
 
   const fetchLogs = async () => {
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/system/backup-logs`);
+      const token = typeof window !== 'undefined' ? localStorage.getItem('b00k5_token') : null;
+      const tenantId = typeof window !== 'undefined' ? localStorage.getItem('b00k5_tenant_id') : null;
+      const headers: Record<string, string> = {};
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      if (tenantId) headers['X-Tenant-ID'] = tenantId;
+
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/system/backup-logs`, { headers });
       if (res.ok) {
         const data = await res.json();
         setLogs(data);
+      }
+
+      const cfgRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/storage/gdrive-config`, { headers });
+      if (cfgRes.ok) {
+        const cfg = await cfgRes.json();
+        setGdriveConfigured(Boolean(cfg?.configured));
       }
     } catch (e) {
       console.warn('Failed to fetch backup logs:', e);
@@ -95,9 +108,20 @@ export default function IntegrationsSettingsPage() {
         </div>
 
         <div className="flex items-center gap-2">
-          <span className="text-xs font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-3 py-1 rounded-full flex items-center gap-1.5">
+          {gdriveConfigured ? (
+            <span className="text-xs font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-3 py-1 rounded-full flex items-center gap-1.5">
+              <CheckCircle2 className="w-3.5 h-3.5" />
+              Google Drive Connected
+            </span>
+          ) : (
+            <Link href="/gdrive" className="text-xs font-mono text-amber-400 bg-amber-500/10 border border-amber-500/30 px-3 py-1 rounded-full flex items-center gap-1.5 hover:bg-amber-500/20 transition">
+              <AlertCircle className="w-3.5 h-3.5" />
+              Google Drive: Not Configured (Upload Key)
+            </Link>
+          )}
+          <span className="text-xs font-mono text-sky-400 bg-sky-500/10 border border-sky-500/20 px-3 py-1 rounded-full flex items-center gap-1.5">
             <Lock className="w-3.5 h-3.5" />
-            AES-256-GCM Active
+            AES-256-GCM Encryption
           </span>
         </div>
       </div>

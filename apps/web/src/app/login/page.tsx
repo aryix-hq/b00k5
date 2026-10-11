@@ -198,37 +198,6 @@ export default function LoginPage() {
               <ArrowRight className="w-3.5 h-3.5" />
             </button>
           </form>
-
-          {/* Quick Demo Access Buttons */}
-          <div className="pt-2 border-t border-slate-800/80 space-y-2">
-            <span className="text-[10px] uppercase font-mono text-slate-500 block text-center">
-              Quick One-Click Demo Access
-            </span>
-            <div className="grid grid-cols-2 gap-2 text-xs">
-              <button
-                type="button"
-                onClick={() => handleGoogleLogin('admin@acme.corp')}
-                className="p-2 rounded-lg bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-300 text-left transition-colors flex items-center justify-between"
-              >
-                <div>
-                  <div className="font-semibold text-white text-[11px]">Vikram (Admin)</div>
-                  <div className="text-[10px] text-slate-500">SuperAdmin</div>
-                </div>
-                <ArrowRight className="w-3 h-3 text-sky-400" />
-              </button>
-              <button
-                type="button"
-                onClick={() => handleGoogleLogin('auditor@raman-associates.in')}
-                className="p-2 rounded-lg bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-300 text-left transition-colors flex items-center justify-between"
-              >
-                <div>
-                  <div className="font-semibold text-white text-[11px]">S. Raman (CA)</div>
-                  <div className="text-[10px] text-slate-500">Statutory Auditor</div>
-                </div>
-                <ArrowRight className="w-3 h-3 text-emerald-400" />
-              </button>
-            </div>
-          </div>
         </div>
 
         {/* Footer Info */}
@@ -256,7 +225,7 @@ export default function LoginPage() {
                 </svg>
                 <div>
                   <h3 className="text-sm font-semibold text-white">Sign in with Google</h3>
-                  <p className="text-[11px] text-slate-400">Choose an account to continue to b00k5</p>
+                  <p className="text-[11px] text-slate-400">Enter your Google Workspace or Gmail account</p>
                 </div>
               </div>
               <button
@@ -268,55 +237,10 @@ export default function LoginPage() {
               </button>
             </div>
 
-            {/* Quick Account Options */}
+            {/* Gmail Input */}
             <div className="space-y-2">
-              <span className="text-[11px] font-medium text-slate-400 block">Available Google Accounts:</span>
-              
-              <button
-                type="button"
-                onClick={() => executeGoogleAuth('founder@acme.corp', 'Vikram Founder')}
-                disabled={googleLoading}
-                className="w-full p-3 rounded-xl bg-slate-950 hover:bg-slate-800/80 border border-slate-800 text-left transition-all flex items-center justify-between group"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-sky-500 to-indigo-600 flex items-center justify-center text-white font-bold text-xs">
-                    A
-                  </div>
-                  <div>
-                    <div className="text-xs font-semibold text-white group-hover:text-sky-400 transition-colors">
-                      Vikram Founder
-                    </div>
-                    <div className="text-[11px] text-slate-400">founder@acme.corp</div>
-                  </div>
-                </div>
-                <ArrowRight className="w-3.5 h-3.5 text-slate-600 group-hover:text-sky-400 transition-colors" />
-              </button>
-
-              <button
-                type="button"
-                onClick={() => executeGoogleAuth('admin@yourcompany.com', 'Admin User')}
-                disabled={googleLoading}
-                className="w-full p-3 rounded-xl bg-slate-950 hover:bg-slate-800/80 border border-slate-800 text-left transition-all flex items-center justify-between group"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-emerald-500 to-teal-600 flex items-center justify-center text-white font-bold text-xs">
-                    F
-                  </div>
-                  <div>
-                    <div className="text-xs font-semibold text-white group-hover:text-emerald-400 transition-colors">
-                      Company Master Admin
-                    </div>
-                    <div className="text-[11px] text-slate-400">admin@yourcompany.com</div>
-                  </div>
-                </div>
-                <ArrowRight className="w-3.5 h-3.5 text-slate-600 group-hover:text-emerald-400 transition-colors" />
-              </button>
-            </div>
-
-            {/* Custom Gmail Input */}
-            <div className="space-y-2 pt-2 border-t border-slate-800">
               <label className="text-[11px] font-medium text-slate-400 block">
-                Or sign in with another Gmail / Google Workspace account:
+                Google Workspace / Gmail Address:
               </label>
               <div className="flex gap-2">
                 <input

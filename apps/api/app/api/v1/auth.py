@@ -62,6 +62,7 @@ async def google_login(payload: GoogleLoginRequest, db: AsyncSession = Depends(g
 
     if not membership:
         # Brand-new user with no organization: provision an isolated tenant (never attach to an existing tenant)
+        from sqlalchemy import text
         rand_suffix = uuid.uuid4().hex[:4].upper()
         unique_pan = f"AABC{rand_suffix[:1]}{uuid.uuid4().int % 9000 + 1000}F"
         new_tenant = Tenant(
@@ -69,7 +70,7 @@ async def google_login(payload: GoogleLoginRequest, db: AsyncSession = Depends(g
             trade_name=f"{user.first_name} Enterprise",
             pan=unique_pan,
             state_code="29",
-            registered_office="Bengaluru, Karnataka 560001",
+            registered_office="",
             currency="INR"
         )
         db.add(new_tenant)
@@ -83,6 +84,12 @@ async def google_login(payload: GoogleLoginRequest, db: AsyncSession = Depends(g
         )
         db.add(membership)
         await db.flush()
+
+        # Provision clean Schedule III Chart of Accounts (zero transactions)
+        try:
+            await db.execute(text("SELECT seed_tenant_chart_of_accounts(:tid)"), {"tid": str(new_tenant.id)})
+        except Exception:
+            pass
 
     await db.commit()
 
@@ -108,9 +115,63 @@ async def google_login(payload: GoogleLoginRequest, db: AsyncSession = Depends(g
 
 @router.post("/login", response_model=Token)
 async def login(credentials: LoginRequest, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(User).where(User.email == credentials.email))
+    from sqlalchemy import func, text
+    email_clean = credentials.email.strip().lower()
+    result = await db.execute(select(User).where(User.email == email_clean))
     user = result.scalar_one_or_none()
-    if not user or not verify_password(credentials.password, user.password_hash):
+
+    if not user:
+        # If the database has 0 users (clean default reset), bootstrap the initial admin user & organization
+        user_count_res = await db.execute(select(func.count(User.id)))
+        total_users = user_count_res.scalar() or 0
+        if total_users == 0 and email_clean and "@" in email_clean and len(credentials.password) >= 4:
+            name_parts = email_clean.split("@")[0].replace(".", " ").split(maxsplit=1)
+            first_name = name_parts[0].capitalize()
+            last_name = name_parts[1].capitalize() if len(name_parts) > 1 else "Admin"
+            user = User(
+                email=email_clean,
+                password_hash=get_password_hash(credentials.password),
+                first_name=first_name,
+                last_name=last_name,
+                is_active=True
+            )
+            db.add(user)
+            await db.flush()
+
+            rand_suffix = uuid.uuid4().hex[:4].upper()
+            unique_pan = f"AABC{rand_suffix[:1]}{uuid.uuid4().int % 9000 + 1000}F"
+            new_tenant = Tenant(
+                legal_name=f"{first_name} Organization",
+                trade_name="",
+                pan=unique_pan,
+                state_code="29",
+                registered_office="",
+                currency="INR"
+            )
+            db.add(new_tenant)
+            await db.flush()
+
+            membership = TenantUser(
+                tenant_id=new_tenant.id,
+                user_id=user.id,
+                role="owner",
+                is_primary=True
+            )
+            db.add(membership)
+            await db.flush()
+
+            try:
+                await db.execute(text("SELECT seed_tenant_chart_of_accounts(:tid)"), {"tid": str(new_tenant.id)})
+            except Exception:
+                pass
+            await db.commit()
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect email or password",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+    elif not verify_password(credentials.password, user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",

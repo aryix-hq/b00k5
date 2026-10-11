@@ -234,8 +234,8 @@ async def get_compliance_dashboard(
                     status="upcoming"
                 ))
 
-    # Auto-provision ITR-6 if missing from the tenant's compliance calendar
-    if not any(e.category == "itr_filing" for e in events):
+    # Auto-provision ITR-6 only if COI is verified and missing from the tenant's compliance calendar
+    if tenant_inc_date and not any(e.category == "itr_filing" for e in events):
         curr_yr = date.today().year
         itr_target_due = date(curr_yr, 10, 31) if date.today() <= date(curr_yr, 10, 31) else date(curr_yr + 1, 10, 31)
         new_recurring_events.append(ComplianceEvent(
@@ -678,20 +678,23 @@ async def get_statutory_documents_status(
             extracted_info = dict(vault_doc.metadata_json.get("extracted_fields", {}))
 
         if code == "COI":
-            if tenant.cin or prof.get("cin") or vault_doc:
+            if vault_doc or prof.get("coi_verified"):
                 is_verified = True
                 extracted_info = {
-                    "cin": tenant.cin or prof.get("cin") or "U72900KA2025PTC189012",
+                    "cin": tenant.cin or prof.get("cin") or "",
                     "legal_name": tenant.legal_name,
-                    "date_of_incorporation": prof.get("incorporation_date") or (tenant.created_at.strftime("%Y-%m-%d") if tenant.created_at else "2025-04-10")
+                    "date_of_incorporation": prof.get("incorporation_date") or (tenant.created_at.strftime("%Y-%m-%d") if tenant.created_at else "")
                 }
+            else:
+                is_verified = False
+                extracted_info = {"cin": tenant.cin or "Pending COI Upload"}
         elif code == "PAN":
-            if vault_doc or (tenant.pan and not str(tenant.pan).startswith("AABCK9012")):
+            if vault_doc or prof.get("pan_verified"):
                 is_verified = True
                 extracted_info = {"pan": tenant.pan or prof.get("pan")}
             else:
                 is_verified = False
-                extracted_info = {"pan": "Pending Upload"}
+                extracted_info = {"pan": "Pending PAN Card Upload"}
         elif code == "GST_REG06":
             gst_val = tenant.gstin or prof.get("gstin")
             has_gst_doc = bool(vault_map.get("GST_REG06") or prof.get("gst_reg06_verified"))
@@ -711,12 +714,12 @@ async def get_statutory_documents_status(
                 is_verified = False
                 extracted_info = {"tan": "Not Registered / Upload Certificate"}
         elif code == "INC_22":
-            if vault_doc or tenant.registered_office:
+            if vault_doc or prof.get("inc22_verified"):
                 is_verified = True
-                extracted_info = {"registered_office": tenant.registered_office or "Indiranagar, Bengaluru - 560038, Karnataka"}
+                extracted_info = {"registered_office": tenant.registered_office or ""}
             else:
                 is_verified = False
-                extracted_info = {"registered_office": "Pending Verification"}
+                extracted_info = {"registered_office": "Pending Form INC-22 Upload"}
         elif code == "ADT_1":
             if vault_doc or prof.get("auditor_frn") or prof.get("auditor_name"):
                 is_verified = True

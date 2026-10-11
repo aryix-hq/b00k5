@@ -29,10 +29,10 @@ export function ExpenseForm() {
 
   // Form Fields
   const [paymentSource, setPaymentSource] = useState<'company_bank' | 'personal_account'>('company_bank');
-  const [payeeDirector, setPayeeDirector] = useState<string>('Vikram (Director)');
-  const [merchantName, setMerchantName] = useState<string>('Cloud Server Services');
-  const [totalAmount, setTotalAmount] = useState<string>('11800.00');
-  const [expenseDate, setExpenseDate] = useState<string>('2025-07-20');
+  const [payeeDirector, setPayeeDirector] = useState<string>('');
+  const [merchantName, setMerchantName] = useState<string>('');
+  const [totalAmount, setTotalAmount] = useState<string>('');
+  const [expenseDate, setExpenseDate] = useState<string>(() => new Date().toISOString().split('T')[0]);
   const [category, setCategory] = useState<string>('[4010] Cloud Infrastructure & Hosting (AWS/GCP)');
   const [isCustomCategory, setIsCustomCategory] = useState<boolean>(false);
   const [paymentMode, setPaymentMode] = useState<string>('online');
@@ -42,10 +42,10 @@ export function ExpenseForm() {
 
   // Statutory & ITC verification state
   const [receiptFileName, setReceiptFileName] = useState<string>('');
-  const [extractedGstin, setExtractedGstin] = useState<string>('29AABCK9012F1Z5');
-  const [companyGstin, setCompanyGstin] = useState<string>('29AABCK9012F1Z5');
-  const [itcEligible, setItcEligible] = useState<boolean>(true);
-  const [itcMessage, setItcMessage] = useState<string>('Eligible: ₹1,800.00 IGST Input Credit Claimable');
+  const [extractedGstin, setExtractedGstin] = useState<string>('');
+  const [companyGstin, setCompanyGstin] = useState<string>('');
+  const [itcEligible, setItcEligible] = useState<boolean>(false);
+  const [itcMessage, setItcMessage] = useState<string>('Upload a vendor tax invoice or enter supplier GSTIN to evaluate Input Tax Credit.');
   const [sec40aWarning, setSec40aWarning] = useState<string | null>(null);
 
   // Live OCR & Deduplication state
@@ -64,11 +64,10 @@ export function ExpenseForm() {
   // Resolve verified company GSTIN from environment / auth
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      const g = localStorage.getItem('b00k5_extracted_gstin') || localStorage.getItem('b00k5_gstin') || '29AABCK9012F1Z5';
+      const g = localStorage.getItem('b00k5_extracted_gstin') || localStorage.getItem('b00k5_gstin') || '';
       if (g && !g.startsWith('29AABCA')) {
         const cleanG = g.trim().toUpperCase();
         setCompanyGstin(cleanG);
-        setExtractedGstin((prev) => prev || cleanG);
       }
     }
   }, []);

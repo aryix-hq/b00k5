@@ -11,7 +11,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./init_schema.sql:/docker-entrypoint-initdb.d/init_schema.sql
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-b00k5_admin} -d ${POSTGRES_DB:-b00k5_db}"]
       interval: 5s
@@ -27,7 +27,7 @@ services:
     container_name: b00k5_redis
     restart: always
     ports:
-      - "${REDIS_PORT:-6379}:6379"
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -41,7 +41,7 @@ services:
           - redis
 
   b00k5_minio:
-    image: ghcr.io/coollabsio/minio:latest
+    image: ghcr.io/coollabsio/minio:RELEASE.2025-02-07T23-21-09Z
     container_name: b00k5_minio
     restart: always
     command: server /data --console-address ":9001"
@@ -51,8 +51,8 @@ services:
     volumes:
       - minio_data:/data
     ports:
-      - "${MINIO_API_PORT:-9000}:9000"
-      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+      - "127.0.0.1:${MINIO_API_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
     healthcheck:
       test: ["CMD-SHELL", "mc ready local || exit 1"]
       interval: 5s
@@ -86,7 +86,7 @@ services:
     container_name: b00k5_bridge_mock
     restart: always
     ports:
-      - "28045:28045"
+      - "127.0.0.1:28045:28045"
     networks:
       b00k5-net:
         aliases:
@@ -98,7 +98,7 @@ services:
       dockerfile: docker/backend.Dockerfile
     container_name: b00k5_api
     restart: always
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-b00k5_admin}:${POSTGRES_PASSWORD:-b00k5_secure_vault_password_2026}@b00k5_postgres:5432/${POSTGRES_DB:-b00k5_db}
       - SYNC_DATABASE_URL=postgresql://${POSTGRES_USER:-b00k5_admin}:${POSTGRES_PASSWORD:-b00k5_secure_vault_password_2026}@b00k5_postgres:5432/${POSTGRES_DB:-b00k5_db}
@@ -112,8 +112,9 @@ services:
       - MINIO_BUCKET_SIGNED=${MINIO_BUCKET_SIGNED:-b00k5-signed}
       - MINIO_BUCKET_STATUTORY=${MINIO_BUCKET_STATUTORY:-b00k5-statutory}
       - SECRET_KEY=${SECRET_KEY:-b00k5_default_dev_jwt_secret_key_change_in_prod_2026}
-      - DSC_BRIDGE_URL=http://b00k5_bridge_mock:28045
-      - APP_ENV=production
+      - DSC_BRIDGE_URL=${DSC_BRIDGE_URL:-http://b00k5_bridge_mock:28045}
+      - DSC_MODE=${DSC_MODE:-simulated}
+      - APP_ENV=${APP_ENV:-development}
     depends_on:
       b00k5_postgres:
         condition: service_healthy
@@ -122,7 +123,7 @@ services:
       b00k5_minio:
         condition: service_healthy
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - ./apps/api/app:/app/apps/api/app
       - ./tests:/app/tests

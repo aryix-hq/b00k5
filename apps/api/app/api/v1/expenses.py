@@ -1117,6 +1117,75 @@ async def strike_off_expense(
         )
         db.add(rev_entry)
 
+        orig_je = (
+            await db.execute(
+                select(JournalEntry).where(
+                    JournalEntry.tenant_id == tenant.id,
+                    JournalEntry.entry_number == exp.journal_entry_number,
+                )
+            )
+        ).scalars().first()
+        orig_lines = []
+        if orig_je:
+            orig_lines = (
+                await db.execute(
+                    select(JournalLine).where(JournalLine.journal_entry_id == orig_je.id)
+                )
+            ).scalars().all()
+
+        if orig_lines:
+            for ol in orig_lines:
+                db.add(
+                    JournalLine(
+                        id=uuid.uuid4(),
+                        journal_entry_id=rev_entry.id,
+                        tenant_id=tenant.id,
+                        account_id=ol.account_id,
+                        debit_amount=ol.credit_amount,
+                        credit_amount=ol.debit_amount,
+                        description=f"Reversal: {ol.description or exp.merchant_name}",
+                    )
+                )
+        else:
+            coa_rows = (
+                await db.execute(
+                    select(ChartOfAccounts).where(ChartOfAccounts.tenant_id == tenant.id)
+                )
+            ).scalars().all()
+            if len(coa_rows) >= 2 and (exp.total_amount or Decimal("0.00")) > Decimal("0.00"):
+                exp_acc = next((a for a in coa_rows if a.type == "expense"), coa_rows[0])
+                settle_code = "2030" if exp.paid_personally else "1010"
+                settle_acc = next(
+                    (a for a in coa_rows if a.code == settle_code),
+                    next((a for a in coa_rows if a.id != exp_acc.id), coa_rows[1]),
+                )
+                amt = Decimal(str(exp.total_amount))
+                db.add_all(
+                    [
+                        JournalLine(
+                            id=uuid.uuid4(),
+                            journal_entry_id=rev_entry.id,
+                            tenant_id=tenant.id,
+                            account_id=settle_acc.id,
+                            debit_amount=amt,
+                            credit_amount=Decimal("0.00"),
+                            description=f"Reversal of liability/payment for {exp.merchant_name}",
+                        ),
+                        JournalLine(
+                            id=uuid.uuid4(),
+                            journal_entry_id=rev_entry.id,
+                            tenant_id=tenant.id,
+                            account_id=exp_acc.id,
+                            debit_amount=Decimal("0.00"),
+                            credit_amount=amt,
+                            description=f"Reversal of expense for {exp.merchant_name}",
+                        ),
+                    ]
+                )
+            else:
+                rev_entry.status = "draft"
+                rev_entry.is_posted = False
+
     audit_entry = ExpenseAuditLog(
         id=uuid.uuid4(),
         tenant_id=tenant.id,

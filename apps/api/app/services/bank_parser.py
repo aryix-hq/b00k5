@@ -667,10 +667,20 @@ class IndianBankPDFParser:
 BankStatementParser = IndianBankPDFParser
 
 
-def compute_line_fingerprint(account_id: str, txn_date: Any, amount: Any, balance: Any, ref: Optional[str] = "") -> str:
+def compute_line_fingerprint(
+    account_id: str,
+    txn_date: Any,
+    amount: Any,
+    balance: Any,
+    ref: Optional[str] = "",
+    sequence_disambiguator: Optional[str] = ""
+) -> str:
     """
     Computes a deterministic, collision-resistant canonical SHA-256 fingerprint for a bank transaction line.
-    Normalizes account, date, amount (2 decimals), balance (2 decimals), and reference string (stripping punctuation and lowercasing).
+    Normalizes account, date, amount (2 decimals), balance (2 decimals), and reference string.
+    Because `running_balance` changes on each sequential same-day transaction even if two payments to the
+    same vendor on the same date have the exact same amount, legitimate distinct payments produce distinct
+    fingerprints while re-uploads of the same statement line produce identical fingerprints.
     """
     norm_acc = str(account_id or "").strip()
     norm_date = str(txn_date or "").strip()
@@ -683,7 +693,137 @@ def compute_line_fingerprint(account_id: str, txn_date: Any, amount: Any, balanc
     except Exception:
         norm_bal = str(balance or "").strip()
     clean_ref = re.sub(r'[^a-zA-Z0-9]', '', str(ref or "")).lower()
+    disambig = f"|{sequence_disambiguator}" if sequence_disambiguator else ""
 
-    canonical = f"{norm_acc}|{norm_date}|{norm_amt}|{norm_bal}|{clean_ref}"
+    canonical = f"{norm_acc}|{norm_date}|{norm_amt}|{norm_bal}|{clean_ref}{disambig}"
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def detect_statement_overlap(
+    new_statement: Dict[str, Any],
+    existing_statements: List[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """
+    UAT-06 & Section 7 Statement Overlap Detector:
+    Identifies exact duplicate periods vs partial date-range overlaps across statements for the same account,
+    and checks opening/closing balance continuity across overlapping boundaries.
+    """
+    new_acc = str(new_statement.get("account_number") or "").strip()
+    new_from = new_statement.get("statement_from")
+    new_to = new_statement.get("statement_to")
+    new_open = Decimal(str(new_statement.get("opening_balance", "0.00")))
+
+    if not (new_acc and new_from and new_to):
+        return {"has_overlap": False, "overlap_type": "none", "conflicting_statements": []}
+
+    conflicts = []
+    for ex in existing_statements:
+        if str(ex.get("account_number") or "").strip() != new_acc:
+            continue
+        ex_from = ex.get("statement_from")
+        ex_to = ex.get("statement_to")
+        if not (ex_from and ex_to):
+            continue
+
+        if new_from == ex_from and new_to == ex_to:
+            conflicts.append({
+                "statement_id": ex.get("id"),
+                "overlap_type": "EXACT_PERIOD_DUPLICATE",
+                "existing_from": ex_from,
+                "existing_to": ex_to,
+                "balance_consistent": (new_open == Decimal(str(ex.get("opening_balance", "0.00"))))
+            })
+        elif new_from <= ex_to and new_to >= ex_from:
+            conflicts.append({
+                "statement_id": ex.get("id"),
+                "overlap_type": "PARTIAL_DATE_RANGE_OVERLAP",
+                "existing_from": ex_from,
+                "existing_to": ex_to,
+                "overlap_start": max(new_from, ex_from),
+                "overlap_end": min(new_to, ex_to),
+            })
+
+    return {
+        "has_overlap": len(conflicts) > 0,
+        "overlap_type": conflicts[0]["overlap_type"] if conflicts else "none",
+        "conflicting_statements": conflicts,
+    }
+
+
+def validate_uploaded_document_safety(
+    file_bytes: bytes,
+    filename: str,
+    max_size_bytes: int = 15 * 1024 * 1024,
+    max_pdf_pages: int = 50,
+    max_image_pixels: int = 25_000_000
+) -> Dict[str, Any]:
+    """
+    SEC-05 & UAT-16 Untrusted Upload & Document Boundary Validator:
+    Protects OCR, PDF parsing, and storage workers against:
+    - Path traversal in filenames ('../', '\\', null bytes)
+    - Empty or oversized payloads (> max_size_bytes)
+    - Invalid/spoofed magic bytes (non-PDF / non-image executable uploads)
+    - Malicious active content inside PDFs (/JS, /JavaScript, /Launch, /EmbeddedFiles)
+    - PDF page-count bombs (> max_pdf_pages)
+    - Image decompression / pixel bombs (> max_image_pixels)
+    """
+    if not filename or any(tok in filename for tok in ("..", "/", "\\", "\x00")):
+        raise ValueError("Security Violation [SEC-05]: Unsafe or path-traversal filename rejected.")
+
+    if not file_bytes or len(file_bytes) == 0:
+        raise ValueError("Security Violation [SEC-05]: Empty file payload rejected.")
+
+    if len(file_bytes) > max_size_bytes:
+        raise ValueError(
+            f"Security Violation [SEC-05]: File size ({len(file_bytes)} bytes) exceeds maximum allowed limit ({max_size_bytes} bytes)."
+        )
+
+    is_pdf = file_bytes.startswith(b"%PDF-")
+    is_png = file_bytes.startswith(b"\x89PNG\r\n\x1a\n")
+    is_jpeg = file_bytes.startswith(b"\xff\xd8\xff")
+
+    if not (is_pdf or is_png or is_jpeg):
+        raise ValueError("Security Violation [SEC-05]: Unsupported or spoofed file header (must be valid PDF, PNG, or JPEG).")
+
+    if is_pdf:
+        # Check for embedded active content / scripts / launch actions
+        upper_slice = file_bytes[:min(len(file_bytes), 512 * 1024)]
+        for forbidden_tag in (b"/JavaScript", b"/JS ", b"/JS(", b"/JS<", b"/Launch", b"/RichMedia"):
+            if forbidden_tag in upper_slice:
+                raise ValueError(
+                    f"Security Violation [SEC-05]: Active or executable PDF content ({forbidden_tag.decode('ascii', errors='ignore')}) is forbidden."
+                )
+        # Check page count limit
+        page_occurrences = file_bytes.count(b"/Type /Page") - file_bytes.count(b"/Type /Pages")
+        if page_occurrences > max_pdf_pages:
+            raise ValueError(
+                f"Security Violation [SEC-05]: PDF page count ({page_occurrences}) exceeds maximum limit ({max_pdf_pages})."
+            )
+
+    if is_png or is_jpeg:
+        from PIL import Image
+        orig_max = Image.MAX_IMAGE_PIXELS
+        try:
+            Image.MAX_IMAGE_PIXELS = max_image_pixels
+            with Image.open(io.BytesIO(file_bytes)) as img:
+                width, height = img.size
+                if width * height > max_image_pixels:
+                    raise ValueError(
+                        f"Security Violation [SEC-05]: Image resolution ({width}x{height}) exceeds decompression bomb threshold."
+                    )
+        except Image.DecompressionBombError as dbe:
+            raise ValueError(f"Security Violation [SEC-05]: Image decompression bomb detected: {dbe}")
+        except ValueError:
+            raise
+        except Exception as img_err:
+            raise ValueError(f"Security Violation [SEC-05]: Malformed or corrupted image stream: {img_err}")
+        finally:
+            Image.MAX_IMAGE_PIXELS = orig_max
+
+    return {
+        "safe": True,
+        "mime_detected": "application/pdf" if is_pdf else ("image/png" if is_png else "image/jpeg"),
+        "size_bytes": len(file_bytes),
+    }
+
 

@@ -26,9 +26,16 @@ def parse_indian_date(date_str: str) -> date:
     return parser.parse(date_str, dayfirst=True).date()
 
 
+import calendar
+from decimal import Decimal
+
+INCOME_TAX_ACT_2025_EFFECTIVE_DATE = date(2026, 4, 1)
+
+
 def calculate_indian_fy_ay(txn_date: date) -> Dict[str, Any]:
     """
-    Dynamically computes Indian Financial Year (FY) and Assessment Year (AY)
+    Dynamically computes Indian Financial Year (FY), Assessment Year (AY),
+    and Tax Year (TY under the Income-tax Act, 2025 effective 1 April 2026)
     for ANY date without hardcoded year boundaries.
     """
     year = txn_date.year
@@ -46,18 +53,78 @@ def calculate_indian_fy_ay(txn_date: date) -> Dict[str, Any]:
 
     fy_label = f"{fy_start_year}-{fy_end_year}"
     ay_label = f"{ay_start_year}-{ay_end_year}"
+    ty_label = f"TY {fy_start_year}-{str(fy_end_year)[-2:]}" if txn_date >= INCOME_TAX_ACT_2025_EFFECTIVE_DATE else None
     fy_start = date(fy_start_year, 4, 1)
     fy_end = date(fy_end_year, 3, 31)
+
+    is_it_act_2025 = txn_date >= INCOME_TAX_ACT_2025_EFFECTIVE_DATE
+    governing_act = "Income-tax Act, 2025" if is_it_act_2025 else "Income-tax Act, 1961"
 
     return {
         "fy_label": fy_label,
         "ay_label": ay_label,
+        "tax_year_label": ty_label,
+        "governing_direct_tax_act": governing_act,
+        "is_income_tax_act_2025": is_it_act_2025,
+        "is_leap_year_period": calendar.isleap(fy_end_year),
         "fy_start": fy_start,
         "fy_end": fy_end,
         "fy_start_year": fy_start_year,
         "fy_end_year": fy_end_year,
         "ay_start_year": ay_start_year,
         "ay_end_year": ay_end_year
+    }
+
+
+def evaluate_cross_period_tds_transition(
+    accrual_date: date,
+    payment_date: date,
+    remittance_date: date,
+    section: str = "194J",
+    gross_amount: Decimal = Decimal("100000.00"),
+    tds_rate_percent: Decimal = Decimal("10.00")
+) -> Dict[str, Any]:
+    """
+    UAT-11 & Section 4 Direct Tax Transition Evaluator:
+    Handles transactions spanning the 31 March 2026 (Income-tax Act, 1961) to
+    1 April 2026 (Income-tax Act, 2025) statutory boundary.
+    """
+    accrual_meta = calculate_indian_fy_ay(accrual_date)
+    payment_meta = calculate_indian_fy_ay(payment_date)
+    tds_trigger_date = min(accrual_date, payment_date)
+    trigger_meta = calculate_indian_fy_ay(tds_trigger_date)
+
+    tds_amount = (gross_amount * tds_rate_percent / Decimal("100.00")).quantize(Decimal("0.01"))
+    crosses_2025_act_boundary = (
+        accrual_date < INCOME_TAX_ACT_2025_EFFECTIVE_DATE <= payment_date
+    ) or (
+        accrual_date < INCOME_TAX_ACT_2025_EFFECTIVE_DATE <= remittance_date
+    )
+
+    # Under Sec 40(a)(ia) of IT Act 1961 (and transitional savings under IT Act 2025),
+    # TDS deducted in FY 2025-26 is allowable in FY 2025-26 if deposited on or before ITR due date (Oct 31, 2026).
+    itr_due_for_accrual_fy = date(accrual_meta["fy_end_year"], 10, 31)
+    allowable_in_accrual_period = remittance_date <= itr_due_for_accrual_fy
+
+    return {
+        "accrual_date": accrual_date,
+        "payment_date": payment_date,
+        "remittance_date": remittance_date,
+        "tds_trigger_date": tds_trigger_date,
+        "accrual_governing_act": accrual_meta["governing_direct_tax_act"],
+        "payment_governing_act": payment_meta["governing_direct_tax_act"],
+        "crosses_act_2025_transition": crosses_2025_act_boundary,
+        "deduction_period_fy": trigger_meta["fy_label"],
+        "deduction_period_ay": trigger_meta["ay_label"],
+        "deduction_tax_year": trigger_meta["tax_year_label"],
+        "tds_amount": tds_amount,
+        "allowable_in_accrual_fy": allowable_in_accrual_period,
+        "disallowance_30_percent_triggered": not allowable_in_accrual_period,
+        "transitional_provision_applied": (
+            "Income-tax Act, 2025 Transitional Savings: Liability accrued up to 31-Mar-2026 is assessed under AY 2026-27 (IT Act 1961) with TDS remittance credit tracked across transition."
+            if crosses_2025_act_boundary
+            else f"Single-regime evaluation under {trigger_meta['governing_direct_tax_act']}."
+        )
     }
 
 

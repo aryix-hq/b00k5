@@ -70,7 +70,10 @@ class ReconciliationEngine:
         open_invoices: List[Dict[str, Any]]
     ) -> Optional[Tuple[Dict[str, Any], float]]:
         """
-        Window heuristic: Exact amount within [-2, +5] days + fuzzy counterparty match >= 70%.
+        Window heuristic: Exact amount within [-2, +15] days + fuzzy counterparty match >= 70%.
+        UAT-07: If two or more open invoices match with similar scores and identical amounts,
+        flags the result with `is_ambiguous = True` and `reconciliation_status = 'probable_match'`
+        so it is never silently auto-reconciled.
         """
         amount = line.get("deposit_amount", Decimal("0.00"))
         if amount <= Decimal("0.00"):
@@ -81,6 +84,7 @@ class ReconciliationEngine:
 
         best_match = None
         highest_score = 0.0
+        qualifying_candidates: List[Tuple[Dict[str, Any], float]] = []
 
         for inv in open_invoices:
             inv_total = Decimal(str(inv.get("grand_total", "0.00")))
@@ -99,16 +103,65 @@ class ReconciliationEngine:
 
                 # Bonus points for date closeness
                 date_closeness_bonus = max(0, 10 - abs(days_diff))
-                composite_score = sim_score + date_closeness_bonus
+                composite_score = min(95.0, sim_score + date_closeness_bonus)
 
-                if sim_score >= 60.0 and composite_score > highest_score:
-                    highest_score = min(95.0, composite_score)
-                    best_match = inv
+                if sim_score >= 60.0 and composite_score >= 70.0:
+                    qualifying_candidates.append((inv, round(composite_score, 2)))
+                    if composite_score > highest_score:
+                        highest_score = composite_score
+                        best_match = inv
 
         if best_match and highest_score >= 70.0:
-            return best_match, round(highest_score, 2)
+            result_inv = dict(best_match)
+            if len(qualifying_candidates) > 1:
+                result_inv["is_ambiguous"] = True
+                result_inv["reconciliation_status"] = "probable_match"
+                result_inv["auto_reconcile_allowed"] = False
+                result_inv["ambiguous_candidate_numbers"] = [
+                    c[0].get("invoice_number") for c in qualifying_candidates
+                ]
+            else:
+                result_inv["is_ambiguous"] = False
+                result_inv["reconciliation_status"] = "probable_match"
+                result_inv["auto_reconcile_allowed"] = True
+            return result_inv, round(highest_score, 2)
 
         return None
+
+    @staticmethod
+    def compute_suspense_clearance_entries(
+        suspense_amount: Decimal,
+        is_withdrawal: bool,
+        suspense_account_code: str = "2099",
+        target_account_code: str = "4010"
+    ) -> Dict[str, Any]:
+        """
+        Section 7 Suspense Clearance Helper:
+        Clears a previously posted Suspense (2099) entry to the final Expense/AR/AP account
+        WITHOUT touching Bank Account (1010) a second time, preventing cash or expense double-counting.
+        """
+        amt = Decimal(str(suspense_amount)).quantize(Decimal("0.01"))
+        if is_withdrawal:
+            # Original suspense entry for withdrawal was: Dr 2099 Suspense / Cr 1010 Bank
+            # Clearance entry moves from Suspense to Target Expense: Dr Target (4010) / Cr 2099 Suspense
+            lines = [
+                {"account_code": target_account_code, "debit": amt, "credit": Decimal("0.00")},
+                {"account_code": suspense_account_code, "debit": Decimal("0.00"), "credit": amt},
+            ]
+        else:
+            # Original suspense entry for deposit was: Dr 1010 Bank / Cr 2099 Suspense
+            # Clearance entry moves from Suspense to Target Revenue/AR: Dr 2099 Suspense / Cr Target (1020/3010)
+            lines = [
+                {"account_code": suspense_account_code, "debit": amt, "credit": Decimal("0.00")},
+                {"account_code": target_account_code, "debit": Decimal("0.00"), "credit": amt},
+            ]
+        return {
+            "lines": lines,
+            "touches_bank_account_1010": False,
+            "net_suspense_balance_after_clearance": Decimal("0.00"),
+            "total_debit": amt,
+            "total_credit": amt,
+        }
 
     @staticmethod
     async def reconcile_statement(

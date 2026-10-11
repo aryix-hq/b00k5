@@ -151,7 +151,10 @@ BEGIN
     IF OLD.status = 'posted' THEN
         RAISE EXCEPTION 'Audit Immutability Violation: Posted journal entries cannot be modified or deleted. Create a reversing entry instead.';
     END IF;
-    RETURN OLD;
+    IF TG_OP = 'DELETE' THEN
+        RETURN OLD;
+    END IF;
+    RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -159,37 +162,125 @@ CREATE TRIGGER enforce_journal_immutability
 BEFORE UPDATE OR DELETE ON journal_entries
 FOR EACH ROW EXECUTE FUNCTION prevent_posted_journal_mutation();
 
+-- Prevent posting into a closed fiscal period at the database level
+CREATE OR REPLACE FUNCTION check_journal_entry_period_open()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_closed BOOLEAN;
+BEGIN
+    IF NEW.status = 'posted' THEN
+        SELECT TRUE INTO v_closed
+        FROM fiscal_years
+        WHERE tenant_id = NEW.tenant_id
+          AND is_closed = TRUE
+          AND NEW.entry_date BETWEEN start_date AND end_date
+        LIMIT 1;
+
+        IF v_closed IS TRUE THEN
+            RAISE EXCEPTION 'Period Close Violation: Cannot post journal entry (%) dated % into a closed fiscal period.',
+                NEW.entry_number, NEW.entry_date;
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS enforce_journal_period_open ON journal_entries;
+CREATE TRIGGER enforce_journal_period_open
+BEFORE INSERT OR UPDATE ON journal_entries
+FOR EACH ROW EXECUTE FUNCTION check_journal_entry_period_open();
+
+-- Prevent INSERT, UPDATE, or DELETE on lines of an already-posted journal entry, and enforce cross-tenant integrity
 CREATE OR REPLACE FUNCTION prevent_posted_journal_line_mutation()
 RETURNS TRIGGER AS $$
 DECLARE
     v_status VARCHAR(20);
+    v_entry_tenant_id UUID;
+    v_acc_tenant_id UUID;
+    v_entry_xmin xid;
+    v_existing_count INT;
+    v_existing_debit NUMERIC(15, 2);
+    v_existing_credit NUMERIC(15, 2);
 BEGIN
-    SELECT status INTO v_status FROM journal_entries WHERE id = OLD.journal_entry_id;
-    IF v_status = 'posted' THEN
-        RAISE EXCEPTION 'Audit Immutability Violation: Lines of a posted journal entry cannot be modified or deleted.';
+    IF TG_OP = 'UPDATE' OR TG_OP = 'DELETE' THEN
+        SELECT status INTO v_status FROM journal_entries WHERE id = OLD.journal_entry_id;
+        IF v_status = 'posted' THEN
+            RAISE EXCEPTION 'Audit Immutability Violation: Lines of a posted journal entry cannot be modified or deleted.';
+        END IF;
+        IF TG_OP = 'DELETE' THEN
+            RETURN OLD;
+        END IF;
+        RETURN NEW;
     END IF;
-    RETURN OLD;
+
+    IF TG_OP = 'INSERT' THEN
+        SELECT status, tenant_id, xmin
+        INTO v_status, v_entry_tenant_id, v_entry_xmin
+        FROM journal_entries
+        WHERE id = NEW.journal_entry_id;
+
+        SELECT tenant_id
+        INTO v_acc_tenant_id
+        FROM chart_of_accounts
+        WHERE id = NEW.account_id;
+
+        -- Finding C: Enforce cross-tenant consistency between journal_lines, journal_entries, and chart_of_accounts
+        IF v_entry_tenant_id IS NOT NULL AND NEW.tenant_id <> v_entry_tenant_id THEN
+            RAISE EXCEPTION 'Cross-Tenant Integrity Violation: journal_line tenant_id (%) does not match parent journal_entry tenant_id (%).',
+                NEW.tenant_id, v_entry_tenant_id;
+        END IF;
+
+        IF v_acc_tenant_id IS NOT NULL AND NEW.tenant_id <> v_acc_tenant_id THEN
+            RAISE EXCEPTION 'Cross-Tenant Integrity Violation: journal_line tenant_id (%) does not match chart_of_accounts tenant_id (%).',
+                NEW.tenant_id, v_acc_tenant_id;
+        END IF;
+
+        -- Finding A: Block inserting additional lines into an already-posted journal entry
+        IF v_status = 'posted' THEN
+            SELECT COUNT(*), COALESCE(SUM(debit_amount), 0), COALESCE(SUM(credit_amount), 0)
+            INTO v_existing_count, v_existing_debit, v_existing_credit
+            FROM journal_lines
+            WHERE journal_entry_id = NEW.journal_entry_id;
+
+            IF (txid_status(v_entry_xmin::text::bigint) = 'committed') OR
+               (v_existing_count >= 2 AND v_existing_debit = v_existing_credit AND v_existing_debit > 0) THEN
+                RAISE EXCEPTION 'Audit Immutability Violation: Cannot insert additional lines into an already-posted journal entry (%). Create a reversing entry instead.',
+                    NEW.journal_entry_id;
+            END IF;
+        END IF;
+
+        RETURN NEW;
+    END IF;
+
+    RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS enforce_journal_line_immutability ON journal_lines;
 CREATE TRIGGER enforce_journal_line_immutability
-BEFORE UPDATE OR DELETE ON journal_lines
+BEFORE INSERT OR UPDATE OR DELETE ON journal_lines
 FOR EACH ROW EXECUTE FUNCTION prevent_posted_journal_line_mutation();
 
--- PostgreSQL Deferred Constraint Trigger: Enforce Double-Entry Zero-Sum Balance
+-- PostgreSQL Deferred Constraint Trigger: Enforce Double-Entry Zero-Sum Balance & Minimum 2 Lines
 CREATE OR REPLACE FUNCTION check_journal_entry_balance()
 RETURNS TRIGGER AS $$
 DECLARE
     v_debit NUMERIC(15, 2);
     v_credit NUMERIC(15, 2);
+    v_count INT;
     v_status VARCHAR(20);
 BEGIN
     SELECT status INTO v_status FROM journal_entries WHERE id = NEW.journal_entry_id;
     IF v_status = 'posted' THEN
-        SELECT COALESCE(SUM(debit_amount), 0), COALESCE(SUM(credit_amount), 0)
-        INTO v_debit, v_credit
+        SELECT COUNT(*), COALESCE(SUM(debit_amount), 0), COALESCE(SUM(credit_amount), 0)
+        INTO v_count, v_debit, v_credit
         FROM journal_lines
         WHERE journal_entry_id = NEW.journal_entry_id;
+
+        IF v_count < 2 THEN
+            RAISE EXCEPTION 'check_zero_sum_balance: Inviolable Double-Entry Invariant Failed! Posted journal entry requires at least 2 lines (found %).',
+                v_count;
+        END IF;
 
         IF v_debit <> v_credit THEN
             RAISE EXCEPTION 'check_zero_sum_balance: Inviolable Double-Entry Invariant Failed! Total Debits (%) != Total Credits (%). Discrepancy: %',
@@ -205,6 +296,39 @@ CREATE CONSTRAINT TRIGGER enforce_journal_zero_sum_balance
 AFTER INSERT OR UPDATE ON journal_lines
 DEFERRABLE INITIALLY DEFERRED
 FOR EACH ROW EXECUTE FUNCTION check_journal_entry_balance();
+
+CREATE OR REPLACE FUNCTION check_journal_entry_has_balanced_lines()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_debit NUMERIC(15, 2);
+    v_credit NUMERIC(15, 2);
+    v_count INT;
+BEGIN
+    IF NEW.status = 'posted' THEN
+        SELECT COUNT(*), COALESCE(SUM(debit_amount), 0), COALESCE(SUM(credit_amount), 0)
+        INTO v_count, v_debit, v_credit
+        FROM journal_lines
+        WHERE journal_entry_id = NEW.id;
+
+        IF v_count < 2 THEN
+            RAISE EXCEPTION 'check_zero_sum_balance: Posted journal entry (%) requires at least 2 journal lines (found %).',
+                NEW.entry_number, v_count;
+        END IF;
+
+        IF v_debit <> v_credit THEN
+            RAISE EXCEPTION 'check_zero_sum_balance: Inviolable Double-Entry Invariant Failed on entry (%): Total Debits (%) != Total Credits (%).',
+                NEW.entry_number, v_debit, v_credit;
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS enforce_journal_entry_has_lines ON journal_entries;
+CREATE CONSTRAINT TRIGGER enforce_journal_entry_has_lines
+AFTER INSERT OR UPDATE ON journal_entries
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION check_journal_entry_has_balanced_lines();
 
 -- ============================================================================
 -- 2B. BANK STATEMENTS & 3-TIER RECONCILIATION ENGINE (PHASE 2)
@@ -585,11 +709,12 @@ CREATE TABLE IF NOT EXISTS database_backup_logs (
 );
 
 -- ============================================================================
--- 8. ROW-LEVEL SECURITY (RLS) POLICIES
+-- 8. ROW-LEVEL SECURITY (RLS) POLICIES (FINDING B: COMPLETE FORCE RLS)
 -- ============================================================================
 
 ALTER TABLE tenants ENABLE ROW LEVEL SECURITY;
 ALTER TABLE tenant_users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE fiscal_years ENABLE ROW LEVEL SECURITY;
 ALTER TABLE chart_of_accounts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE journal_entries ENABLE ROW LEVEL SECURITY;
 ALTER TABLE journal_lines ENABLE ROW LEVEL SECURITY;
@@ -597,32 +722,54 @@ ALTER TABLE contacts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE invoices ENABLE ROW LEVEL SECURITY;
 ALTER TABLE invoice_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE expenses ENABLE ROW LEVEL SECURITY;
+ALTER TABLE expense_audit_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE document_vault ENABLE ROW LEVEL SECURITY;
+ALTER TABLE cloud_sync_ledger ENABLE ROW LEVEL SECURITY;
 ALTER TABLE corporate_meetings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE compliance_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE dsc_signature_audit ENABLE ROW LEVEL SECURITY;
 ALTER TABLE bank_statements ENABLE ROW LEVEL SECURITY;
 ALTER TABLE bank_statement_lines ENABLE ROW LEVEL SECURITY;
+ALTER TABLE database_backup_logs ENABLE ROW LEVEL SECURITY;
 
+-- Enforce RLS even for table owners on ALL tenant-scoped tables
+ALTER TABLE tenants FORCE ROW LEVEL SECURITY;
+ALTER TABLE tenant_users FORCE ROW LEVEL SECURITY;
+ALTER TABLE fiscal_years FORCE ROW LEVEL SECURITY;
 ALTER TABLE chart_of_accounts FORCE ROW LEVEL SECURITY;
 ALTER TABLE journal_entries FORCE ROW LEVEL SECURITY;
 ALTER TABLE journal_lines FORCE ROW LEVEL SECURITY;
+ALTER TABLE contacts FORCE ROW LEVEL SECURITY;
 ALTER TABLE invoices FORCE ROW LEVEL SECURITY;
+ALTER TABLE invoice_items FORCE ROW LEVEL SECURITY;
 ALTER TABLE expenses FORCE ROW LEVEL SECURITY;
+ALTER TABLE expense_audit_logs FORCE ROW LEVEL SECURITY;
+ALTER TABLE document_vault FORCE ROW LEVEL SECURITY;
+ALTER TABLE cloud_sync_ledger FORCE ROW LEVEL SECURITY;
+ALTER TABLE corporate_meetings FORCE ROW LEVEL SECURITY;
+ALTER TABLE compliance_events FORCE ROW LEVEL SECURITY;
+ALTER TABLE dsc_signature_audit FORCE ROW LEVEL SECURITY;
 ALTER TABLE bank_statements FORCE ROW LEVEL SECURITY;
 ALTER TABLE bank_statement_lines FORCE ROW LEVEL SECURITY;
+ALTER TABLE database_backup_logs FORCE ROW LEVEL SECURITY;
 
 -- Helper RLS predicate macro using session variable 'app.current_tenant'
 CREATE POLICY tenant_isolation_tenants ON tenants
-    USING (id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
+    FOR ALL
+    USING (id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
+    WITH CHECK (id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
 
 CREATE POLICY tenant_isolation_tenant_users ON tenant_users
-    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
+    FOR ALL
+    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
+    WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
 
 CREATE POLICY tenant_isolation_coa ON chart_of_accounts
-    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
+    FOR ALL
+    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
+    WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
 
--- DEF-04: Strict tenant_isolation_policy for Invoices, Expenses, Document Vault, Corporate Meetings, Journal Entries, and Journal Items/Lines
+-- DEF-04 & Finding B: Strict FOR ALL USING + WITH CHECK policies across all tenant tables
 CREATE POLICY tenant_isolation_policy ON corporate_meetings
     FOR ALL
     USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
@@ -654,35 +801,54 @@ CREATE POLICY tenant_isolation_policy ON journal_lines
     WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
 
 CREATE POLICY tenant_isolation_contacts ON contacts
-    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
+    FOR ALL
+    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
+    WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
 
 CREATE POLICY tenant_isolation_invoice_items ON invoice_items
-    USING (invoice_id IN (SELECT id FROM invoices WHERE tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid));
+    FOR ALL
+    USING (invoice_id IN (SELECT id FROM invoices WHERE tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid))
+    WITH CHECK (invoice_id IN (SELECT id FROM invoices WHERE tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid));
 
 CREATE POLICY tenant_isolation_compliance ON compliance_events
-    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
+    FOR ALL
+    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
+    WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
 
 CREATE POLICY tenant_isolation_dsc ON dsc_signature_audit
-    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
+    FOR ALL
+    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
+    WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
 
 CREATE POLICY tenant_isolation_bank_statements ON bank_statements
-    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
+    FOR ALL
+    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
+    WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
 
 CREATE POLICY tenant_isolation_bank_statement_lines ON bank_statement_lines
-    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
+    FOR ALL
+    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
+    WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
 
 CREATE POLICY tenant_isolation_cloud_sync ON cloud_sync_ledger
-    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
+    FOR ALL
+    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
+    WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
 
-ALTER TABLE fiscal_years ENABLE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation_fiscal_years ON fiscal_years
     FOR ALL
-    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
+    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
+    WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
 
-ALTER TABLE expense_audit_logs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation_expense_audit_logs ON expense_audit_logs
     FOR ALL
-    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
+    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
+    WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
+
+CREATE POLICY tenant_isolation_backup_logs ON database_backup_logs
+    FOR ALL
+    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
+    WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
 
 
 -- ============================================================================
@@ -725,4 +891,10 @@ BEGIN
     (p_tenant_id, '4040', 'Legal & Professional Fees (CA/CS/ROC)', 'expense', 'professional_fees', 'debit', 'Auditor retainer, CS filings, legal advisory'),
     (p_tenant_id, '4050', 'Rent & Workplace Expenses', 'expense', 'rent', 'debit', 'Office lease, coworking and utilities');
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Grant table, sequence, and function privileges to non-superuser application role b00k5_app
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO b00k5_app;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO b00k5_app;
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO b00k5_app;
+

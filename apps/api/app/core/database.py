@@ -35,9 +35,12 @@ get_db = get_db_session
 async def set_tenant_context(session: AsyncSession, tenant_id: str | uuid.UUID) -> None:
     """
     Enforces PostgreSQL Row-Level Security (RLS) for the current session transaction.
-    Uses SET LOCAL to strictly isolate queries to the given tenant_id.
+    Switches to the non-superuser role `b00k5_app` (NOBYPASSRLS) and sets `app.current_tenant`
+    using transaction-scoped SET LOCAL so pooled connections never leak tenant state.
     """
     tenant_str = str(tenant_id)
     # Validate UUID format to prevent SQL injection in session setting
     uuid.UUID(tenant_str)
+    await session.execute(text("SET LOCAL ROLE b00k5_app"))
     await session.execute(text(f"SET LOCAL app.current_tenant = '{tenant_str}'"))
+

@@ -27,20 +27,38 @@ def get_password_hash(password: str) -> str:
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()
+    now = datetime.now(timezone.utc)
     if expires_delta:
-        expire = datetime.now(timezone.utc) + expires_delta
+        expire = now + expires_delta
     else:
-        expire = datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+        expire = now + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     
-    # DEF-03: Include unique JWT ID (jti) for server-side revocation tracking
+    # DEF-03 & SEC-03: Include unique JWT ID (jti), issued-at (iat), and issuer (iss)
     jti = str(uuid.uuid4())
-    to_encode.update({"exp": expire, "jti": jti})
+    to_encode.update({
+        "exp": expire,
+        "iat": now,
+        "iss": to_encode.get("iss", "b00k5-auth-authority"),
+        "jti": jti
+    })
     encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
     return encoded_jwt
 
-def decode_access_token(token: str) -> Optional[dict]:
+def decode_access_token(token: str, expected_issuer: Optional[str] = None) -> Optional[dict]:
+    if not token or not isinstance(token, str):
+        return None
     try:
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        # SEC-03: Reject 'none' algorithm or asymmetric/symmetric confusion before decoding
+        unverified_header = jwt.get_unverified_header(token)
+        if unverified_header.get("alg") != settings.ALGORITHM:
+            return None
+        decode_kwargs = {
+            "algorithms": [settings.ALGORITHM],
+            "options": {"require": ["exp"]}
+        }
+        if expected_issuer:
+            decode_kwargs["issuer"] = expected_issuer
+        payload = jwt.decode(token, settings.SECRET_KEY, **decode_kwargs)
         return payload
     except jwt.PyJWTError:
         return None

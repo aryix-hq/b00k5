@@ -43,9 +43,11 @@ class Settings(BaseSettings):
     BUCKET_INVOICES: str = os.getenv("MINIO_BUCKET_RECEIPTS", "b00k5-receipts")
 
     # Security & Auth
-    SECRET_KEY: str = os.getenv("SECRET_KEY", "e9b46e3d234857b64917a26f049a46399e52701979b0ccb0d6fbca295eefcd22")
+    APP_ENV: str = os.getenv("APP_ENV", "development")
+    SECRET_KEY: str = os.getenv("SECRET_KEY", "b00k5_default_dev_jwt_secret_key_change_in_prod_2026")
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 # 24 hours
+    DSC_MODE: str = os.getenv("DSC_MODE", "simulated") # 'hardware' or 'simulated'
 
     # Hardware DSC Bridge
     DSC_BRIDGE_URL: str = os.getenv("DSC_BRIDGE_URL", "http://127.0.0.1:28045")
@@ -53,4 +55,58 @@ class Settings(BaseSettings):
     class Config:
         case_sensitive = True
 
+
+KNOWN_INSECURE_SECRETS = {
+    "",
+    "changeme",
+    "secret",
+    "super-secret-jwt-key-change-in-prod",
+    "change-this-to-a-secure-random-64-char-hex-secret-key-in-production",
+    "b00k5_default_dev_jwt_secret_key_change_in_prod_2026",
+    "e9b46e3d234857b64917a26f049a46399e52701979b0ccb0d6fbca295eefcd22",
+    "b00k5_secure_vault_password_2026",
+    "minio_storage_secret_key_2026",
+}
+
+
+def validate_production_security(env_override: Optional[dict] = None) -> dict:
+    """
+    SEC-01 & UAT-04: Fail-closed production configuration validator.
+    Raises RuntimeError if APP_ENV == 'production' and any mandatory secret is missing,
+    weak (< 32 characters), or matches a published default/placeholder credential,
+    or if uvicorn --reload is enabled in production.
+    """
+    env = env_override if env_override is not None else os.environ
+    app_env = (env.get("APP_ENV") or "development").lower().strip()
+    secret_key = (env.get("SECRET_KEY") or "").strip()
+    db_url = (env.get("DATABASE_URL") or "").strip()
+    minio_secret = (env.get("MINIO_SECRET_KEY") or env.get("MINIO_ROOT_PASSWORD") or "").strip()
+    reload_flag = (env.get("UVICORN_RELOAD") or "false").lower().strip()
+
+    violations = []
+    if app_env == "production":
+        if not secret_key or len(secret_key) < 32 or secret_key in KNOWN_INSECURE_SECRETS:
+            violations.append("SECRET_KEY is missing, shorter than 32 chars, or uses a known published default.")
+        if not db_url or "b00k5_secure_vault_password_2026" in db_url:
+            violations.append("DATABASE_URL is missing or uses published default database password.")
+        if not minio_secret or minio_secret in KNOWN_INSECURE_SECRETS:
+            violations.append("MINIO_SECRET_KEY is missing or uses published default storage password.")
+        if reload_flag == "true":
+            violations.append("UVICORN_RELOAD cannot be enabled when APP_ENV=production.")
+
+        if violations:
+            raise RuntimeError(
+                "FATAL [SEC-01 Fail-Closed]: Unsafe production startup blocked: " + "; ".join(violations)
+            )
+
+    return {
+        "app_env": app_env,
+        "status": "secure" if not violations else "failed",
+        "violations": violations,
+    }
+
+
 settings = Settings()
+if os.getenv("B00K5_STRICT_PROD", "false").lower() == "true":
+    validate_production_security()
+

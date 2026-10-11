@@ -2,7 +2,7 @@ from contextlib import asynccontextmanager
 import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.core.config import settings
+from app.core.config import settings, validate_production_security
 from app.core.s3 import ensure_buckets_exist
 from app.api.v1 import auth, setup, invoices, ledger, vault, compliance, dsc, reconciliation, storage, iam, expenses, pricing, system, batch_ingest
 
@@ -12,6 +12,7 @@ logger = logging.getLogger("b00k5_api")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting b00k5 Financial OS Backend...")
+    validate_production_security()
     try:
         ensure_buckets_exist()
     except Exception as e:

@@ -114,8 +114,13 @@ async def upload_vault_document(
     calculates its cryptographic SHA-256 integrity hash, and registers it.
     """
     file_bytes = await file.read()
+    from app.services.bank_parser import validate_uploaded_document_safety
+    safety = validate_uploaded_document_safety(file.filename or "document.pdf", file_bytes, file.content_type)
+    if not safety.get("is_safe"):
+        raise HTTPException(status_code=400, detail=f"Document rejected by security scanner: {safety.get('reason')}")
+    safe_filename = safety.get("sanitized_filename") or (file.filename or "document.pdf")
     assigned_category = normalize_vault_category(category)
-    s3_key = f"{tenant.id}/vault/{assigned_category}/{file.filename}"
+    s3_key = f"{tenant.id}/vault/{assigned_category}/{safe_filename}"
     content_type = file.content_type or "application/octet-stream"
 
     obj_name, sha256_hash, file_size = upload_document(
@@ -170,12 +175,16 @@ async def smart_ingest_document(
     file_bytes = await file.read()
     if not file_bytes:
         raise HTTPException(status_code=400, detail="Empty file payload")
+    from app.services.bank_parser import validate_uploaded_document_safety
+    safety = validate_uploaded_document_safety(file.filename or "document.pdf", file_bytes, file.content_type)
+    if not safety.get("is_safe"):
+        raise HTTPException(status_code=400, detail=f"Document rejected by security scanner: {safety.get('reason')}")
 
     # 1. Run extraction engine & verify encryption
     forced = doc_type or category
     extracted = StatutoryVaultEngine.identify_and_extract(
         file_bytes=file_bytes,
-        filename=file.filename or "",
+        filename=safety.get("sanitized_filename") or (file.filename or ""),
         forced_doc_type=forced,
         pdf_password=pdf_password
     )

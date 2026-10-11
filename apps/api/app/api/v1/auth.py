@@ -40,54 +40,54 @@ async def google_login(payload: GoogleLoginRequest, db: AsyncSession = Depends(g
         db.add(user)
         await db.flush()
 
-    # 2. Check tenant association
-    tu_stmt = select(TenantUser).where(TenantUser.user_id == user.id)
+    # 2. Check existing tenant associations for this user
+    all_memberships_res = await db.execute(
+        select(TenantUser).where(TenantUser.user_id == user.id).order_by(TenantUser.is_primary.desc(), TenantUser.created_at.asc())
+    )
+    all_memberships = all_memberships_res.scalars().all()
+
+    membership = None
     if payload.tenant_id:
-        tu_stmt = tu_stmt.where(TenantUser.tenant_id == payload.tenant_id)
-    tu_res = await db.execute(tu_stmt)
-    membership = tu_res.scalar_one_or_none()
+        for m in all_memberships:
+            if m.tenant_id == payload.tenant_id:
+                membership = m
+                break
+        if not membership and all_memberships:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: User is not a member of the requested organization."
+            )
+    elif all_memberships:
+        membership = all_memberships[0]
 
     if not membership:
-        # Check if there is an existing tenant to attach to
-        t_stmt = select(Tenant).order_by(Tenant.created_at.asc())
-        t_res = await db.execute(t_stmt)
-        default_tenant = t_res.scalars().first()
+        # Brand-new user with no organization: provision an isolated tenant (never attach to an existing tenant)
+        rand_suffix = uuid.uuid4().hex[:4].upper()
+        unique_pan = f"AABC{rand_suffix[:1]}{uuid.uuid4().int % 9000 + 1000}F"
+        new_tenant = Tenant(
+            legal_name=f"{user.first_name} {user.last_name} Enterprise Pvt Ltd",
+            trade_name=f"{user.first_name} Enterprise",
+            pan=unique_pan,
+            state_code="29",
+            registered_office="Bengaluru, Karnataka 560001",
+            currency="INR"
+        )
+        db.add(new_tenant)
+        await db.flush()
 
-        if default_tenant:
-            membership = TenantUser(
-                tenant_id=default_tenant.id,
-                user_id=user.id,
-                role="owner",
-                is_primary=True
-            )
-            db.add(membership)
-            await db.flush()
-        else:
-            # Create a default tenant for this user
-            new_tenant = Tenant(
-                legal_name=f"{user.first_name}'s Enterprise Pvt Ltd",
-                trade_name=f"{user.first_name}'s Company",
-                pan="AABCA1234F",
-                state_code="29",
-                registered_office="Indiranagar, Bengaluru, Karnataka 560038",
-                currency="INR"
-            )
-            db.add(new_tenant)
-            await db.flush()
-
-            membership = TenantUser(
-                tenant_id=new_tenant.id,
-                user_id=user.id,
-                role="owner",
-                is_primary=True
-            )
-            db.add(membership)
-            await db.flush()
+        membership = TenantUser(
+            tenant_id=new_tenant.id,
+            user_id=user.id,
+            role="owner",
+            is_primary=True
+        )
+        db.add(membership)
+        await db.flush()
 
     await db.commit()
 
     tenant_id_str = str(membership.tenant_id) if membership else None
-    role_str = str(membership.role) if membership else "owner"
+    role_str = membership.role.value if hasattr(membership.role, "value") else str(membership.role)
 
     token_data = {
         "sub": str(user.id),
@@ -122,10 +122,16 @@ async def login(credentials: LoginRequest, db: AsyncSession = Depends(get_db)):
     if credentials.tenant_id:
         tu_stmt = tu_stmt.where(TenantUser.tenant_id == credentials.tenant_id)
     tu_res = await db.execute(tu_stmt)
-    membership = tu_res.scalar_one_or_none()
+    membership = tu_res.scalars().first()
+
+    if credentials.tenant_id and not membership:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: User is not a member of the requested organization."
+        )
 
     tenant_id_str = str(membership.tenant_id) if membership else None
-    role_str = str(membership.role) if membership else None
+    role_str = (membership.role.value if hasattr(membership.role, "value") else str(membership.role)) if membership else None
 
     token_data = {
         "sub": str(user.id),

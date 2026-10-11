@@ -85,9 +85,9 @@ export default function CompanyProfileSettingsPage() {
       const storedName = localStorage.getItem('b00k5_legal_name');
       const storedCin = localStorage.getItem('b00k5_cin');
 
-      if (storedGstin && !storedGstin.startsWith('29AABCA') && !storedGstin.startsWith('29AABCK')) {
+      if (storedGstin && !storedGstin.startsWith('29AABCA')) {
         setGstin(storedGstin);
-      } else {
+      } else if (storedGstin) {
         localStorage.removeItem('b00k5_extracted_gstin');
       }
       if (storedState) setStateCode(storedState);
@@ -106,7 +106,7 @@ export default function CompanyProfileSettingsPage() {
           .then(data => {
             if (data?.tenants?.[0]) {
               const t = data.tenants[0];
-              if (t.gstin && !t.gstin.startsWith('29AABCA') && !t.gstin.startsWith('29AABCK')) setGstin(t.gstin);
+              if (t.gstin && !t.gstin.startsWith('29AABCA')) setGstin(t.gstin);
               if (t.state_code) setStateCode(t.state_code);
               if (t.legal_name) setLegalName(t.legal_name);
               if (t.trade_name) setTradeName(t.trade_name);

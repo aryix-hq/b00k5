@@ -695,7 +695,7 @@ async def get_statutory_documents_status(
         elif code == "GST_REG06":
             gst_val = tenant.gstin or prof.get("gstin")
             has_gst_doc = bool(vault_map.get("GST_REG06") or prof.get("gst_reg06_verified"))
-            if has_gst_doc and gst_val and not str(gst_val).startswith("29AABCK9012") and not str(gst_val).startswith("29AABCA1234"):
+            if has_gst_doc and gst_val and not str(gst_val).startswith("29AABCA1234"):
                 is_verified = True
                 extracted_info = {"gstin": gst_val, "state_code": tenant.state_code or "29"}
             else:
@@ -774,8 +774,8 @@ async def get_statutory_documents_status(
         "tenant_id": str(tenant.id),
         "legal_name": tenant.legal_name,
         "cin": tenant.cin,
-        "pan": tenant.pan if (tenant.pan and not str(tenant.pan).startswith("AABCK9012")) else "",
-        "gstin": tenant.gstin if ((vault_map.get("GST_REG06") or prof.get("gst_reg06_verified")) and tenant.gstin and not str(tenant.gstin).startswith("29AABCK9012") and not str(tenant.gstin).startswith("29AABCA1234")) else "",
+        "pan": tenant.pan if (tenant.pan and not str(tenant.pan).startswith("AABCA1234")) else "",
+        "gstin": tenant.gstin if ((vault_map.get("GST_REG06") or prof.get("gst_reg06_verified")) and tenant.gstin and not str(tenant.gstin).startswith("29AABCA1234")) else "",
         "tan": prof.get("tan") if ((vault_map.get("TAN") or prof.get("tan_verified")) and prof.get("tan") and not str(prof.get("tan")).startswith("BLRA12345")) else "",
         "registered_office": tenant.registered_office,
         "total_statutory_documents": len(STATUTORY_CATALOG),
@@ -797,7 +797,7 @@ async def download_statutory_document(
         "cin": tenant.cin or "",
         "registered_office": tenant.registered_office or "Indiranagar, Bengaluru - 560038, Karnataka, India",
         "pan": tenant.pan or "",
-        "gstin": tenant.gstin if tenant.gstin and not str(tenant.gstin).startswith("29AABCK9012") else ""
+        "gstin": tenant.gstin if tenant.gstin and not str(tenant.gstin).startswith("29AABCA1234") else ""
     }
     pdf_bytes = DocumentAssemblyService.assemble_statutory_extract(doc_code, data)
     filename = f"{tenant.legal_name.replace(' ', '_')}_{doc_code.upper()}_EXTRACT.pdf"

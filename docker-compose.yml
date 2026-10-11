@@ -41,7 +41,7 @@ services:
           - redis
 
   b00k5_minio:
-    image: ghcr.io/coollabsio/minio:RELEASE.2025-02-07T23-21-09Z
+    image: ghcr.io/coollabsio/minio@sha256:69b55a1c1c5dc285ce04db96689f5b2102317fc77a50680a1874ca6efd1c87f9
     container_name: b00k5_minio
     restart: always
     command: server /data --console-address ":9001"

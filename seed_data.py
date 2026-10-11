@@ -154,10 +154,17 @@ def execute_seed():
         f.write(seed_sql)
     logger.info(f"Generated deterministic seed SQL ({len(seed_sql)} bytes) at {sql_path}")
 
-    # If psycopg2 or asyncpg is available, execute directly
+    # If psycopg2 is available and environment specifies DB URL, execute directly
     try:
         import psycopg2
-        db_url = os.getenv("SYNC_DATABASE_URL", "postgresql://b00k5_admin:b00k5_secure_vault_password_2026@localhost:5432/b00k5_db")
+        db_url = os.getenv("SYNC_DATABASE_URL") or os.getenv("DATABASE_URL", "").replace("+asyncpg", "")
+        if not db_url:
+            pg_user = os.getenv("POSTGRES_USER", "b00k5_admin")
+            pg_pass = os.getenv("POSTGRES_PASSWORD", "")
+            pg_host = os.getenv("POSTGRES_HOST", "localhost")
+            pg_port = os.getenv("POSTGRES_PORT", "5432")
+            pg_db = os.getenv("POSTGRES_DB", "b00k5_db")
+            db_url = f"postgresql://{pg_user}:{pg_pass}@{pg_host}:{pg_port}/{pg_db}"
         conn = psycopg2.connect(db_url)
         conn.autocommit = True
         with conn.cursor() as cur:

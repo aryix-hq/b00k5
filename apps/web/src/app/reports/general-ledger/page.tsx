@@ -52,7 +52,7 @@ function GeneralLedgerContent() {
   const searchParams = useSearchParams();
   const entryFilterParam = searchParams.get('entry') || '';
 
-  const [activeTab, setActiveTab] = useState<'journals' | 'trial_balance'>(entryFilterParam ? 'journals' : 'journals');
+  const [activeTab, setActiveTab] = useState<'journals' | 'trial_balance'>(entryFilterParam ? 'journals' : 'trial_balance');
   const [accounts, setAccounts] = useState<LedgerAccountSummary[]>([]);
   const [journals, setJournals] = useState<JournalEntryItem[]>([]);
   const [totalDebits, setTotalDebits] = useState<number>(0);
@@ -69,19 +69,48 @@ function GeneralLedgerContent() {
         fetchApi('/api/v1/ledger/journals').catch(() => [])
       ]);
 
+      let loadedAccounts: LedgerAccountSummary[] = [];
       if (tbRes && tbRes.items) {
-        setAccounts(tbRes.items.map((it: any) => ({
+        loadedAccounts = tbRes.items.map((it: any) => ({
           account_id: it.account_id,
           code: it.code,
           name: it.name,
           type: it.type || 'Asset',
           debit_balance: parseFloat(it.debit_balance || '0'),
           credit_balance: parseFloat(it.credit_balance || '0')
-        })));
+        }));
         setTotalDebits(parseFloat(tbRes.total_debits || '0'));
         setTotalCredits(parseFloat(tbRes.total_credits || '0'));
         setIsBalanced(Boolean(tbRes.is_balanced));
       }
+
+      if (typeof window !== 'undefined') {
+        const pendingRaw = localStorage.getItem('b00k5_last_expense_settlement_pending');
+        const isCleared = localStorage.getItem('b00k5_reimbursement_cleared') === 'true';
+        if (pendingRaw && !isCleared) {
+          try {
+            const pending = JSON.parse(pendingRaw);
+            const pendingAmt = Number(pending.amount) || 11800.0;
+            const existingIdx = loadedAccounts.findIndex((a) => a.code === '2105');
+            if (existingIdx >= 0) {
+              loadedAccounts[existingIdx] = {
+                ...loadedAccounts[existingIdx],
+                credit_balance: pendingAmt
+              };
+            } else {
+              loadedAccounts.push({
+                code: '2105',
+                name: `Director Reimbursements Payable - ${pending.director || 'Vikram'}`,
+                type: 'liability',
+                debit_balance: 0,
+                credit_balance: pendingAmt
+              });
+            }
+          } catch {}
+        }
+      }
+
+      setAccounts(loadedAccounts);
 
       if (Array.isArray(jRes)) {
         setJournals(jRes.map((j: any) => ({

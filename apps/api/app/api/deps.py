@@ -57,12 +57,15 @@ async def get_current_user(
 from fastapi import Request
 
 
+from sqlalchemy import select, text
+
+
 def enforce_rbac_policy(role: str, method: str, path: str) -> None:
     """
     Centralized Role-Based Access Control (RBAC) enforcement (SEC-03 & UAT-14):
     - owner: Full access within tenant
     - finance_manager: Finance, ledger, invoices, expenses, reconciliation, reports; blocked from IAM user deletion and destructive system restore
-    - auditor_ca: Strictly read-only access (GET/HEAD/OPTIONS + non-mutating verification/export endpoints); blocked from all mutations and IAM modification
+    - auditor_ca: Strictly read-only HTTP methods (GET/HEAD/OPTIONS only; never inferred from URL text) + PostgreSQL transaction_read_only = on
     - employee: Restricted to submitting and viewing own expenses; blocked from general ledger, invoices, bank reconciliation, IAM, cap-table/governance, and expense approval/reimbursement
     """
     norm_role = (role or "employee").lower()
@@ -75,21 +78,19 @@ def enforce_rbac_policy(role: str, method: str, path: str) -> None:
     if norm_role == "auditor_ca":
         if norm_method in ("GET", "HEAD", "OPTIONS"):
             return
-        if any(ro in norm_path for ro in ("/verify", "/calculate", "/export")):
-            return
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="RBAC Violation: External Auditor (CA) role is read-only and cannot create, modify, or delete records."
+            detail="RBAC Violation: External Auditor (CA) role is strictly read-only and cannot execute mutating requests (POST, PUT, PATCH, DELETE)."
         )
 
     if norm_role == "employee":
         # Employee can only view or submit new expenses (not settle/approve/delete) and view profile/pricing
         if norm_path.startswith("/api/v1/expenses"):
-            if norm_method == "GET":
+            if norm_method in ("GET", "HEAD", "OPTIONS"):
                 return
-            if norm_method == "POST" and not any(restricted in norm_path for restricted in ("/settle", "/reimburse", "/approve", "/strike")):
+            if norm_method == "POST" and norm_path.rstrip("/") in ("/api/v1/expenses", "/api/v1/expenses/scan-bill"):
                 return
-        if norm_path.startswith(("/api/v1/auth", "/api/v1/pricing")):
+        if norm_path.startswith(("/api/v1/auth", "/api/v1/pricing")) and norm_method in ("GET", "HEAD", "OPTIONS"):
             return
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -102,10 +103,10 @@ def enforce_rbac_policy(role: str, method: str, path: str) -> None:
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="RBAC Violation: Only Organization Owners can modify IAM roles or user memberships."
             )
-        if "/backups/restore" in norm_path and norm_method == "POST":
+        if ("/backups/restore" in norm_path or "/backup-database" in norm_path) and norm_method == "POST":
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="RBAC Violation: Only Organization Owners can trigger production database restoration."
+                detail="RBAC Violation: Only Organization Owners can trigger production database backup or restoration."
             )
 
 
@@ -153,13 +154,24 @@ async def get_current_tenant(
     if not membership:
         raise HTTPException(status_code=403, detail="Access denied to requested tenant")
 
+    role_val = membership.role.value if hasattr(membership.role, "value") else str(membership.role)
+    if token:
+        tok_payload = decode_access_token(token)
+        tok_role = str((tok_payload or {}).get("role") or "").lower()
+        role_rank = {"auditor_ca": 1, "employee": 2, "finance_manager": 3, "owner": 4}
+        if tok_role in role_rank and role_rank[tok_role] < role_rank.get(role_val.lower(), 4):
+            role_val = tok_role
+
     # Enforce centralized RBAC policy if called within an HTTP request context
     if request is not None:
-        role_val = membership.role.value if hasattr(membership.role, "value") else str(membership.role)
         enforce_rbac_policy(role_val, request.method, request.url.path)
 
     # Set PostgreSQL RLS context (switches to b00k5_app role + sets app.current_tenant)
     await set_tenant_context(db, tenant_uuid)
+
+    # Database-enforced read-only transaction guard for Statutory Auditor (CA)
+    if role_val.lower() == "auditor_ca":
+        await db.execute(text("SET LOCAL transaction_read_only = on;"))
 
     tenant_res = await db.execute(select(Tenant).where(Tenant.id == tenant_uuid))
     tenant = tenant_res.scalar_one_or_none()

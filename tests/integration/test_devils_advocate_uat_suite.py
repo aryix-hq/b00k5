@@ -241,15 +241,28 @@ def test_uat04_uat05_fail_closed_production_secrets_and_compose_loopback():
         })
     assert "SEC-01 Fail-Closed" in str(exc_default.value)
 
-    # Strong production secrets without reload succeed
+    # Strong production secrets with hardware DSC and without reload succeed
     valid_res = validate_production_security({
         "APP_ENV": "production",
         "SECRET_KEY": "9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e3d2c1b0a9f8e",
         "DATABASE_URL": "postgresql+asyncpg://prod_user:X9_kLp29mQz81vBnR4tYw@db.internal:5432/b00k5_prod",
         "MINIO_SECRET_KEY": "M9_vXp72qLz45wKnT8yJcR3b",
         "UVICORN_RELOAD": "false",
+        "DSC_MODE": "hardware",
     })
     assert valid_res["status"] == "secure"
+
+    # Mock/simulated DSC in production must also fail closed
+    with pytest.raises(RuntimeError) as exc_mock_dsc:
+        validate_production_security({
+            "APP_ENV": "production",
+            "SECRET_KEY": "9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e3d2c1b0a9f8e",
+            "DATABASE_URL": "postgresql+asyncpg://prod_user:X9_kLp29mQz81vBnR4tYw@db.internal:5432/b00k5_prod",
+            "MINIO_SECRET_KEY": "M9_vXp72qLz45wKnT8yJcR3b",
+            "UVICORN_RELOAD": "false",
+            "DSC_MODE": "simulated",
+        })
+    assert "DSC_MODE" in str(exc_mock_dsc.value)
 
     # UAT-05: Verify docker-compose.yml binds ports to 127.0.0.1 and pins MinIO release (when running on host or mounted)
     compose_path = Path(__file__).resolve().parents[2] / "docker-compose.yml"

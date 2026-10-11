@@ -46,7 +46,12 @@ async def upload_document_endpoint(
     """
     t0 = time.perf_counter()
     file_bytes = await file.read()
-    file_name = file.filename or "unnamed_document.pdf"
+    raw_name = file.filename or "unnamed_document.pdf"
+    from app.services.bank_parser import validate_uploaded_document_safety
+    safety = validate_uploaded_document_safety(raw_name, file_bytes, file.content_type)
+    if not safety.get("is_safe"):
+        raise HTTPException(status_code=400, detail=f"Document rejected by security scanner: {safety.get('reason')}")
+    file_name = safety.get("sanitized_filename") or raw_name
     
     # 1. Determine target S3 bucket
     bucket = BUCKET_MAP.get(category.lower(), settings.BUCKET_STATEMENTS)

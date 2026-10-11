@@ -751,52 +751,67 @@ def detect_statement_overlap(
 
 
 def validate_uploaded_document_safety(
-    file_bytes: bytes,
-    filename: str,
+    arg1: Any,
+    arg2: Any = None,
+    arg3: Any = None,
     max_size_bytes: int = 15 * 1024 * 1024,
     max_pdf_pages: int = 50,
     max_image_pixels: int = 25_000_000
 ) -> Dict[str, Any]:
     """
     SEC-05 & UAT-16 Untrusted Upload & Document Boundary Validator:
-    Protects OCR, PDF parsing, and storage workers against:
-    - Path traversal in filenames ('../', '\\', null bytes)
-    - Empty or oversized payloads (> max_size_bytes)
-    - Invalid/spoofed magic bytes (non-PDF / non-image executable uploads)
-    - Malicious active content inside PDFs (/JS, /JavaScript, /Launch, /EmbeddedFiles)
-    - PDF page-count bombs (> max_pdf_pages)
-    - Image decompression / pixel bombs (> max_image_pixels)
+    Supports both:
+      - validate_uploaded_document_safety(file_bytes: bytes, filename: str, ...) -> raises ValueError on violation
+      - validate_uploaded_document_safety(filename: str, file_bytes: bytes, content_type: str = None) -> returns {"is_safe": bool, "reason": str, ...}
     """
+    import os
+    if isinstance(arg1, (bytes, bytearray)):
+        file_bytes = bytes(arg1)
+        filename = str(arg2 or "")
+        raise_on_error = True
+    else:
+        filename = str(arg1 or "")
+        file_bytes = bytes(arg2) if isinstance(arg2, (bytes, bytearray)) else b""
+        raise_on_error = False
+
+    def _fail(msg: str) -> Dict[str, Any]:
+        if raise_on_error:
+            raise ValueError(msg)
+        return {"safe": False, "is_safe": False, "reason": msg, "sanitized_filename": ""}
+
     if not filename or any(tok in filename for tok in ("..", "/", "\\", "\x00")):
-        raise ValueError("Security Violation [SEC-05]: Unsafe or path-traversal filename rejected.")
+        return _fail("Security Violation [SEC-05]: Unsafe or path-traversal filename rejected.")
 
     if not file_bytes or len(file_bytes) == 0:
-        raise ValueError("Security Violation [SEC-05]: Empty file payload rejected.")
+        return _fail("Security Violation [SEC-05]: Empty file payload rejected.")
 
     if len(file_bytes) > max_size_bytes:
-        raise ValueError(
+        return _fail(
             f"Security Violation [SEC-05]: File size ({len(file_bytes)} bytes) exceeds maximum allowed limit ({max_size_bytes} bytes)."
         )
 
     is_pdf = file_bytes.startswith(b"%PDF-")
     is_png = file_bytes.startswith(b"\x89PNG\r\n\x1a\n")
     is_jpeg = file_bytes.startswith(b"\xff\xd8\xff")
+    is_csv_or_txt = (
+        not raise_on_error
+        and filename.lower().endswith((".csv", ".txt", ".json"))
+        and not file_bytes.startswith((b"MZ", b"\x7fELF", b"#!/", b"<?php"))
+    )
 
-    if not (is_pdf or is_png or is_jpeg):
-        raise ValueError("Security Violation [SEC-05]: Unsupported or spoofed file header (must be valid PDF, PNG, or JPEG).")
+    if not (is_pdf or is_png or is_jpeg or is_csv_or_txt):
+        return _fail("Security Violation [SEC-05]: Unsupported or spoofed file header (must be valid PDF, PNG, or JPEG).")
 
     if is_pdf:
-        # Check for embedded active content / scripts / launch actions
         upper_slice = file_bytes[:min(len(file_bytes), 512 * 1024)]
         for forbidden_tag in (b"/JavaScript", b"/JS ", b"/JS(", b"/JS<", b"/Launch", b"/RichMedia"):
             if forbidden_tag in upper_slice:
-                raise ValueError(
+                return _fail(
                     f"Security Violation [SEC-05]: Active or executable PDF content ({forbidden_tag.decode('ascii', errors='ignore')}) is forbidden."
                 )
-        # Check page count limit
         page_occurrences = file_bytes.count(b"/Type /Page") - file_bytes.count(b"/Type /Pages")
         if page_occurrences > max_pdf_pages:
-            raise ValueError(
+            return _fail(
                 f"Security Violation [SEC-05]: PDF page count ({page_occurrences}) exceeds maximum limit ({max_pdf_pages})."
             )
 
@@ -808,22 +823,26 @@ def validate_uploaded_document_safety(
             with Image.open(io.BytesIO(file_bytes)) as img:
                 width, height = img.size
                 if width * height > max_image_pixels:
-                    raise ValueError(
+                    return _fail(
                         f"Security Violation [SEC-05]: Image resolution ({width}x{height}) exceeds decompression bomb threshold."
                     )
         except Image.DecompressionBombError as dbe:
-            raise ValueError(f"Security Violation [SEC-05]: Image decompression bomb detected: {dbe}")
-        except ValueError:
-            raise
+            return _fail(f"Security Violation [SEC-05]: Image decompression bomb detected: {dbe}")
+        except ValueError as ve:
+            return _fail(str(ve))
         except Exception as img_err:
-            raise ValueError(f"Security Violation [SEC-05]: Malformed or corrupted image stream: {img_err}")
+            return _fail(f"Security Violation [SEC-05]: Malformed or corrupted image stream: {img_err}")
         finally:
             Image.MAX_IMAGE_PIXELS = orig_max
 
+    safe_name = os.path.basename(filename.strip())
     return {
         "safe": True,
-        "mime_detected": "application/pdf" if is_pdf else ("image/png" if is_png else "image/jpeg"),
+        "is_safe": True,
+        "sanitized_filename": safe_name,
+        "mime_detected": "application/pdf" if is_pdf else ("image/png" if is_png else ("image/jpeg" if is_jpeg else "text/plain")),
         "size_bytes": len(file_bytes),
     }
+
 
 

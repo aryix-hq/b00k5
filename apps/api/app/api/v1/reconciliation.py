@@ -43,9 +43,14 @@ async def upload_bank_statement(
     file_bytes = await file.read()
     if not file_bytes:
         raise HTTPException(status_code=400, detail="Empty statement file uploaded")
+    from app.services.bank_parser import validate_uploaded_document_safety
+    safety = validate_uploaded_document_safety(file.filename or "statement.pdf", file_bytes, file.content_type)
+    if not safety.get("is_safe"):
+        raise HTTPException(status_code=400, detail=f"Statement rejected by security scanner: {safety.get('reason')}")
+    safe_filename = safety.get("sanitized_filename") or (file.filename or "statement.pdf")
 
     # Check for encryption / parse lines (handles PDF and image formats)
-    parsed = IndianBankPDFParser.parse_file_bytes(file_bytes, filename=file.filename, password=password)
+    parsed = IndianBankPDFParser.parse_file_bytes(file_bytes, filename=safe_filename, password=password)
     if parsed.get("needs_password"):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -55,7 +60,7 @@ async def upload_bank_statement(
             }
         )
 
-    s3_key = f"{tenant.id}/statements/{file.filename}"
+    s3_key = f"{tenant.id}/statements/{safe_filename}"
 
     # 1. Upload to isolated statements bucket
     try:

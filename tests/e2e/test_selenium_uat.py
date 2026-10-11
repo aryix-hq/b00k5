@@ -26,14 +26,14 @@ USER_ID = "33333333-3333-3333-3333-333333333333"
 
 @pytest.fixture(scope="session")
 def auth_token():
-    """Generates or retrieves a live JWT access token for Tenant 1."""
-    import subprocess
-    cmd = [
-        "docker", "exec", "b00k5_api", "python3", "-c",
-        f"from app.core.security import create_access_token; print(create_access_token({{'sub': '{USER_ID}', 'email': 'admin@acme.corp', 'tenant_id': '{TENANT_ID}', 'role': 'owner'}}))"
-    ]
-    res = subprocess.run(cmd, capture_output=True, text=True, check=True)
-    token = res.stdout.strip()
+    """Retrieves a live JWT access token for Tenant 1 via the running API."""
+    resp = requests.post(
+        f"{BASE_API_URL}/api/v1/auth/google/login",
+        json={"email": "admin@acme.corp", "name": "Vikram Sharma", "tenant_id": TENANT_ID},
+        timeout=10,
+    )
+    assert resp.status_code == 200, f"Auth login failed: {resp.status_code} {resp.text}"
+    token = resp.json().get("access_token")
     assert token, "Failed to generate authentic JWT token"
     return token
 
@@ -189,25 +189,25 @@ def test_scenario_3_cost_plus_calculator_to_invoice(driver):
     """
     driver.get(f"{BASE_WEB_URL}/calculator")
     wait = WebDriverWait(driver, 10)
+    wait.until(EC.presence_of_element_located((By.ID, "direct-cost-input")))
 
-    # Direct Cost = 10000
-    direct_input = wait.until(EC.presence_of_element_located((By.ID, "direct-cost-input")))
-    direct_input.clear()
-    direct_input.send_keys("10000")
-
-    # Overhead Cost = 0
-    overhead_input = driver.find_element(By.ID, "overhead-cost-input")
-    overhead_input.clear()
-    overhead_input.send_keys("0")
-
-    # Select Markup on Cost mode
+    # Select Markup on Cost mode first
     markup_mode_btn = driver.find_element(By.ID, "mode-markup")
     markup_mode_btn.click()
 
-    # Target Markup = 60%
-    margin_input = driver.find_element(By.ID, "margin-percentage-input")
-    margin_input.clear()
-    margin_input.send_keys("60")
+    # Set Direct Cost = 10000, Overhead Cost = 0, Target Markup = 60% via React native input setter
+    driver.execute_script("""
+        const setInput = (id, val) => {
+            const el = document.getElementById(id);
+            const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+            setter.call(el, val);
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+        };
+        setInput('direct-cost-input', '10000');
+        setInput('overhead-cost-input', '0');
+        setInput('margin-percentage-input', '60');
+    """)
 
     # Select 18% GST Slab
     gst_18_btn = driver.find_element(By.ID, "gst-rate-18")
@@ -355,3 +355,191 @@ def test_scenario_5_database_backup_to_gdrive(driver):
     assert ".enc" in first_row_text
 
     take_screenshot(driver, "scenario_5_backup_ledger_verified")
+
+
+# ==============================================================================
+# SCENARIO 6: Multi-Tenant UI & API Isolation (Tenant A vs Tenant B)
+# ==============================================================================
+def test_scenario_6_multitenant_ui_and_api_isolation(driver, auth_token):
+    """
+    Scenario 6:
+    - Provisions / authenticates Tenant B (isolated organization)
+    - Verifies Tenant B user cannot auto-attach to Tenant A via /api/v1/auth/google/login
+    - Verifies Tenant B JWT with spoofed X-Tenant-ID (Tenant A) receives 403 Forbidden
+    - Loads /reports/general-ledger as Tenant B in Chrome and verifies Tenant A's vouchers/accounts are not visible
+    """
+    # 1. Authenticate a brand-new Tenant B user (without passing Tenant A's ID)
+    unique_email = f"founder.tenantb.{uuid.uuid4().hex[:6]}@beta-sovereign.in"
+    resp_b = requests.post(
+        f"{BASE_API_URL}/api/v1/auth/google/login",
+        json={"email": unique_email, "name": "Meera Nair"},
+        timeout=10,
+    )
+    assert resp_b.status_code == 200, f"Tenant B login failed: {resp_b.text}"
+    data_b = resp_b.json()
+    token_b = data_b["access_token"]
+    tenant_b_id = data_b["tenant_id"]
+    assert tenant_b_id != TENANT_ID, "CRITICAL: New user was attached to Tenant A instead of isolated Tenant B!"
+
+    # 2. Attempt cross-tenant auto-attach attack: existing Tenant B user passes Tenant A's tenant_id
+    resp_attack = requests.post(
+        f"{BASE_API_URL}/api/v1/auth/google/login",
+        json={"email": unique_email, "name": "Meera Nair", "tenant_id": TENANT_ID},
+        timeout=10,
+    )
+    assert resp_attack.status_code == 403 or resp_attack.json().get("tenant_id") == tenant_b_id, (
+        f"CRITICAL: Tenant B user hijacked Tenant A via google_login tenant_id parameter! Status={resp_attack.status_code}"
+    )
+
+    # 3. Attempt direct API header spoofing: Tenant B JWT + X-Tenant-ID: TENANT_ID
+    spoof_headers = {"Authorization": f"Bearer {token_b}", "X-Tenant-ID": TENANT_ID}
+    for ep in ("/api/v1/expenses", "/api/v1/ledger/journals", "/api/v1/vault/documents"):
+        r = requests.get(f"{BASE_API_URL}{ep}", headers=spoof_headers, timeout=10)
+        assert r.status_code == 403, f"Expected 403 on cross-tenant spoof for {ep}, got {r.status_code}"
+
+    # 4. Verify Tenant B sees 0 of Tenant A's journal entries via API and Selenium UI
+    r_own = requests.get(
+        f"{BASE_API_URL}/api/v1/ledger/journals",
+        headers={"Authorization": f"Bearer {token_b}", "X-Tenant-ID": tenant_b_id},
+        timeout=10,
+    )
+    assert r_own.status_code == 200
+    assert r_own.json() == [], f"Expected empty journals for fresh Tenant B, got {r_own.json()}"
+
+    # Switch browser session to Tenant B and inspect General Ledger UI
+    driver.get(f"{BASE_WEB_URL}/login")
+    driver.execute_script(f"""
+        localStorage.clear();
+        localStorage.setItem('b00k5_token', '{token_b}');
+        localStorage.setItem('b00k5_tenant_id', '{tenant_b_id}');
+        localStorage.setItem('b00k5_legal_name', 'Meera Nair Enterprise');
+        localStorage.setItem('b00k5_role', 'owner');
+    """)
+    driver.get(f"{BASE_WEB_URL}/reports/general-ledger?entry=JV-")
+    wait = WebDriverWait(driver, 10)
+    wait.until(EC.presence_of_element_located((By.TAG_NAME, "main")))
+    time.sleep(1.0)
+    page_text = driver.find_element(By.TAG_NAME, "main").text
+    assert "Cloud Infrastructure Services" not in page_text
+    assert "No journal vouchers match" in page_text or "Journal Vouchers (0)" in page_text
+
+    take_screenshot(driver, "scenario_6_tenant_b_isolated_ledger")
+
+
+# ==============================================================================
+# SCENARIO 7: Statutory Auditor (auditor_ca) Server-Enforced Read-Only RBAC
+# ==============================================================================
+def test_scenario_7_auditor_ca_readonly_enforcement(driver, auth_token):
+    """
+    Scenario 7:
+    - Generates an authentic auditor_ca JWT token (via container python helper)
+    - Verifies GET requests succeed (200 OK)
+    - Verifies ALL POST/PUT/DELETE requests — including URLs containing /verify, /calculate, /export — are blocked with 403 Forbidden
+    - Renders the UI in Auditor mode and captures screenshot evidence
+    """
+    import subprocess
+    cmd = [
+        "docker", "exec", "b00k5_api", "python3", "-c",
+        (
+            "from app.core.security import create_access_token; "
+            f"print(create_access_token({{'sub': '{USER_ID}', 'tenant_id': '{TENANT_ID}', 'role': 'auditor_ca'}}))"
+        )
+    ]
+    auditor_token = subprocess.check_output(cmd, text=True).strip()
+    assert auditor_token, "Failed to mint auditor_ca JWT"
+
+    headers = {"Authorization": f"Bearer {auditor_token}", "X-Tenant-ID": TENANT_ID}
+
+    # 1. GET requests must succeed
+    r_get = requests.get(f"{BASE_API_URL}/api/v1/ledger/trial-balance", headers=headers, timeout=10)
+    assert r_get.status_code == 200, f"Auditor GET failed: {r_get.status_code} {r_get.text}"
+
+    # 2. Mutation requests must ALL return 403 Forbidden (even on paths with /verify, /calculate)
+    mutation_attempts = [
+        ("POST", "/api/v1/expenses", {"merchant_name": "Unauthorized Audit Write", "total_amount": 500}),
+        ("POST", "/api/v1/system/backup-database", {}),
+        ("POST", "/api/v1/dsc/submit-signature", {"session_id": "x", "tx_id": "y", "document_id": "z", "document_hash": "0"*64, "signature_hex": "aa"*64, "certificate_subject": "CN=Test"}),
+    ]
+    for method, path, payload in mutation_attempts:
+        resp = requests.request(method, f"{BASE_API_URL}{path}", headers=headers, json=payload, timeout=10)
+        assert resp.status_code == 403, f"CRITICAL: auditor_ca {method} {path} was not blocked! Got {resp.status_code}"
+
+    # 3. Verify Auditor mode in Browser UI
+    driver.get(f"{BASE_WEB_URL}/login")
+    driver.execute_script(f"""
+        localStorage.setItem('b00k5_token', '{auditor_token}');
+        localStorage.setItem('b00k5_tenant_id', '{TENANT_ID}');
+        localStorage.setItem('b00k5_role', 'auditor_ca');
+    """)
+    driver.get(f"{BASE_WEB_URL}/compliance")
+    wait = WebDriverWait(driver, 10)
+    wait.until(EC.presence_of_element_located((By.TAG_NAME, "main")))
+    time.sleep(0.8)
+    take_screenshot(driver, "scenario_7_auditor_readonly_view")
+
+
+# ==============================================================================
+# SCENARIO 8: Security & Statutory Accounting Guardrails (Upload, Ledger, Tax Act)
+# ==============================================================================
+def test_scenario_8_security_and_accounting_guardrails(driver, auth_token):
+    """
+    Scenario 8:
+    - Verifies malicious PDF containing /JavaScript is rejected with 400 Bad Request
+    - Verifies unbalanced Journal Entry (DR != CR) is rejected with 422 Unprocessable Entity
+    - Verifies Income-tax Act 1961 (31 Mar 2026) vs Income-tax Act 2025 (1 Apr 2026) boundary transition
+    """
+    headers = {"Authorization": f"Bearer {auth_token}", "X-Tenant-ID": TENANT_ID}
+
+    # 1. Malicious PDF with embedded /JavaScript payload -> 400 Bad Request
+    malicious_pdf = b"%PDF-1.7\n1 0 obj\n<< /Type /Catalog /OpenAction << /S /JavaScript /JS (app.alert(1)) >> >>\nendobj\n%%EOF"
+    r_upload = requests.post(
+        f"{BASE_API_URL}/api/v1/vault/smart-ingest",
+        headers=headers,
+        files={"file": ("exploit.pdf", malicious_pdf, "application/pdf")},
+        data={"category": "corporate_legal"},
+        timeout=10,
+    )
+    assert r_upload.status_code == 400, f"Malicious PDF was not rejected with 400: {r_upload.status_code} {r_upload.text}"
+    assert "SEC-05" in r_upload.text
+
+    # 2. Unbalanced Journal Entry -> 422 Unprocessable Entity
+    r_accts = requests.get(f"{BASE_API_URL}/api/v1/ledger/accounts", headers=headers, timeout=10)
+    assert r_accts.status_code == 200
+    accts = r_accts.json()
+    assert len(accts) >= 2
+    unbalanced_payload = {
+        "entry_number": f"JV-UNBAL-{uuid.uuid4().hex[:6].upper()}",
+        "entry_date": "2025-10-15",
+        "narration": "Adversarial unbalanced entry test",
+        "reference_type": "manual_jv",
+        "lines": [
+            {"account_id": accts[0]["id"], "debit_amount": "5000.00", "credit_amount": "0.00", "description": "Leg 1"},
+            {"account_id": accts[1]["id"], "debit_amount": "0.00", "credit_amount": "4999.99", "description": "Leg 2"},
+        ],
+    }
+    r_jv = requests.post(f"{BASE_API_URL}/api/v1/ledger/entries", headers=headers, json=unbalanced_payload, timeout=10)
+    assert r_jv.status_code == 422, f"Unbalanced JV must return 422, got {r_jv.status_code}: {r_jv.text}"
+
+    # 3. Statutory Tax Regime Boundary (31 March 2026 vs 1 April 2026)
+    r_fy25 = requests.get(f"{BASE_API_URL}/api/v1/system/fiscal-calendar?reference_date=2026-03-31", timeout=10)
+    assert r_fy25.status_code == 200, f"Fiscal calendar 2026-03-31 failed: {r_fy25.text}"
+    eval_25 = r_fy25.json()["reference_date_evaluation"]
+    assert eval_25["fy_label"] == "2025-26"
+    assert eval_25["governing_income_tax_act"] == "Income-tax Act, 1961"
+
+    r_fy26 = requests.get(f"{BASE_API_URL}/api/v1/system/fiscal-calendar?reference_date=2026-04-01", timeout=10)
+    assert r_fy26.status_code == 200, f"Fiscal calendar 2026-04-01 failed: {r_fy26.text}"
+    eval_26 = r_fy26.json()["reference_date_evaluation"]
+    assert eval_26["fy_label"] == "2026-27"
+    assert eval_26["governing_income_tax_act"] == "Income-tax Act, 2025"
+    assert eval_26["tax_year_label"] == "TY 2026-27"
+    assert "CA Review Required" in eval_26["ca_transition_advisory"]
+
+    # Navigate to /yearbook in browser and capture screenshot
+    driver.get(f"{BASE_WEB_URL}/yearbook")
+    wait = WebDriverWait(driver, 10)
+    wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+    time.sleep(0.8)
+    take_screenshot(driver, "scenario_8_tax_and_security_guardrails")
+
+

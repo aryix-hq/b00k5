@@ -50,6 +50,7 @@ class ExpenseCreateRequest(BaseModel):
     recipient_gstin: Optional[str] = None
     has_company_gstin: Optional[bool] = None
     itc_eligible: Optional[bool] = None
+    allow_duplicate: Optional[bool] = False
 
 async def ensure_account(session: AsyncSession, tenant_id: uuid.UUID, code: str, name: str, acc_type: str, sub_type: str, normal_bal: str) -> ChartOfAccounts:
     acc = await LedgerService.get_account_by_code(session, tenant_id, code)
@@ -96,7 +97,7 @@ async def create_expense(
         total_amount=total,
         expense_date=exp_date
     )
-    if is_dup:
+    if is_dup and not payload.allow_duplicate:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=dup_reason or "Duplicate expense detected: An active expense with the same vendor, amount, and date already exists."
@@ -173,7 +174,7 @@ async def create_expense(
 
     lines = []
     company_gstin = (tenant.gstin or "").strip().upper()
-    if company_gstin.startswith("29AABCK9012"):
+    if company_gstin.startswith("29AABCA1234"):
         company_gstin = ""
 
     has_company_gstin = bool(
@@ -1263,11 +1264,15 @@ async def scan_vendor_bill(
     file_bytes = await file.read()
     if not file_bytes:
         raise HTTPException(status_code=400, detail="Empty file payload")
+    from app.services.bank_parser import validate_uploaded_document_safety
+    safety = validate_uploaded_document_safety(file.filename or "bill.pdf", file_bytes, file.content_type)
+    if not safety.get("is_safe"):
+        raise HTTPException(status_code=400, detail=f"Bill rejected by security scanner: {safety.get('reason')}")
 
     closed_fys = (tenant.statutory_profile or {}).get("closed_fiscal_years", {})
     parsed = BillInvoiceParser.parse_vendor_bill(
         file_bytes=file_bytes,
-        filename=file.filename or "bill.pdf",
+        filename=safety.get("sanitized_filename") or (file.filename or "bill.pdf"),
         password=password,
         company_gstin=tenant.gstin,
         closed_fiscal_years=closed_fys

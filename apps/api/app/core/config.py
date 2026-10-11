@@ -71,10 +71,10 @@ KNOWN_INSECURE_SECRETS = {
 
 def validate_production_security(env_override: Optional[dict] = None) -> dict:
     """
-    SEC-01 & UAT-04: Fail-closed production configuration validator.
+    SEC-01, SEC-06 & UAT-15: Fail-closed production configuration validator.
     Raises RuntimeError if APP_ENV == 'production' and any mandatory secret is missing,
     weak (< 32 characters), or matches a published default/placeholder credential,
-    or if uvicorn --reload is enabled in production.
+    if uvicorn --reload is enabled, or if mock/simulated DSC signing is enabled.
     """
     env = env_override if env_override is not None else os.environ
     app_env = (env.get("APP_ENV") or "development").lower().strip()
@@ -82,6 +82,8 @@ def validate_production_security(env_override: Optional[dict] = None) -> dict:
     db_url = (env.get("DATABASE_URL") or "").strip()
     minio_secret = (env.get("MINIO_SECRET_KEY") or env.get("MINIO_ROOT_PASSWORD") or "").strip()
     reload_flag = (env.get("UVICORN_RELOAD") or "false").lower().strip()
+    dsc_mode = (env.get("DSC_MODE") or ("hardware" if app_env == "production" else "simulated")).lower().strip()
+    dsc_bridge_url = (env.get("DSC_BRIDGE_URL") or "").lower().strip()
 
     violations = []
     if app_env == "production":
@@ -93,6 +95,10 @@ def validate_production_security(env_override: Optional[dict] = None) -> dict:
             violations.append("MINIO_SECRET_KEY is missing or uses published default storage password.")
         if reload_flag == "true":
             violations.append("UVICORN_RELOAD cannot be enabled when APP_ENV=production.")
+        if dsc_mode in ("simulated", "mock", "test"):
+            violations.append("DSC_MODE cannot be 'simulated' or 'mock' when APP_ENV=production; must be 'hardware'.")
+        if "bridge_mock" in dsc_bridge_url or "bridge-mock" in dsc_bridge_url:
+            violations.append("DSC_BRIDGE_URL cannot point to mock signing bridge when APP_ENV=production.")
 
         if violations:
             raise RuntimeError(
@@ -101,12 +107,16 @@ def validate_production_security(env_override: Optional[dict] = None) -> dict:
 
     return {
         "app_env": app_env,
+        "dsc_mode": dsc_mode,
         "status": "secure" if not violations else "failed",
         "violations": violations,
     }
 
 
 settings = Settings()
-if os.getenv("B00K5_STRICT_PROD", "false").lower() == "true":
+if (
+    os.getenv("APP_ENV", "").lower().strip() == "production"
+    or os.getenv("B00K5_STRICT_PROD", "false").lower() == "true"
+):
     validate_production_security()
 

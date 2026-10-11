@@ -76,20 +76,75 @@ async def submit_dsc_signature(
 ):
     """
     Receives cryptographic signature container from localhost HYP 2003 bridge,
+    enforces hardware-only policy in production/hardware mode, verifies document digest,
     stamps the document, and permanently records statutory audit proof.
     """
+    app_env = (settings.APP_ENV or "development").lower().strip()
+    dsc_mode = (settings.DSC_MODE or "simulated").lower().strip()
+    token_model_str = (payload.token_model or "").lower()
+    token_serial_str = (payload.token_serial_number or "").lower()
+
+    is_mock_token = any(
+        marker in token_model_str or marker in token_serial_str
+        for marker in ("mock", "simulated", "sim-", "test-token", "fake")
+    )
+
+    if app_env == "production" and dsc_mode != "hardware":
+        raise HTTPException(
+            status_code=403,
+            detail="DSC Security Policy Violation: Mock or simulated DSC mode is strictly forbidden in production."
+        )
+
+    if (app_env == "production" or dsc_mode == "hardware") and is_mock_token:
+        raise HTTPException(
+            status_code=403,
+            detail="DSC Security Policy Violation: Mock/simulated token signatures cannot be accepted when DSC_MODE=hardware or APP_ENV=production."
+        )
+
+    # Verify target document belongs to tenant and matches expected SHA-256 digest where applicable
+    if payload.document_type == "invoice":
+        inv = await db.scalar(
+            select(Invoice).where(Invoice.id == payload.document_id, Invoice.tenant_id == tenant.id)
+        )
+        if not inv:
+            raise HTTPException(status_code=404, detail="Target invoice not found in organization")
+    elif payload.document_type in ["board_minutes", "aoc4", "mgt7", "statutory_doc"]:
+        doc = await db.scalar(
+            select(DocumentVault).where(DocumentVault.id == payload.document_id, DocumentVault.tenant_id == tenant.id)
+        )
+        if not doc:
+            raise HTTPException(status_code=404, detail="Target vault document not found in organization")
+        if doc.sha256_hash and payload.sha256_hash and doc.sha256_hash.lower() != payload.sha256_hash.lower():
+            raise HTTPException(
+                status_code=400,
+                detail="DSC Integrity Violation: Submitted SHA-256 digest does not match vault document hash."
+            )
+
+    try:
+        sig_bytes = bytes.fromhex(payload.signature_hex)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid hexadecimal signature payload")
+
+    if len(sig_bytes) < 16:
+        raise HTTPException(status_code=400, detail="Cryptographic signature payload is too short")
+
     client_ip = request.client.host if request.client else "127.0.0.1"
 
     # Store signature payload in MinIO
     sig_s3_key = f"{tenant.id}/signatures/{payload.document_id}_{datetime.utcnow().timestamp()}.bin"
     upload_document(
         settings.BUCKET_VAULT,
-        bytes.fromhex(payload.signature_hex),
+        sig_bytes,
         sig_s3_key,
         "application/octet-stream"
     )
 
     signed_pdf_key = f"{tenant.id}/signed_docs/{payload.document_id}_signed.pdf"
+    cert_issuer = (
+        "SIMULATED-DEV-CA (NON-STATUTORY)"
+        if (dsc_mode != "hardware" or is_mock_token)
+        else "eMudhra / Capricorn / VSign Class 3 CA"
+    )
 
     audit_entry = DSCSignatureAudit(
         tenant_id=tenant.id,
@@ -100,7 +155,7 @@ async def submit_dsc_signature(
         signer_name=payload.signer_name,
         token_model=payload.token_model or "HyperPKI HYP2003",
         token_serial_number=payload.token_serial_number,
-        certificate_issuer="eMudhra / Capricorn / VSign Class 3 CA",
+        certificate_issuer=cert_issuer,
         certificate_valid_to=datetime(2027, 12, 31),
         sha256_document_hash=payload.sha256_hash,
         signed_cms_signature_s3_key=sig_s3_key,

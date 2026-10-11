@@ -41,23 +41,35 @@ class BackupLogResponse(BaseModel):
         from_attributes = True
 
 
+from fastapi import APIRouter, Depends, Query, HTTPException, status, Header, Request
+
+
 async def get_optional_tenant(
+    request: Request = None,
     token: Optional[str] = Depends(oauth2_scheme),
     x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-ID"),
     db: AsyncSession = Depends(get_db)
 ) -> Optional[Tenant]:
     if token:
-        try:
-            user = await get_current_user(token=token, db=db)
-            return await get_current_tenant(x_tenant_id=x_tenant_id, token=token, current_user=user, db=db)
-        except Exception:
-            pass
+        user = await get_current_user(token=token, db=db)
+        return await get_current_tenant(
+            request=request,
+            x_tenant_id=x_tenant_id,
+            token=token,
+            current_user=user,
+            db=db
+        )
     if x_tenant_id:
         try:
-            res = await db.execute(select(Tenant).where(Tenant.id == uuid.UUID(x_tenant_id)))
+            from app.core.database import set_tenant_context
+            tid = uuid.UUID(x_tenant_id)
+            await set_tenant_context(db, tid)
+            res = await db.execute(select(Tenant).where(Tenant.id == tid))
             t = res.scalar_one_or_none()
             if t:
                 return t
+        except HTTPException:
+            raise
         except Exception:
             pass
     res = await db.execute(select(Tenant).limit(1))
@@ -75,13 +87,38 @@ async def system_health():
 
 @router.get("/fiscal-calendar")
 async def get_fiscal_calendar(
-    active_fy: Optional[str] = Query(None, description="Selected active financial year e.g. '2025-26'")
+    active_fy: Optional[str] = Query(None, description="Selected active financial year e.g. '2025-26'"),
+    reference_date: Optional[str] = Query(None, description="Optional ISO date (YYYY-MM-DD) for statutory regime evaluation")
 ):
     """
     Returns the active Indian Financial Year (FY) and Assessment Year (AY)
     dynamically computed from system date and selected session period.
     """
-    return resolve_fiscal_calendar(selected_fy=active_fy)
+    from app.core.fiscal_year import calculate_indian_fy_ay
+    from datetime import date as dt_date
+    ref_dt = None
+    if reference_date:
+        try:
+            ref_dt = dt_date.fromisoformat(reference_date)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid reference_date format; expected YYYY-MM-DD")
+    cal = resolve_fiscal_calendar(current_date=ref_dt, selected_fy=active_fy)
+    if ref_dt:
+        fy_ay = calculate_indian_fy_ay(ref_dt)
+        cal["reference_date_evaluation"] = {
+            "fy_label": cal["system_fy"],
+            "fy_full": fy_ay["fy_label"],
+            "ay_label": cal["system_ay"],
+            "tax_year_label": fy_ay["tax_year_label"],
+            "governing_income_tax_act": fy_ay["governing_direct_tax_act"],
+            "is_income_tax_act_2025": fy_ay["is_income_tax_act_2025"],
+            "ca_transition_advisory": (
+                "CA Review Required: Transaction falls on/after 1 April 2026 under Income-tax Act, 2025 (Tax Year TY 2026-27); verify transitional TDS/carry-forward provisions."
+                if fy_ay["is_income_tax_act_2025"]
+                else "Governed by Income-tax Act, 1961 (Previous Year / Assessment Year framework)."
+            ),
+        }
+    return cal
 
 
 @router.post("/backup-database", response_model=BackupLogResponse)
@@ -112,6 +149,8 @@ async def trigger_database_backup(
             error_message=log_record.error_message,
             created_at=log_record.created_at.isoformat() if log_record.created_at else datetime.utcnow().isoformat()
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -126,9 +165,12 @@ async def list_database_backup_logs(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Returns the recent audit logs of database backups.
+    Returns the recent audit logs of database backups scoped to the active tenant.
     """
-    query = select(DatabaseBackupLog).order_by(desc(DatabaseBackupLog.created_at)).limit(limit)
+    query = select(DatabaseBackupLog)
+    if tenant:
+        query = query.where(DatabaseBackupLog.tenant_id == tenant.id)
+    query = query.order_by(desc(DatabaseBackupLog.created_at)).limit(limit)
     res = await db.execute(query)
     logs = res.scalars().all()
 

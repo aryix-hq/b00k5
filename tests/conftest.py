@@ -40,11 +40,11 @@ sys.path.insert(0, str(ROOT_DIR / "apps/api"))
 sys.path.insert(0, str(ROOT_DIR))
 
 @pytest.fixture(autouse=True)
-async def cleanup_db_connections():
+def cleanup_db_connections():
     yield
     try:
         from app.core.database import engine
-        await engine.dispose()
+        engine.sync_engine.dispose()
     except Exception:
         pass
 

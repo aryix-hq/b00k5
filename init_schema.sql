@@ -6,11 +6,13 @@
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
--- Application role with NOBYPASSRLS for row-level security enforcement
+-- Application role with NOLOGIN and NOBYPASSRLS for row-level security enforcement (assumed via SET LOCAL ROLE)
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'b00k5_app') THEN
-        CREATE ROLE b00k5_app WITH LOGIN PASSWORD 'b00k5_secure_vault_password_2026' NOBYPASSRLS;
+        CREATE ROLE b00k5_app WITH NOLOGIN NOBYPASSRLS;
+    ELSE
+        ALTER ROLE b00k5_app WITH NOLOGIN PASSWORD NULL NOBYPASSRLS;
     END IF;
 END
 $$;

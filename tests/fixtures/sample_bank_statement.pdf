@@ -1,0 +1,65 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+endobj
+4 0 obj
+<< /Length 1600 >>
+stream
+/F1 16 Tf
+50 750 Td
+(HDFC BANK CURRENT ACCOUNT STATEMENT) Tj
+/F1 10 Tf
+0 -25 Td
+(HDFC BANK LIMITED - INDIRANAGAR BRANCH, BENGALURU 560038) Tj
+0 -14 Td
+(ACCOUNT NUMBER: 50200012345678 | IFSC: HDFC0001234) Tj
+0 -14 Td
+(STATEMENT OF ACCOUNT FOR PERIOD: 01-JAN-2026 TO 31-JAN-2026) Tj
+0 -14 Td
+(--------------------------------------------------------------------------------) Tj
+0 -14 Td
+(Date        Narration                               Chq/Ref No    Withdrawal    Deposit       Balance) Tj
+0 -14 Td
+(--------------------------------------------------------------------------------) Tj
+0 -14 Td
+(01-01-2026  OPENING BALANCE                                                   0.00        0.00   500000.00) Tj
+0 -14 Td
+(10-01-2026  NEFT-AXSK9928310 / CUSTOMER SETTLEMENT  NEFT-AXSK9928310          0.00    23600.00   523600.00) Tj
+0 -14 Td
+(16-01-2026  INF/AWS Cloud Services Hosting          AWS-BILL-99           8450.00        0.00   515150.00) Tj
+0 -14 Td
+(17-01-2026  UPI/998877665544/ZOMATO MEDIA/vpa@icici  998877665544         0.00    75000.00   590150.00) Tj
+0 -14 Td
+(20-01-2026  UNKNOWN DIRECT DEPOSIT / SUSPENSE        UNALLOC-001              0.00     5000.00   595150.00) Tj
+0 -14 Td
+(31-01-2026  CONSOL SERVICE CHRG / JAN 2026           CHRG-JAN26           1180.00        0.00   593970.00) Tj
+0 -14 Td
+(--------------------------------------------------------------------------------) Tj
+0 -14 Td
+(CLOSING BALANCE AS ON 31-JAN-2026: INR 5,93,970.00) Tj
+0 -14 Td
+(TOTAL DEPOSITS: INR 1,03,600.00 | TOTAL WITHDRAWALS: INR 9,630.00) Tj
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000244 00000 n 
+0000001900 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+2000
+%%EOF

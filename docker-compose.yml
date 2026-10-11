@@ -1,0 +1,246 @@
+services:
+  b00k5_postgres:
+    image: postgres:16-alpine
+    container_name: b00k5_postgres
+    restart: always
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-b00k5_db}
+      POSTGRES_USER: ${POSTGRES_USER:-b00k5_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-b00k5_secure_vault_password_2026}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init_schema.sql:/docker-entrypoint-initdb.d/init_schema.sql
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-b00k5_admin} -d ${POSTGRES_DB:-b00k5_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      b00k5-net:
+        aliases:
+          - postgres
+
+  b00k5_redis:
+    image: redis:7-alpine
+    container_name: b00k5_redis
+    restart: always
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      b00k5-net:
+        aliases:
+          - redis
+
+  b00k5_minio:
+    image: ghcr.io/coollabsio/minio:latest
+    container_name: b00k5_minio
+    restart: always
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minio_storage_admin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minio_storage_secret_key_2026}
+    volumes:
+      - minio_data:/data
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      b00k5-net:
+        aliases:
+          - minio
+
+  b00k5_minio_init:
+    build:
+      context: .
+      dockerfile: docker/minio-init.Dockerfile
+    container_name: b00k5_minio_init
+    environment:
+      MINIO_HOST: minio
+      MINIO_PORT: 9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minio_storage_admin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minio_storage_secret_key_2026}
+    depends_on:
+      b00k5_minio:
+        condition: service_healthy
+    networks:
+      - b00k5-net
+
+  b00k5_bridge_mock:
+    build:
+      context: .
+      dockerfile: docker/bridge-mock.Dockerfile
+    container_name: b00k5_bridge_mock
+    restart: always
+    ports:
+      - "28045:28045"
+    networks:
+      b00k5-net:
+        aliases:
+          - bridge-mock
+
+  b00k5_api:
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    container_name: b00k5_api
+    restart: always
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-b00k5_admin}:${POSTGRES_PASSWORD:-b00k5_secure_vault_password_2026}@b00k5_postgres:5432/${POSTGRES_DB:-b00k5_db}
+      - SYNC_DATABASE_URL=postgresql://${POSTGRES_USER:-b00k5_admin}:${POSTGRES_PASSWORD:-b00k5_secure_vault_password_2026}@b00k5_postgres:5432/${POSTGRES_DB:-b00k5_db}
+      - REDIS_URL=redis://b00k5_redis:6379/0
+      - MINIO_ENDPOINT=http://b00k5_minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minio_storage_admin}
+      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minio_storage_secret_key_2026}
+      - MINIO_BUCKET_VAULT=${MINIO_BUCKET_VAULT:-b00k5-vault}
+      - MINIO_BUCKET_RECEIPTS=${MINIO_BUCKET_RECEIPTS:-b00k5-receipts}
+      - MINIO_BUCKET_STATEMENTS=${MINIO_BUCKET_STATEMENTS:-b00k5-statements}
+      - MINIO_BUCKET_SIGNED=${MINIO_BUCKET_SIGNED:-b00k5-signed}
+      - MINIO_BUCKET_STATUTORY=${MINIO_BUCKET_STATUTORY:-b00k5-statutory}
+      - SECRET_KEY=${SECRET_KEY:-b00k5_default_dev_jwt_secret_key_change_in_prod_2026}
+      - DSC_BRIDGE_URL=http://b00k5_bridge_mock:28045
+      - APP_ENV=production
+    depends_on:
+      b00k5_postgres:
+        condition: service_healthy
+      b00k5_redis:
+        condition: service_healthy
+      b00k5_minio:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./apps/api/app:/app/apps/api/app
+      - ./tests:/app/tests
+      - ./seed_data.py:/app/seed_data.py
+    networks:
+      b00k5-net:
+        aliases:
+          - api
+
+  b00k5_worker_ocr:
+    build:
+      context: .
+      dockerfile: docker/worker.Dockerfile
+    container_name: b00k5_worker_ocr
+    restart: always
+    command: celery -A app.core.celery_app worker -Q ocr_queue --loglevel=info -c 2
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-b00k5_admin}:${POSTGRES_PASSWORD:-b00k5_secure_vault_password_2026}@b00k5_postgres:5432/${POSTGRES_DB:-b00k5_db}
+      - SYNC_DATABASE_URL=postgresql://${POSTGRES_USER:-b00k5_admin}:${POSTGRES_PASSWORD:-b00k5_secure_vault_password_2026}@b00k5_postgres:5432/${POSTGRES_DB:-b00k5_db}
+      - REDIS_URL=redis://b00k5_redis:6379/0
+      - MINIO_ENDPOINT=http://b00k5_minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minio_storage_admin}
+      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minio_storage_secret_key_2026}
+      - MINIO_BUCKET_RECEIPTS=${MINIO_BUCKET_RECEIPTS:-b00k5-receipts}
+    depends_on:
+      b00k5_postgres:
+        condition: service_healthy
+      b00k5_redis:
+        condition: service_healthy
+      b00k5_minio:
+        condition: service_healthy
+    networks:
+      b00k5-net:
+        aliases:
+          - worker-ocr
+
+  b00k5_worker_reconcile:
+    build:
+      context: .
+      dockerfile: docker/worker.Dockerfile
+    container_name: b00k5_worker_reconcile
+    restart: always
+    command: celery -A app.core.celery_app worker -Q reconcile_queue --loglevel=info -c 2
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-b00k5_admin}:${POSTGRES_PASSWORD:-b00k5_secure_vault_password_2026}@b00k5_postgres:5432/${POSTGRES_DB:-b00k5_db}
+      - SYNC_DATABASE_URL=postgresql://${POSTGRES_USER:-b00k5_admin}:${POSTGRES_PASSWORD:-b00k5_secure_vault_password_2026}@b00k5_postgres:5432/${POSTGRES_DB:-b00k5_db}
+      - REDIS_URL=redis://b00k5_redis:6379/0
+      - MINIO_ENDPOINT=http://b00k5_minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minio_storage_admin}
+      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minio_storage_secret_key_2026}
+      - MINIO_BUCKET_STATEMENTS=${MINIO_BUCKET_STATEMENTS:-b00k5-statements}
+    depends_on:
+      b00k5_postgres:
+        condition: service_healthy
+      b00k5_redis:
+        condition: service_healthy
+      b00k5_minio:
+        condition: service_healthy
+    networks:
+      b00k5-net:
+        aliases:
+          - worker-reconcile
+
+  b00k5_worker_sync:
+    build:
+      context: .
+      dockerfile: docker/worker.Dockerfile
+    container_name: b00k5_worker_sync
+    restart: always
+    command: celery -A app.core.celery_app worker -Q gdrive_queue --loglevel=info -c 2
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-b00k5_admin}:${POSTGRES_PASSWORD:-b00k5_secure_vault_password_2026}@b00k5_postgres:5432/${POSTGRES_DB:-b00k5_db}
+      - SYNC_DATABASE_URL=postgresql://${POSTGRES_USER:-b00k5_admin}:${POSTGRES_PASSWORD:-b00k5_secure_vault_password_2026}@b00k5_postgres:5432/${POSTGRES_DB:-b00k5_db}
+      - REDIS_URL=redis://b00k5_redis:6379/0
+      - MINIO_ENDPOINT=http://b00k5_minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minio_storage_admin}
+      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minio_storage_secret_key_2026}
+      - MINIO_BUCKET_VAULT=${MINIO_BUCKET_VAULT:-b00k5-vault}
+      - MINIO_BUCKET_SIGNED=${MINIO_BUCKET_SIGNED:-b00k5-signed}
+    depends_on:
+      b00k5_postgres:
+        condition: service_healthy
+      b00k5_redis:
+        condition: service_healthy
+      b00k5_minio:
+        condition: service_healthy
+    networks:
+      b00k5-net:
+        aliases:
+          - worker-sync
+
+  b00k5_web:
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+    container_name: b00k5_web
+    restart: always
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - NEXT_PUBLIC_BRIDGE_URL=http://localhost:28045
+    ports:
+      - "3000:3000"
+    depends_on:
+      - b00k5_api
+    networks:
+      b00k5-net:
+        aliases:
+          - web
+
+networks:
+  b00k5-net:
+    name: b00k5-net
+    driver: bridge
+
+volumes:
+  postgres_data:
+    name: b00k5_postgres_data
+  redis_data:
+    name: b00k5_redis_data
+  minio_data:
+    name: b00k5_minio_data

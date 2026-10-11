@@ -1,0 +1,90 @@
+services:
+  postgres_test:
+    image: postgres:16-alpine
+    container_name: b00k5_postgres_test
+    environment:
+      POSTGRES_DB: b00k5_test_db
+      POSTGRES_USER: b00k5_test_admin
+      POSTGRES_PASSWORD: test_secure_password_2026
+    volumes:
+      - ./init_schema.sql:/docker-entrypoint-initdb.d/init_schema.sql
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U b00k5_test_admin -d b00k5_test_db"]
+      interval: 3s
+      timeout: 3s
+      retries: 5
+    networks:
+      - b00k5-test-net
+
+  redis_test:
+    image: redis:7-alpine
+    container_name: b00k5_redis_test
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 5
+    networks:
+      - b00k5-test-net
+
+  minio_test:
+    image: ghcr.io/coollabsio/minio:latest
+    container_name: b00k5_minio_test
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: minio_test_admin
+      MINIO_ROOT_PASSWORD: minio_test_secret_key_2026
+    ports:
+      - "9010:9000"
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 5
+    networks:
+      - b00k5-test-net
+
+  bridge_mock_test:
+    build:
+      context: .
+      dockerfile: docker/bridge-mock.Dockerfile
+    container_name: b00k5_bridge_test
+    ports:
+      - "28045:28045"
+    networks:
+      - b00k5-test-net
+
+  test_runner:
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    container_name: b00k5_test_runner
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://b00k5_test_admin:test_secure_password_2026@postgres_test:5432/b00k5_test_db
+      - SYNC_DATABASE_URL=postgresql://b00k5_test_admin:test_secure_password_2026@postgres_test:5432/b00k5_test_db
+      - REDIS_URL=redis://redis_test:6379/0
+      - MINIO_ENDPOINT=http://minio_test:9000
+      - MINIO_ACCESS_KEY=minio_test_admin
+      - MINIO_SECRET_KEY=minio_test_secret_key_2026
+      - DSC_BRIDGE_URL=http://bridge_mock_test:28045
+      - APP_ENV=test
+    depends_on:
+      postgres_test:
+        condition: service_healthy
+      redis_test:
+        condition: service_healthy
+      minio_test:
+        condition: service_healthy
+    command: ["pytest", "-v", "tests/integration"]
+    volumes:
+      - .:/app
+    networks:
+      - b00k5-test-net
+
+networks:
+  b00k5-test-net:
+    driver: bridge

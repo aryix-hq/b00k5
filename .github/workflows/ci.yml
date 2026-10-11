@@ -1,0 +1,85 @@
+name: b00k5 CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  validate-all-milestone-gates:
+    name: Verify 7-Phase Milestone Verification Gates
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: b00k5_admin
+          POSTGRES_PASSWORD: b00k5_secure_vault_password_2026
+          POSTGRES_DB: b00k5_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+      minio:
+        image: ghcr.io/coollabsio/minio:latest
+        env:
+          MINIO_ROOT_USER: minio_storage_admin
+          MINIO_ROOT_PASSWORD: minio_storage_secret_key_2026
+        ports:
+          - 9000:9000
+          - 9001:9001
+        options: >-
+          --health-cmd "curl -f http://localhost:9000/minio/health/live || exit 1"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r apps/api/requirements.txt || true
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run Unified Makefile Verification Gates (Phases 0 through 6)
+        env:
+          DATABASE_URL: "postgresql+asyncpg://b00k5_admin:b00k5_secure_vault_password_2026@localhost:5432/b00k5_db"
+          REDIS_URL: "redis://localhost:6379/0"
+          MINIO_ENDPOINT: "localhost:9000"
+          MINIO_ACCESS_KEY: "minio_storage_admin"
+          MINIO_SECRET_KEY: "minio_storage_secret_key_2026"
+        run: |
+          make test
+
+      - name: Execute Disaster Recovery Verification Drill
+        run: |
+          bash infrastructure/scripts/dr_backup_restore.sh

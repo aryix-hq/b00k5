@@ -258,49 +258,55 @@ class DocumentAssemblyService:
     @classmethod
     def _create_pdf_document(cls, title: str, text_lines: List[str]) -> bytes:
         """
-        Creates a compliant PDF document byte stream containing structured legal text.
+        Creates a strictly compliant PDF-1.4 document byte stream with exact xref byte offsets
+        so macOS Preview, Adobe Acrobat, Chrome, and Poppler open it cleanly.
         """
-        # Build text stream
-        stream_content = []
-        stream_content.append("BT")
-        stream_content.append("/F1 16 Tf")
-        stream_content.append("50 750 Td")
-        stream_content.append(f"({title}) Tj")
-        stream_content.append("/F1 10 Tf")
-        stream_content.append("0 -25 Td")
+        def esc(s: str) -> str:
+            clean = str(s).replace("₹", "INR ").encode("ascii", "replace").decode("ascii")
+            return clean.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
 
-        y_offset = -14
-        for line in text_lines:
-            # Escape parenthesis in PDF string literals
-            escaped = line.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
-            # Truncate overly long lines to avoid margin bleed
-            if len(escaped) > 95:
-                escaped = escaped[:95] + "..."
-            stream_content.append(f"({escaped}) Tj")
-            stream_content.append(f"0 {y_offset} Td")
+        stream_lines = [
+            "BT",
+            "/F1 13 Tf",
+            "42 748 Td",
+            f"({esc(title)}) Tj",
+            "/F1 9 Tf",
+            "0 -22 Td"
+        ]
 
-        stream_content.append("ET")
-        stream_data = "\n".join(stream_content).encode("utf-8")
-        stream_len = len(stream_data)
+        for line in text_lines[:48]:
+            escaped = esc(line)
+            if len(escaped) > 96:
+                escaped = escaped[:96] + "..."
+            stream_lines.append(f"({escaped}) Tj")
+            stream_lines.append("0 -14 Td")
 
-        # Assemble PDF object hierarchy
-        pdf = (
-            b"%PDF-1.4\n"
-            b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
-            b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n"
-            b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n"
-            b"4 0 obj\n<< /Length " + str(stream_len).encode("utf-8") + b" >>\nstream\n" +
-            stream_data +
-            b"\nendstream\nendobj\n"
-            b"5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n"
-            b"xref\n0 6\n"
-            b"0000000000 65535 f \n"
-            b"0000000009 00000 n \n"
-            b"0000000058 00000 n \n"
-            b"0000000115 00000 n \n"
-            b"0000000244 00000 n \n"
-            b"0000000750 00000 n \n"
-            b"trailer\n<< /Size 6 /Root 1 0 R >>\n"
-            b"startxref\n820\n%%EOF\n"
+        stream_lines.append("ET")
+        stream_data = "\n".join(stream_lines).encode("ascii")
+
+        objs = [
+            b"<< /Type /Catalog /Pages 2 0 R >>",
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+            b"<< /Length " + str(len(stream_data)).encode("ascii") + b" >>\nstream\n" + stream_data + b"\nendstream",
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>",
+        ]
+
+        out = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+        offsets = []
+        for idx, body in enumerate(objs, start=1):
+            offsets.append(len(out))
+            out.extend(f"{idx} 0 obj\n".encode("ascii"))
+            out.extend(body)
+            out.extend(b"\nendobj\n")
+
+        xref_pos = len(out)
+        out.extend(f"xref\n0 {len(objs) + 1}\n".encode("ascii"))
+        out.extend(b"0000000000 65535 f \n")
+        for off in offsets:
+            out.extend(f"{off:010d} 00000 n \n".encode("ascii"))
+        out.extend(
+            f"trailer\n<< /Size {len(objs) + 1} /Root 1 0 R >>\nstartxref\n{xref_pos}\n%%EOF\n".encode("ascii")
         )
-        return pdf
+        return bytes(out)
+

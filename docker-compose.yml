@@ -103,7 +103,7 @@ services:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-b00k5_admin}:${POSTGRES_PASSWORD:-b00k5_secure_vault_password_2026}@b00k5_postgres:5432/${POSTGRES_DB:-b00k5_db}
       - SYNC_DATABASE_URL=postgresql://${POSTGRES_USER:-b00k5_admin}:${POSTGRES_PASSWORD:-b00k5_secure_vault_password_2026}@b00k5_postgres:5432/${POSTGRES_DB:-b00k5_db}
       - REDIS_URL=redis://b00k5_redis:6379/0
-      - MINIO_ENDPOINT=http://b00k5_minio:9000
+      - MINIO_ENDPOINT=http://minio:9000
       - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minio_storage_admin}
       - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minio_storage_secret_key_2026}
       - MINIO_BUCKET_VAULT=${MINIO_BUCKET_VAULT:-b00k5-vault}
@@ -144,7 +144,7 @@ services:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-b00k5_admin}:${POSTGRES_PASSWORD:-b00k5_secure_vault_password_2026}@b00k5_postgres:5432/${POSTGRES_DB:-b00k5_db}
       - SYNC_DATABASE_URL=postgresql://${POSTGRES_USER:-b00k5_admin}:${POSTGRES_PASSWORD:-b00k5_secure_vault_password_2026}@b00k5_postgres:5432/${POSTGRES_DB:-b00k5_db}
       - REDIS_URL=redis://b00k5_redis:6379/0
-      - MINIO_ENDPOINT=http://b00k5_minio:9000
+      - MINIO_ENDPOINT=http://minio:9000
       - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minio_storage_admin}
       - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minio_storage_secret_key_2026}
       - MINIO_BUCKET_RECEIPTS=${MINIO_BUCKET_RECEIPTS:-b00k5-receipts}
@@ -171,7 +171,7 @@ services:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-b00k5_admin}:${POSTGRES_PASSWORD:-b00k5_secure_vault_password_2026}@b00k5_postgres:5432/${POSTGRES_DB:-b00k5_db}
       - SYNC_DATABASE_URL=postgresql://${POSTGRES_USER:-b00k5_admin}:${POSTGRES_PASSWORD:-b00k5_secure_vault_password_2026}@b00k5_postgres:5432/${POSTGRES_DB:-b00k5_db}
       - REDIS_URL=redis://b00k5_redis:6379/0
-      - MINIO_ENDPOINT=http://b00k5_minio:9000
+      - MINIO_ENDPOINT=http://minio:9000
       - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minio_storage_admin}
       - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minio_storage_secret_key_2026}
       - MINIO_BUCKET_STATEMENTS=${MINIO_BUCKET_STATEMENTS:-b00k5-statements}
@@ -198,7 +198,7 @@ services:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-b00k5_admin}:${POSTGRES_PASSWORD:-b00k5_secure_vault_password_2026}@b00k5_postgres:5432/${POSTGRES_DB:-b00k5_db}
       - SYNC_DATABASE_URL=postgresql://${POSTGRES_USER:-b00k5_admin}:${POSTGRES_PASSWORD:-b00k5_secure_vault_password_2026}@b00k5_postgres:5432/${POSTGRES_DB:-b00k5_db}
       - REDIS_URL=redis://b00k5_redis:6379/0
-      - MINIO_ENDPOINT=http://b00k5_minio:9000
+      - MINIO_ENDPOINT=http://minio:9000
       - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minio_storage_admin}
       - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minio_storage_secret_key_2026}
       - MINIO_BUCKET_VAULT=${MINIO_BUCKET_VAULT:-b00k5-vault}

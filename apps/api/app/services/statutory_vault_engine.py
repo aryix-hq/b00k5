@@ -18,6 +18,28 @@ SRN_REGEX = re.compile(r'\b([A-Z]{1,2}[0-9]{7,8})\b')
 FRN_REGEX = re.compile(r'\b([0-9]{6}[A-Z]|[0-9]{5}[A-Z]|\b[A-Z]{2}[0-9]{6}\b)\b')
 
 
+INVALID_DIRECTOR_NAME_TOKENS = (
+    "COMPANY", "LIMITED", "DESIGNATION", "WHETHER", "NUMBER",
+    "CATEGORY", "CHARTERED", "ACCOUNTANT", "SECRETARY", "ADVOCATE",
+    "PRACTICING", "ASSOCIATE", "FELLOW", "CERTIFICATE", "PROFESSIONAL",
+    "AUTHORISED", "AUTHORIZED", "DECLARATION", "PARTICULARS", "APPLICABLE",
+    "PURSUANT", "SECTION", "MINISTRY", "CORPORATE", "DIRECTOR IDENTIFICATION",
+    "DIGITAL SIGNATURE", "TO BE DIGITALLY"
+)
+
+
+def _is_valid_person_name(name: str) -> bool:
+    cleaned = " ".join((name or "").split()).strip()
+    if len(cleaned) < 4 or len(cleaned) > 65:
+        return False
+    upper = cleaned.upper()
+    if any(tok in upper for tok in INVALID_DIRECTOR_NAME_TOKENS):
+        return False
+    if not re.match(r'^[A-Za-z][A-Za-z\s\.]+$', cleaned):
+        return False
+    return True
+
+
 def extract_directors_from_text(text: str) -> List[Dict[str, str]]:
     """
     Extracts director names, 8-digit DINs, and designations from MCA V3 forms
@@ -43,7 +65,7 @@ def extract_directors_from_text(text: str) -> List[Dict[str, str]]:
             din_m = re.search(r'\b([01][0-9]{7})\b', window_text)
             if din_m:
                 din_val = din_m.group(1)
-        if len(raw_name) > 3 and "COMPANY" not in raw_name.upper() and "LIMITED" not in raw_name.upper():
+        if _is_valid_person_name(raw_name):
             title_name = raw_name.title()
             key = title_name.lower()
             if key not in seen_names:
@@ -57,15 +79,16 @@ def extract_directors_from_text(text: str) -> List[Dict[str, str]]:
                 })
 
     # 2. Standard label-value pattern: "Name of Director: <Name> ... DIN: <8 digits>"
+    #    Exclude "To be digitally signed by" form headers by requiring same-line name capture.
     std_matches = re.finditer(
-        r'(?:Name\s+of\s+(?:the\s+)?Director|Director\s+Name|Digitally\s+signed\s+by)\s*[:\-]?\s*([A-Z][A-Za-z\s\.]{3,50})(?:[\s\S]{0,120}?DIN\s*[:\-]?\s*([01][0-9]{7}))?',
+        r'(?<!To\sbe\s)(?:Name\s+of\s+(?:the\s+)?Director|Director\s+Name)[ \t]*[:\-]?[ \t]*([A-Z][A-Za-z \t\.]{3,50})(?:[\s\S]{0,120}?DIN[ \t]*[:\-]?[ \t]*([01][0-9]{7}))?',
         text,
         re.I
     )
     for m in std_matches:
         raw_name = " ".join(m.group(1).split()).strip()
         din_val = (m.group(2) or "").strip()
-        if len(raw_name) > 3 and not any(w in raw_name.upper() for w in ("COMPANY", "LIMITED", "DESIGNATION", "WHETHER", "NUMBER")):
+        if _is_valid_person_name(raw_name):
             title_name = raw_name.title()
             key = title_name.lower()
             if key not in seen_names:

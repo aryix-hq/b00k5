@@ -74,7 +74,11 @@ export function CompanyLetterhead({
                 registeredOffice: data.registered_office || 'Karnataka, India',
                 logoUrl: data.logo_url || ''
               });
-              if (data.logo_url) localStorage.setItem('b00k5_logo_url', data.logo_url);
+              if (data.logo_url) {
+                localStorage.setItem('b00k5_logo_url', data.logo_url);
+              } else {
+                localStorage.removeItem('b00k5_logo_url');
+              }
               if (data.registered_office) localStorage.setItem('b00k5_registered_office', data.registered_office);
             }
           })

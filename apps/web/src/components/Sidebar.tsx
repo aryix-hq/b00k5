@@ -36,7 +36,7 @@ const navSections: NavSection[] = [
     title: 'Operations',
     items: [
       { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
-      { name: 'Expenses & Founder Claims', href: '/expenses', icon: Wallet },
+      { name: 'Expenses', href: '/expenses', icon: Wallet },
       { name: 'Record Vendor Bill / Expense', href: '/expenses/new', icon: Receipt },
       { name: 'Invoices & AR', href: '/invoices', icon: Receipt },
       { name: 'Bank Reconciliation', href: '/reconciliation', icon: FileSpreadsheet },

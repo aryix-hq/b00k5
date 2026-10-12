@@ -99,21 +99,60 @@ export default function GovernanceDashboardPage() {
     if (typeof window !== 'undefined') {
       const storedName = localStorage.getItem('b00k5_legal_name');
       const storedCin = localStorage.getItem('b00k5_cin');
-      const storedVenue = localStorage.getItem('b00k5_venue') || localStorage.getItem('b00k5_registered_office');
+      const storedRegOffice = localStorage.getItem('b00k5_registered_office');
+      const storedVenue = localStorage.getItem('b00k5_venue');
       const storedSigner = localStorage.getItem('b00k5_signer_name');
       const storedDin = localStorage.getItem('b00k5_admin_din');
 
       if (storedName) setCompanyName(storedName);
       if (storedCin) setCin(storedCin);
-      if (storedVenue) setVenue(storedVenue);
+      if (storedRegOffice) {
+        setVenue(storedRegOffice);
+      } else if (storedVenue && storedVenue !== 'Registered Office') {
+        setVenue(storedVenue);
+      }
       if (storedSigner) setSignerName(storedSigner);
       if (storedDin) setDirectorDin(storedDin);
     }
 
-    // 2. Fetch real statutory milestones from backend
+    // 2. Fetch real statutory milestones & director roster independently from backend
     async function loadComplianceData() {
+      setLoading(true);
+
+      // Load verified statutory director roster and master profile first
       try {
-        setLoading(true);
+        const dirRes = await fetchApi('/api/v1/compliance/directors');
+        if (dirRes) {
+          if (dirRes.legal_name) {
+            setCompanyName(dirRes.legal_name);
+            localStorage.setItem('b00k5_legal_name', dirRes.legal_name);
+          }
+          if (dirRes.cin) {
+            setCin(dirRes.cin);
+            localStorage.setItem('b00k5_cin', dirRes.cin);
+          }
+          if (dirRes.registered_office) {
+            setVenue(dirRes.registered_office);
+            localStorage.setItem('b00k5_registered_office', dirRes.registered_office);
+            localStorage.setItem('b00k5_venue', dirRes.registered_office);
+          }
+          if (dirRes.directors && Array.isArray(dirRes.directors) && dirRes.directors.length > 0) {
+            setDirectors(dirRes.directors.map((d: any) => ({
+              name: d.name,
+              din: d.din || 'N/A',
+              designation: d.designation || 'Director',
+              isPresent: true
+            })));
+            setSignerName(dirRes.directors[0].name);
+            setDirectorDin(dirRes.directors[0].din || '');
+          }
+        }
+      } catch (dirErr) {
+        console.warn('Director roster load error:', dirErr);
+      }
+
+      // Load compliance dashboard events
+      try {
         const data = await fetchApi('/api/v1/compliance/dashboard');
         if (data?.upcoming_events && Array.isArray(data.upcoming_events)) {
           const mapped: StatutoryEvent[] = data.upcoming_events.map((e: any) => ({
@@ -142,28 +181,6 @@ export default function GovernanceDashboardPage() {
               setBmElapsedDays(Math.max(0, 120 - bm.days_remaining));
             }
           }
-        }
-
-        // DEF-01: Load verified statutory director roster and master profile
-        try {
-          const dirRes = await fetchApi('/api/v1/compliance/directors');
-          if (dirRes) {
-            if (dirRes.legal_name) setCompanyName(dirRes.legal_name);
-            if (dirRes.cin) setCin(dirRes.cin);
-            if (dirRes.registered_office) setVenue(dirRes.registered_office);
-            if (dirRes.directors && Array.isArray(dirRes.directors) && dirRes.directors.length > 0) {
-              setDirectors(dirRes.directors.map((d: any) => ({
-                name: d.name,
-                din: d.din || 'N/A',
-                designation: d.designation || 'Director',
-                isPresent: true
-              })));
-              setSignerName(dirRes.directors[0].name);
-              setDirectorDin(dirRes.directors[0].din || '');
-            }
-          }
-        } catch (dirErr) {
-          console.warn('Director roster load error:', dirErr);
         }
       } catch (err) {
         console.error('Failed to load compliance events from API:', err);

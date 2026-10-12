@@ -124,7 +124,7 @@ export default function ExpensesHubPage() {
   const [summary, setSummary] = useState<SummaryData | null>(null);
   const [expenses, setExpenses] = useState<ExpenseItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<'personal' | 'pending' | 'company' | 'all' | 'struck_off'>('personal');
+  const [activeTab, setActiveTab] = useState<'personal' | 'pending' | 'company' | 'all' | 'struck_off'>('all');
   const [selectedFY, setSelectedFY] = useState<string>('all');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
   const [searchTerm, setSearchTerm] = useState<string>('');
@@ -237,14 +237,15 @@ export default function ExpensesHubPage() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `Auditor_Dossier_FY2025-26.zip`;
+      const fyTag = selectedFY && selectedFY !== 'all' ? selectedFY.replace(/\s+/g, '') : 'FY2026-27';
+      a.download = `Auditor_Dossier_${fyTag}.zip`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
       document.body.removeChild(a);
       setNotification({
         type: 'success',
-        message: 'Statutory Auditor Dossier (.zip) exported successfully with ledgers & source receipts.'
+        message: 'Statutory Auditor Dossier (.zip) exported successfully with month-wise bank statements, bills/receipts, invoices & ledgers.'
       });
     } catch (err: any) {
       setNotification({ type: 'error', message: err.message || 'Error exporting auditor package' });
@@ -481,7 +482,7 @@ export default function ExpensesHubPage() {
               </div>
               <h2 className="text-xl font-bold text-white flex items-center gap-2 mt-1">
                 <Receipt className="w-6 h-6 text-emerald-400" />
-                Expenses &amp; Founder Reimbursements Workbench
+                Expenses
               </h2>
               <p className="text-xs text-slate-400 mt-0.5">
                 Track corporate bills, out-of-pocket director expenses, statutory ITC claims, strike-offs, and immutable edit logs.

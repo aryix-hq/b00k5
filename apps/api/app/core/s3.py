@@ -39,7 +39,7 @@ class StorageManager:
     """
 
     def __init__(self, endpoint: Optional[str] = None, access_key: Optional[str] = None, secret_key: Optional[str] = None, secure: bool = False):
-        self.endpoint = (endpoint or settings.MINIO_ENDPOINT).replace("http://", "").replace("https://", "")
+        self.endpoint = (endpoint or settings.MINIO_ENDPOINT).replace("http://", "").replace("https://", "").replace("b00k5_minio", "minio")
         self.access_key = access_key or settings.MINIO_ACCESS_KEY
         self.secret_key = secret_key or settings.MINIO_SECRET_KEY
         self.secure = secure if endpoint else settings.MINIO_SECURE

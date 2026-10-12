@@ -53,15 +53,21 @@ export default function SettingsPage() {
 
         if (res.ok) {
           const data = await res.json();
+          const dbLogo = data.logo_url || '';
+          if (dbLogo) {
+            localStorage.setItem('b00k5_logo_url', dbLogo);
+          } else {
+            localStorage.removeItem('b00k5_logo_url');
+          }
           setProfile({
-            legal_name: data.legal_name || localStorage.getItem('b00k5_legal_name') || '',
+            legal_name: data.legal_name || '',
             trade_name: data.trade_name || '',
-            cin: data.cin || localStorage.getItem('b00k5_cin') || '',
-            pan: data.pan || localStorage.getItem('b00k5_pan') || '',
-            gstin: data.gstin || localStorage.getItem('b00k5_gstin') || '',
+            cin: data.cin || '',
+            pan: data.pan || '',
+            gstin: data.gstin || '',
             state_code: data.state_code || '29',
-            registered_office: data.registered_office || localStorage.getItem('b00k5_registered_office') || '',
-            logo_url: data.logo_url || localStorage.getItem('b00k5_logo_url') || '',
+            registered_office: data.registered_office || '',
+            logo_url: dbLogo,
             statutory_profile: data.statutory_profile || {}
           });
         }

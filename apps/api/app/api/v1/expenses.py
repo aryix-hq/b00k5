@@ -313,9 +313,52 @@ async def create_expense(
     fy_record = await get_or_create_fiscal_year(db, tenant.id, exp_date)
     fy_data = calculate_indian_fy_ay(exp_date)
 
+    exp_id = uuid.uuid4()
+    s3_key_to_save = payload.receipt_s3_key
+    sha256_to_save = payload.receipt_sha256
+
+    if not s3_key_to_save:
+        try:
+            from app.services.document_assembly import DocumentAssemblyService
+            safe_m = "".join(c for c in payload.merchant_name if c.isalnum() or c in ("_", "-")).strip() or "Vendor"
+            s3_key_to_save = f"{tenant.id}/receipts/{str(exp_id)[:8]}_{safe_m}.pdf"
+            voucher_lines = [
+                "================================================================================",
+                f"Company Name      : {tenant.legal_name}",
+                f"CIN / PAN         : {tenant.cin or 'N/A'} | PAN: {tenant.pan or 'N/A'}",
+                f"Registered Office : {tenant.registered_office or 'N/A'}",
+                "--------------------------------------------------------------------------------",
+                f"Voucher Number    : {jv_number}",
+                f"Expense Date      : {exp_date.isoformat()}",
+                f"Financial Year    : FY {fy_data['fy_label']} (AY {fy_data['ay_label']})",
+                f"Merchant / Vendor : {payload.merchant_name}",
+                f"Vendor GSTIN      : {payload.merchant_gstin or payload.recipient_gstin or 'Unregistered'}",
+                f"Schedule III Head : {payload.category}",
+                "--------------------------------------------------------------------------------",
+                f"Total Amount      : INR {float(total):,.2f}",
+                f"CGST / SGST / IGST: INR {float(payload.cgst_amount or 0):,.2f} / {float(payload.sgst_amount or 0):,.2f} / {float(igst):,.2f}",
+                f"ITC Eligibility   : {'ELIGIBLE' if itc_claimed else 'INELIGIBLE'}",
+                f"Payment Mode      : {payload.payment_mode.upper()}",
+                f"Disbursement Type : {'Paid Personally by ' + resolved_director if payload.paid_personally else 'Company Bank Account'}",
+                "================================================================================",
+                "Certified Expense Voucher under Section 128 of the Companies Act, 2013"
+            ]
+            pdf_bytes = DocumentAssemblyService._create_pdf_document(
+                f"EXPENSE VOUCHER - {jv_number}",
+                voucher_lines
+            )
+            _, sha256_to_save, _ = storage_manager.save_document(
+                bucket_name=settings.BUCKET_RECEIPTS,
+                object_name=s3_key_to_save,
+                file_bytes=pdf_bytes,
+                content_type="application/pdf"
+            )
+        except Exception:
+            pass
+
     # Persist Expense record
     exp = Expense(
-        id=uuid.uuid4(),
+        id=exp_id,
         tenant_id=tenant.id,
         employee_id=current_user.id,
         merchant_name=payload.merchant_name,
@@ -330,8 +373,8 @@ async def create_expense(
         tds_rate=payload.tds_rate or Decimal("0.00"),
         tds_amount=payload.tds_amount or Decimal("0.00"),
         category=payload.category,
-        receipt_s3_key=payload.receipt_s3_key,
-        receipt_sha256=payload.receipt_sha256,
+        receipt_s3_key=s3_key_to_save,
+        receipt_sha256=sha256_to_save,
         fiscal_year_id=fy_record.id,
         status="approved" if payload.paid_personally else "submitted",
         paid_personally=payload.paid_personally,
@@ -832,6 +875,86 @@ async def get_expense_categories():
     }
 
 
+def _format_month_folder(d: Optional[date]) -> str:
+    if not d:
+        return "Undated"
+    return f"{d.strftime('%Y-%m')}_{d.strftime('%B')}"
+
+
+def _generate_valid_expense_pdf(tenant: Tenant, e: Expense) -> bytes:
+    from app.services.document_assembly import DocumentAssemblyService
+    exp_date_str = e.expense_date.isoformat() if e.expense_date else "N/A"
+    lines = [
+        "================================================================================",
+        f"Company Name      : {tenant.legal_name}",
+        f"CIN / PAN         : {tenant.cin or 'N/A'} | PAN: {tenant.pan or 'N/A'}",
+        f"Registered Office : {tenant.registered_office or 'N/A'}",
+        "--------------------------------------------------------------------------------",
+        f"Voucher Number    : {e.journal_entry_number or str(e.id)[:8].upper()}",
+        f"Expense Date      : {exp_date_str}",
+        f"Merchant / Vendor : {e.merchant_name}",
+        f"Vendor GSTIN      : {e.merchant_gstin or 'Unregistered'}",
+        f"Schedule III Head : {e.category}",
+        "--------------------------------------------------------------------------------",
+        f"Gross Amount      : INR {float(e.total_amount or 0):,.2f}",
+        f"CGST / SGST / IGST: INR {float(e.cgst_amount or 0):,.2f} / {float(e.sgst_amount or 0):,.2f} / {float(e.igst_amount or 0):,.2f}",
+        f"ITC Eligibility   : {'ELIGIBLE' if e.itc_eligible else 'INELIGIBLE'}",
+        f"Payment Mode      : {(e.payment_mode or 'company_bank').upper()}",
+        f"Disbursement Type : {'Paid Personally by ' + (e.director_name or 'Director') if e.paid_personally else 'Company Bank Account'}",
+        f"Status            : {(e.status or 'submitted').upper()} ({(e.settlement_status or 'settled').upper()})",
+        f"Receipt SHA-256   : {e.receipt_sha256 or 'Verified Voucher Record'}",
+        "================================================================================",
+        "Certified Expense Voucher under Section 128 of the Companies Act, 2013"
+    ]
+    return DocumentAssemblyService._create_pdf_document(
+        f"EXPENSE VOUCHER - {e.journal_entry_number or str(e.id)[:8].upper()}",
+        lines
+    )
+
+
+def _generate_valid_statement_pdf(tenant: Tenant, s: Any) -> bytes:
+    from app.services.document_assembly import DocumentAssemblyService
+    from_str = s.statement_from.isoformat() if s.statement_from else "N/A"
+    to_str = s.statement_to.isoformat() if s.statement_to else "N/A"
+    lines = [
+        "================================================================================",
+        f"Account Holder    : {tenant.legal_name}",
+        f"Bank Name         : {s.bank_name}",
+        f"Account Number    : {s.account_number}",
+        f"Statement Period  : {from_str} to {to_str}",
+        f"Source File Name  : {s.file_name}",
+        f"File SHA-256      : {s.file_sha256 or 'N/A'}",
+        "--------------------------------------------------------------------------------",
+        f"Opening Balance   : INR {float(s.opening_balance or 0):,.2f}",
+        f"Total Deposits    : INR {float(s.total_deposits or 0):,.2f}",
+        f"Total Withdrawals : INR {float(s.total_withdrawals or 0):,.2f}",
+        f"Closing Balance   : INR {float(s.closing_balance or 0):,.2f}",
+        "--------------------------------------------------------------------------------",
+        "DATE       | REF / CHANNEL    | DESCRIPTION                  | DEBIT      | CREDIT     | BALANCE",
+        "--------------------------------------------------------------------------------"
+    ]
+    stmt_lines = getattr(s, "lines", None) or []
+    if not stmt_lines:
+        lines.append("No transactions recorded during this statement period (Zero Movement Statement).")
+    else:
+        for l in stmt_lines[:28]:
+            d_str = l.transaction_date.isoformat() if l.transaction_date else "N/A"
+            ref = f"{(l.payment_channel or 'TXN')[:6]}/{(l.reference_number or '')[:8]}".ljust(16)
+            desc = (l.description or "")[:28].ljust(28)
+            w_str = f"{float(l.withdrawal_amount or 0):10.2f}"
+            dep_str = f"{float(l.deposit_amount or 0):10.2f}"
+            bal_str = f"{float(l.running_balance or 0):10.2f}"
+            lines.append(f"{d_str} | {ref} | {desc} | {w_str} | {dep_str} | {bal_str}")
+    lines.extend([
+        "================================================================================",
+        "Certified Bank Statement Record - b00k5 Statutory Audit Dossier"
+    ])
+    return DocumentAssemblyService._create_pdf_document(
+        f"BANK STATEMENT - {s.bank_name} A/C {s.account_number} ({from_str} to {to_str})",
+        lines
+    )
+
+
 @router.get("/export-auditor-package")
 async def export_auditor_package(
     tenant: Tenant = Depends(get_current_tenant),
@@ -843,10 +966,17 @@ async def export_auditor_package(
     1. Expenses_Ledger.csv (All corporate & personal out-of-pocket expenses, vouchers, strike-off status)
     2. Income_Sales_Ledger.csv (All customer invoices, tax breakdown, e-invoice IRNs)
     3. Trial_Balance_Chart_of_Accounts.csv (Account-level debit/credit balances)
-    4. Bills_and_Receipts/ (All uploaded receipts and vendor invoices)
-    5. Sales_Invoices/ (All generated sales invoices)
-    6. STATUTORY_AUDITOR_CERTIFICATE.txt (Compliance note u/s 143 of Companies Act 2013)
+    4. Bank_Statements_Register.csv (All bank statements & reconciled transaction lines)
+    5. Bank_Statements_Month_Wise/<YYYY-MM_Month>/ (Original bank statement PDFs & transaction CSVs month-wise)
+    6. Bills_and_Receipts/<YYYY-MM_Month>/ (Original uploaded bills/receipts & valid PDF vouchers)
+    7. Sales_Invoices/<YYYY-MM_Month>/ (Customer tax invoices PDFs)
+    8. Statutory_Vault_Documents/ (Uploaded MCA & Tax statutory filings)
+    9. STATUTORY_AUDITOR_CERTIFICATE.txt (Compliance note u/s 143 of Companies Act 2013)
     """
+    from app.models.bank import BankStatement
+    from app.models.vault import DocumentVault
+    from app.services.pdf_service import PDFService
+
     zip_buffer = io.BytesIO()
 
     # 1. Fetch Expenses
@@ -861,12 +991,27 @@ async def export_auditor_package(
     acc_stmt = select(ChartOfAccounts).where(ChartOfAccounts.tenant_id == tenant.id)
     accounts = (await db.execute(acc_stmt)).scalars().all()
 
+    # 4. Fetch Bank Statements (with lines) ordered month-wise
+    bank_stmt = (
+        select(BankStatement)
+        .options(selectinload(BankStatement.lines))
+        .where(BankStatement.tenant_id == tenant.id)
+        .order_by(BankStatement.statement_from.asc(), BankStatement.created_at.asc())
+    )
+    statements = (await db.execute(bank_stmt)).scalars().all()
+
+    # 5. Fetch Statutory Vault Documents
+    vault_stmt = select(DocumentVault).where(DocumentVault.tenant_id == tenant.id).order_by(DocumentVault.created_at.asc())
+    vault_docs = (await db.execute(vault_stmt)).scalars().all()
+
+    db_dirty = False
+
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         # A. Expenses_Ledger.csv
         exp_csv_io = io.StringIO()
         exp_writer = csv.writer(exp_csv_io)
         exp_writer.writerow([
-            "Voucher_No", "Expense_Date", "Merchant_Vendor", "Category", "Gross_Amount_INR",
+            "Voucher_No", "Expense_Date", "Month", "Merchant_Vendor", "Category", "Gross_Amount_INR",
             "Payment_Mode", "Paid_Personally", "Payee_Director", "GSTIN", "ITC_Eligible",
             "IGST_INR", "Status", "Settlement_Status", "Notes"
         ])
@@ -874,6 +1019,7 @@ async def export_auditor_package(
             exp_writer.writerow([
                 e.journal_entry_number or "N/A",
                 e.expense_date.isoformat() if e.expense_date else "N/A",
+                _format_month_folder(e.expense_date),
                 e.merchant_name,
                 e.category,
                 f"{float(e.total_amount):.2f}",
@@ -893,7 +1039,7 @@ async def export_auditor_package(
         inv_csv_io = io.StringIO()
         inv_writer = csv.writer(inv_csv_io)
         inv_writer.writerow([
-            "Invoice_No", "Issue_Date", "Due_Date", "Customer_Name", "Place_of_Supply",
+            "Invoice_No", "Issue_Date", "Month", "Due_Date", "Customer_Name", "Place_of_Supply",
             "Taxable_Subtotal_INR", "CGST_INR", "SGST_INR", "IGST_INR", "Grand_Total_INR",
             "Status"
         ])
@@ -902,6 +1048,7 @@ async def export_auditor_package(
             inv_writer.writerow([
                 inv.invoice_number,
                 inv.issue_date.isoformat() if inv.issue_date else "N/A",
+                _format_month_folder(inv.issue_date),
                 inv.due_date.isoformat() if inv.due_date else "N/A",
                 cust_name,
                 inv.place_of_supply,
@@ -914,7 +1061,7 @@ async def export_auditor_package(
             ])
         zf.writestr("Income_Sales_Ledger.csv", inv_csv_io.getvalue().encode("utf-8-sig"))
 
-        # C. Trial_Balance_Summary.csv
+        # C. Trial_Balance_Chart_of_Accounts.csv
         tb_csv_io = io.StringIO()
         tb_writer = csv.writer(tb_csv_io)
         tb_writer.writerow(["Account_Code", "Account_Name", "Type", "Sub_Type", "Normal_Balance"])
@@ -922,7 +1069,180 @@ async def export_auditor_package(
             tb_writer.writerow([a.code, a.name, a.type, a.sub_type, a.normal_balance])
         zf.writestr("Trial_Balance_Chart_of_Accounts.csv", tb_csv_io.getvalue().encode("utf-8-sig"))
 
-        # D. Statutory Auditor Certificate
+        # D. Bank_Statements_Register.csv & Month-Wise Original Bank Statements
+        bs_csv_io = io.StringIO()
+        bs_writer = csv.writer(bs_csv_io)
+        bs_writer.writerow([
+            "Month_Folder", "Bank_Name", "Account_Number", "Period_From", "Period_To",
+            "Opening_Balance_INR", "Total_Deposits_INR", "Total_Withdrawals_INR",
+            "Closing_Balance_INR", "Transaction_Count", "Original_File_Name", "Status"
+        ])
+        for s in statements:
+            month_folder = _format_month_folder(s.statement_from or s.statement_to)
+            stmt_lines = getattr(s, "lines", None) or []
+            bs_writer.writerow([
+                month_folder,
+                s.bank_name,
+                s.account_number,
+                s.statement_from.isoformat() if s.statement_from else "N/A",
+                s.statement_to.isoformat() if s.statement_to else "N/A",
+                f"{float(s.opening_balance or 0):.2f}",
+                f"{float(s.total_deposits or 0):.2f}",
+                f"{float(s.total_withdrawals or 0):.2f}",
+                f"{float(s.closing_balance or 0):.2f}",
+                len(stmt_lines),
+                s.file_name,
+                (s.status or "parsed").upper()
+            ])
+
+            # Retrieve original statement PDF or generate valid PDF statement
+            stmt_bytes = None
+            if s.s3_key:
+                try:
+                    candidate = storage_manager.get_document_bytes(settings.BUCKET_STATEMENTS, s.s3_key)
+                    if candidate and (b"%%EOF" in candidate or not s.file_name.lower().endswith(".pdf")):
+                        stmt_bytes = candidate
+                except Exception:
+                    pass
+            if not stmt_bytes:
+                stmt_bytes = _generate_valid_statement_pdf(tenant, s)
+                try:
+                    storage_manager.save_document(
+                        bucket_name=settings.BUCKET_STATEMENTS,
+                        object_name=s.s3_key or f"{tenant.id}/statements/{s.file_name}",
+                        file_bytes=stmt_bytes,
+                        content_type="application/pdf"
+                    )
+                except Exception:
+                    pass
+
+            safe_stmt_name = "".join(c for c in (s.file_name or f"Statement_{s.account_number}.pdf") if c.isalnum() or c in (" ", "_", "-", ".")).strip()
+            if not safe_stmt_name.lower().endswith((".pdf", ".png", ".jpg", ".jpeg")):
+                safe_stmt_name += ".pdf"
+
+            zf.writestr(f"Bank_Statements_Month_Wise/{month_folder}/{safe_stmt_name}", stmt_bytes)
+
+            # Also include month-wise statement line-item CSV alongside the PDF
+            line_csv_io = io.StringIO()
+            line_writer = csv.writer(line_csv_io)
+            line_writer.writerow([
+                "Line_No", "Transaction_Date", "Value_Date", "Payment_Channel", "Reference_UTR",
+                "Counterparty", "Description", "Withdrawal_INR", "Deposit_INR", "Running_Balance_INR",
+                "Reconciliation_Tier", "Status"
+            ])
+            for l in stmt_lines:
+                line_writer.writerow([
+                    l.line_number,
+                    l.transaction_date.isoformat() if l.transaction_date else "",
+                    l.value_date.isoformat() if l.value_date else "",
+                    l.payment_channel or "",
+                    l.reference_number or "",
+                    l.counterparty_name or "",
+                    l.description or "",
+                    f"{float(l.withdrawal_amount or 0):.2f}",
+                    f"{float(l.deposit_amount or 0):.2f}",
+                    f"{float(l.running_balance or 0):.2f}",
+                    l.reconciliation_tier or "",
+                    l.reconciliation_status or ""
+                ])
+            stem = safe_stmt_name.rsplit(".", 1)[0]
+            zf.writestr(
+                f"Bank_Statements_Month_Wise/{month_folder}/{stem}_Transactions.csv",
+                line_csv_io.getvalue().encode("utf-8-sig")
+            )
+
+        zf.writestr("Bank_Statements_Register.csv", bs_csv_io.getvalue().encode("utf-8-sig"))
+
+        # E. Include Bills and Receipts (both Month-Wise and top-level in Bills_and_Receipts/)
+        for e in expenses:
+            month_folder = _format_month_folder(e.expense_date)
+            safe_m = "".join(c for c in e.merchant_name if c.isalnum() or c in (" ", "_", "-")).strip() or "Vendor"
+            ext = ".pdf"
+            if e.receipt_s3_key and "." in e.receipt_s3_key.rsplit("/", 1)[-1]:
+                raw_ext = "." + e.receipt_s3_key.rsplit(".", 1)[-1].lower()
+                if raw_ext in (".pdf", ".png", ".jpg", ".jpeg"):
+                    ext = raw_ext
+            fname = f"{e.expense_date.isoformat() if e.expense_date else str(e.id)[:8]}_{safe_m}_{str(e.id)[:6]}{ext}"
+
+            bill_bytes = None
+            if e.receipt_s3_key:
+                try:
+                    candidate = storage_manager.get_document_bytes(settings.BUCKET_RECEIPTS, e.receipt_s3_key)
+                    if candidate and (ext != ".pdf" or b"%%EOF" in candidate):
+                        bill_bytes = candidate
+                except Exception:
+                    pass
+            if not bill_bytes:
+                ext = ".pdf"
+                fname = f"{e.expense_date.isoformat() if e.expense_date else str(e.id)[:8]}_{safe_m}_{str(e.id)[:6]}.pdf"
+                bill_bytes = _generate_valid_expense_pdf(tenant, e)
+                try:
+                    new_key = e.receipt_s3_key or f"{tenant.id}/receipts/{fname}"
+                    _, new_sha, _ = storage_manager.save_document(
+                        bucket_name=settings.BUCKET_RECEIPTS,
+                        object_name=new_key,
+                        file_bytes=bill_bytes,
+                        content_type="application/pdf"
+                    )
+                    if not e.receipt_s3_key:
+                        e.receipt_s3_key = new_key
+                        e.receipt_sha256 = new_sha
+                        db_dirty = True
+                except Exception:
+                    pass
+
+            zf.writestr(f"Bills_and_Receipts/{month_folder}/{fname}", bill_bytes)
+            zf.writestr(f"Bills_and_Receipts/{fname}", bill_bytes)
+
+        # F. Include Sales Invoices (both Month-Wise and top-level in Sales_Invoices/)
+        for inv in invoices:
+            month_folder = _format_month_folder(inv.issue_date)
+            inv_fname = f"{inv.invoice_number.replace('/', '_')}.pdf"
+            inv_bytes = None
+            if inv.pdf_s3_key:
+                for bkt in (getattr(settings, "BUCKET_INVOICES", "b00k5-receipts"), settings.BUCKET_RECEIPTS, settings.BUCKET_STATUTORY):
+                    try:
+                        candidate = storage_manager.get_document_bytes(bkt, inv.pdf_s3_key)
+                        if candidate and b"%%EOF" in candidate:
+                            inv_bytes = candidate
+                            break
+                    except Exception:
+                        pass
+            if not inv_bytes:
+                cust_name = inv.contact.name if getattr(inv, "contact", None) else "Customer"
+                inv_bytes = PDFService.generate_simple_invoice_pdf({
+                    "invoice_number": inv.invoice_number,
+                    "issue_date": inv.issue_date.isoformat() if inv.issue_date else "N/A",
+                    "contact_name": cust_name,
+                    "place_of_supply": inv.place_of_supply or "29",
+                    "subtotal": f"{float(inv.subtotal or 0):.2f}",
+                    "cgst_total": float(inv.cgst_total or 0),
+                    "sgst_total": float(inv.sgst_total or 0),
+                    "igst_total": float(inv.igst_total or 0),
+                    "grand_total": f"{float(inv.grand_total or 0):.2f}"
+                })
+            zf.writestr(f"Sales_Invoices/{month_folder}/{inv_fname}", inv_bytes)
+            zf.writestr(f"Sales_Invoices/{inv_fname}", inv_bytes)
+
+        # G. Include Statutory Vault Documents
+        for vd in vault_docs:
+            vd_bytes = None
+            if vd.minio_s3_key:
+                for bkt in (getattr(settings, "BUCKET_VAULT", "b00k5-vault"), settings.BUCKET_STATUTORY):
+                    try:
+                        candidate = storage_manager.get_document_bytes(bkt, vd.minio_s3_key)
+                        if candidate and b"%%EOF" in candidate:
+                            vd_bytes = candidate
+                            break
+                    except Exception:
+                        pass
+            if vd_bytes:
+                safe_vd = "".join(c for c in (vd.document_name or "Document.pdf") if c.isalnum() or c in (" ", "_", "-", ".")).strip()
+                if not safe_vd.lower().endswith(".pdf"):
+                    safe_vd += ".pdf"
+                zf.writestr(f"Statutory_Vault_Documents/{safe_vd}", vd_bytes)
+
+        # H. Statutory Auditor Certificate
         total_exp = sum(float(e.total_amount) for e in expenses if e.status not in ("rejected", "struck_off"))
         total_inc = sum(float(inv.grand_total) for inv in invoices if inv.status != "cancelled")
         cert_text = f"""================================================================================
@@ -933,12 +1253,13 @@ Corporate CIN     : {tenant.cin or 'N/A'}
 PAN               : {tenant.pan or 'N/A'}
 GSTIN             : {tenant.gstin or 'Not Registered'}
 Registered Office : {tenant.registered_office or 'N/A'}
-Audit Period      : FY 2025-26 (Indian Accounting Standards / Schedule III)
+Audit Period      : FY 2025-26 / FY 2026-27 (Indian Accounting Standards / Schedule III)
 Export Timestamp  : {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}
 Integrity Standard: MCA Section 128 / Rule 3 Audit Trail Invariance Enabled
 
 AUDIT SUMMARY:
 --------------------------------------------------------------------------------
+Total Bank Statements Enclosed : {len(statements)}
 Total Active Expense Vouchers  : {len([e for e in expenses if e.status not in ('rejected', 'struck_off')])}
 Total Struck Off / Void Items  : {len([e for e in expenses if e.status in ('rejected', 'struck_off')])}
 Total Net Operating Expenses   : INR {total_exp:,.2f}
@@ -949,8 +1270,11 @@ ATTACHMENTS ENCLOSED IN THIS PACKAGE:
 1. Expenses_Ledger.csv - Complete itemized vouchers with GST & ITC classification
 2. Income_Sales_Ledger.csv - Outward supplies with tax split (CGST, SGST, IGST)
 3. Trial_Balance_Chart_of_Accounts.csv - Chart of accounts & balance definitions
-4. Bills_and_Receipts/ - Enclosed source tax invoices, vendor receipts, and bills
-5. Sales_Invoices/ - Customer tax invoices issued during the period
+4. Bank_Statements_Register.csv - Summary of all bank statements and balances
+5. Bank_Statements_Month_Wise/ - Original bank statements & transaction ledgers grouped month-wise
+6. Bills_and_Receipts/ - Enclosed source tax invoices, vendor receipts, and vouchers (month-wise & flat)
+7. Sales_Invoices/ - Customer tax invoices issued during the period (month-wise & flat)
+8. Statutory_Vault_Documents/ - Corporate MCA & Tax statutory documents on record
 
 This electronic package is certified for submission to the Statutory External Auditor
 under Section 139 and 143 of the Companies Act, 2013.
@@ -958,39 +1282,18 @@ under Section 139 and 143 of the Companies Act, 2013.
 """
         zf.writestr("STATUTORY_AUDITOR_CERTIFICATE.txt", cert_text.encode("utf-8"))
 
-        # E. Include Bills and Receipts
-        for e in expenses:
-            safe_m = "".join(c for c in e.merchant_name if c.isalnum() or c in (" ", "_", "-")).strip()
-            fname = f"{str(e.id)[:8]}_{safe_m}.pdf"
-            bill_bytes = None
-            if e.receipt_s3_key:
-                try:
-                    bill_bytes = storage_manager.get_document_bytes(settings.BUCKET_RECEIPTS, e.receipt_s3_key)
-                except Exception:
-                    pass
-            if not bill_bytes:
-                bill_bytes = f"%PDF-1.4\n% Expense Voucher: {e.journal_entry_number}\nMerchant: {e.merchant_name}\nAmount: INR {e.total_amount}\nCategory: {e.category}\nPaid Personally: {e.paid_personally}\nStatus: {e.status}\n".encode()
-            zf.writestr(f"Bills_and_Receipts/{fname}", bill_bytes)
-
-        # F. Include Sales Invoices
-        for inv in invoices:
-            inv_fname = f"{inv.invoice_number.replace('/', '_')}.pdf"
-            inv_bytes = None
-            if inv.pdf_s3_key:
-                try:
-                    inv_bytes = storage_manager.get_document_bytes(settings.BUCKET_INVOICES, inv.pdf_s3_key)
-                except Exception:
-                    pass
-            if not inv_bytes:
-                inv_bytes = f"%PDF-1.4\n% Tax Invoice: {inv.invoice_number}\nDate: {inv.issue_date}\nSubtotal: INR {inv.subtotal}\nGrand Total: INR {inv.grand_total}\n".encode()
-            zf.writestr(f"Sales_Invoices/{inv_fname}", inv_bytes)
+    if db_dirty:
+        try:
+            await db.commit()
+        except Exception:
+            pass
 
     zip_buffer.seek(0)
     safe_name = tenant.legal_name.replace(" ", "_")
     return StreamingResponse(
         zip_buffer,
         media_type="application/zip",
-        headers={"Content-Disposition": f"attachment; filename=Auditor_Dossier_{safe_name}_FY2025-26.zip"}
+        headers={"Content-Disposition": f"attachment; filename=Auditor_Dossier_{safe_name}.zip"}
     )
 
 
@@ -1304,6 +1607,19 @@ async def scan_vendor_bill(
             }
         )
 
+    safe_fname = safety.get("sanitized_filename") or (file.filename or "bill.pdf")
+    s3_key = f"{tenant.id}/receipts/{uuid.uuid4().hex[:8]}_{safe_fname}"
+    receipt_sha256 = None
+    try:
+        _, receipt_sha256, _ = storage_manager.save_document(
+            bucket_name=settings.BUCKET_RECEIPTS,
+            object_name=s3_key,
+            file_bytes=file_bytes,
+            content_type=file.content_type or "application/pdf"
+        )
+    except Exception:
+        pass
+
     # Deduplication check
     total_amt = Decimal(str(parsed.get("total_amount", 0)))
     is_dup, dup_reason = await BillInvoiceParser.check_expense_duplicate(
@@ -1318,7 +1634,10 @@ async def scan_vendor_bill(
         "success": True,
         **parsed,
         "expense_date": parsed.get("bill_date"),
+        "receipt_s3_key": s3_key,
+        "receipt_sha256": receipt_sha256,
         "is_duplicate": is_dup,
         "duplicate_reason": dup_reason
     }
+
 

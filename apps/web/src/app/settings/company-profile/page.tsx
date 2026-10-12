@@ -80,23 +80,6 @@ export default function CompanyProfileSettingsPage() {
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      const storedGstin = localStorage.getItem('b00k5_extracted_gstin');
-      const storedState = localStorage.getItem('b00k5_extracted_state');
-      const storedName = localStorage.getItem('b00k5_legal_name');
-      const storedCin = localStorage.getItem('b00k5_cin');
-
-      if (storedGstin && !storedGstin.startsWith('29AABCA')) {
-        setGstin(storedGstin);
-      } else if (storedGstin) {
-        localStorage.removeItem('b00k5_extracted_gstin');
-      }
-      if (storedState) setStateCode(storedState);
-      if (storedName) setLegalName(storedName);
-      if (storedCin) setCin(storedCin);
-
-      const storedLogo = localStorage.getItem('b00k5_logo_url');
-      if (storedLogo) setLogoPreview(storedLogo);
-
       const token = localStorage.getItem('b00k5_token');
       if (token) {
         fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/auth/me`, {
@@ -106,18 +89,28 @@ export default function CompanyProfileSettingsPage() {
           .then(data => {
             if (data?.tenants?.[0]) {
               const t = data.tenants[0];
-              if (t.gstin && !t.gstin.startsWith('29AABCA')) setGstin(t.gstin);
-              if (t.state_code) setStateCode(t.state_code);
-              if (t.legal_name) setLegalName(t.legal_name);
-              if (t.trade_name) setTradeName(t.trade_name);
-              if (t.cin) setCin(t.cin);
-              if (t.pan) setPan(t.pan);
-              if (t.statutory_profile?.tan && !t.statutory_profile.tan.startsWith('BLRA12345')) setTan(t.statutory_profile.tan);
-              if (t.registered_office) setRegisteredOffice(t.registered_office);
-              if (t.statutory_profile?.logo_url) {
-                setLogoPreview(t.statutory_profile.logo_url);
-                localStorage.setItem('b00k5_logo_url', t.statutory_profile.logo_url);
+              setGstin(t.gstin && !t.gstin.startsWith('29AABCA') ? t.gstin : '');
+              setStateCode(t.state_code || '29');
+              setLegalName(t.legal_name || '');
+              setTradeName(t.trade_name || '');
+              setCin(t.cin || '');
+              setPan(t.pan || '');
+              setTan(t.statutory_profile?.tan && !t.statutory_profile.tan.startsWith('BLRA12345') ? t.statutory_profile.tan : '');
+              setRegisteredOffice(t.registered_office || '');
+
+              const dbLogo = t.logo_url || t.statutory_profile?.logo_url || null;
+              if (dbLogo) {
+                setLogoPreview(dbLogo);
+                localStorage.setItem('b00k5_logo_url', dbLogo);
+              } else {
+                setLogoPreview(null);
+                localStorage.removeItem('b00k5_logo_url');
               }
+
+              if (t.legal_name) localStorage.setItem('b00k5_legal_name', t.legal_name);
+              if (t.cin) localStorage.setItem('b00k5_cin', t.cin);
+              if (t.pan) localStorage.setItem('b00k5_pan', t.pan);
+              if (t.registered_office) localStorage.setItem('b00k5_registered_office', t.registered_office);
             }
           })
           .catch(() => {});

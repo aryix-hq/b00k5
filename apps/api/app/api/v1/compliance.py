@@ -29,9 +29,17 @@ async def get_tenant_director_roster(
     Returns verified director roster binding DINs and designations for current tenant
     from both MCA Statutory Documents (tenant.statutory_profile['directors']) and TenantUser records.
     """
+    from app.services.statutory_vault_engine import _is_valid_person_name
     prof = tenant.statutory_profile or {}
-    mca_directors = list(prof.get("directors") or [])
+    raw_mca_directors = list(prof.get("directors") or [])
+    mca_directors = [
+        md for md in raw_mca_directors
+        if isinstance(md, dict) and _is_valid_person_name(md.get("name", ""))
+    ]
     fallback_dins = list(prof.get("founding_director_dins") or [])
+    for md in raw_mca_directors:
+        if isinstance(md, dict) and md.get("din") and md.get("din") not in ("", "N/A") and md.get("din") not in fallback_dins:
+            fallback_dins.append(md["din"])
 
     stmt = (
         select(User.first_name, User.last_name, User.email, TenantUser.role, TenantUser.din)
@@ -57,7 +65,12 @@ async def get_tenant_director_roster(
                 used_mca_indices.add(idx)
                 break
 
-        resolved_name = (matched_mca.get("name") if matched_mca and len(matched_mca.get("name", "")) >= len(user_full) else user_full) or "Director"
+        mca_name = (matched_mca.get("name") or "").strip() if matched_mca else ""
+        if mca_name and (not user_first or user_first in mca_name.lower()) and len(mca_name) >= len(user_full):
+            resolved_name = mca_name
+        else:
+            resolved_name = user_full or mca_name or "Director"
+
         resolved_din = (
             (matched_mca.get("din") if matched_mca and matched_mca.get("din") not in (None, "", "N/A") else None)
             or din
@@ -91,11 +104,18 @@ async def get_tenant_director_roster(
             for d in fallback_dins
         ]
 
+    resolved_reg_office = (
+        tenant.registered_office
+        or prof.get("new_registered_office")
+        or prof.get("registered_office")
+        or ""
+    )
+
     return {
         "tenant_id": str(tenant.id),
         "legal_name": tenant.legal_name,
         "cin": tenant.cin,
-        "registered_office": tenant.registered_office,
+        "registered_office": resolved_reg_office,
         "directors": roster
     }
 
@@ -271,6 +291,8 @@ async def get_compliance_dashboard(
                 ))
 
     # Auto-provision ITR-6 only if COI is verified and missing from the tenant's compliance calendar
+    prof_dict = tenant.statutory_profile or {}
+    tenant_inc_date = prof_dict.get("incorporation_date") or prof_dict.get("incorporation_year") or tenant.cin
     if tenant_inc_date and not any(e.category == "itr_filing" for e in events):
         curr_yr = date.today().year
         itr_target_due = date(curr_yr, 10, 31) if date.today() <= date(curr_yr, 10, 31) else date(curr_yr + 1, 10, 31)

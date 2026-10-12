@@ -43,6 +43,8 @@ export function ExpenseForm() {
 
   // Statutory & ITC verification state
   const [receiptFileName, setReceiptFileName] = useState<string>('');
+  const [receiptS3Key, setReceiptS3Key] = useState<string>('');
+  const [receiptSha256, setReceiptSha256] = useState<string>('');
   const [extractedGstin, setExtractedGstin] = useState<string>('');
   const [companyGstin, setCompanyGstin] = useState<string>('');
   const [itcEligible, setItcEligible] = useState<boolean>(false);
@@ -153,6 +155,8 @@ export function ExpenseForm() {
         setPdfPassword('');
         setPendingBillFile(null);
         setReceiptFileName(file.name);
+        if (data.receipt_s3_key) setReceiptS3Key(data.receipt_s3_key);
+        if (data.receipt_sha256) setReceiptSha256(data.receipt_sha256);
 
         if (data.merchant_name) setMerchantName(data.merchant_name);
         if (data.total_amount) setTotalAmount(data.total_amount.toString());
@@ -215,6 +219,8 @@ export function ExpenseForm() {
         has_company_gstin: itcEligible,
         itc_eligible: itcEligible,
         igst_amount: itcEligible ? Math.round((amt - (amt / 1.18)) * 100) / 100 : 0,
+        receipt_s3_key: receiptS3Key || undefined,
+        receipt_sha256: receiptSha256 || undefined,
         allow_duplicate: true
       };
 

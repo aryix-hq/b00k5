@@ -74,6 +74,8 @@ export default function YearBookPage() {
   const [showAddExpenseModal, setShowAddExpenseModal] = useState(false);
   const [creatingExpense, setCreatingExpense] = useState(false);
   const [scanningBill, setScanningBill] = useState(false);
+  const [scannedReceiptKey, setScannedReceiptKey] = useState<string | null>(null);
+  const [scannedReceiptSha256, setScannedReceiptSha256] = useState<string | null>(null);
   const [newExp, setNewExp] = useState({
     vendor_name: '',
     date: `${startYear}-06-15`,
@@ -85,6 +87,8 @@ export default function YearBookPage() {
 
   // Load existing records and URL parameters
   useEffect(() => {
+    let cleanup: (() => void) | undefined;
+
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
       const fy = params.get('fy');
@@ -111,39 +115,43 @@ export default function YearBookPage() {
         else if (clean.startsWith('2024')) setSelectedFY('2024-25');
       };
       window.addEventListener('b00k5_fy_changed', onFY);
-      return () => window.removeEventListener('b00k5_fy_changed', onFY);
+      cleanup = () => window.removeEventListener('b00k5_fy_changed', onFY);
     }
 
     async function loadData() {
       try {
-        const stmtRes = await fetchApi('/api/v1/reconciliation/statements');
-        if (Array.isArray(stmtRes)) setStatements(stmtRes);
+        const [stmtRes, invRes, expRes] = await Promise.all([
+          fetchApi('/api/v1/reconciliation/statements').catch(() => []),
+          fetchApi('/api/v1/invoices/').catch(() => []),
+          fetchApi('/api/v1/expenses/').catch(() => [])
+        ]);
 
-        const invRes = await fetchApi('/api/v1/invoices/');
+        if (Array.isArray(stmtRes)) setStatements(stmtRes);
         if (Array.isArray(invRes)) setInvoices(invRes);
 
-        const expRes = await fetchApi('/api/v1/expenses/');
         if (Array.isArray(expRes)) {
-          const mapped: ExpenseItem[] = expRes.map((exp: any) => {
-            const total = parseFloat(exp.total_amount || '0');
-            const cgst = parseFloat(exp.cgst_amount || '0');
-            const sgst = parseFloat(exp.sgst_amount || '0');
-            const igst = parseFloat(exp.igst_amount || '0');
-            const taxTotal = cgst + sgst + igst;
-            const taxable = total - taxTotal;
-            return {
-              id: exp.id,
-              vendor_name: exp.merchant_name || 'Vendor',
-              date: exp.expense_date,
-              amount: total,
-              gstin: exp.merchant_gstin || '',
-              taxable_amount: taxable > 0 ? taxable : total,
-              gst_amount: taxTotal,
-              category: exp.category || 'Direct Expense',
-              schedule_iii_head: exp.category || '4010 Direct Operational Expense',
-              itc_eligible: taxTotal > 0
-            };
-          });
+          const mapped: ExpenseItem[] = expRes
+            .filter((exp: any) => exp.status !== 'struck_off' && exp.status !== 'rejected')
+            .map((exp: any) => {
+              const total = parseFloat(exp.total_amount || '0');
+              const cgst = parseFloat(exp.cgst_amount || '0');
+              const sgst = parseFloat(exp.sgst_amount || '0');
+              const igst = parseFloat(exp.igst_amount || '0');
+              const taxTotal = cgst + sgst + igst;
+              const taxable = total - taxTotal;
+              return {
+                id: exp.id,
+                vendor_name: exp.merchant_name || 'Vendor',
+                date: exp.expense_date ? String(exp.expense_date).slice(0, 10) : '',
+                amount: total,
+                gstin: exp.merchant_gstin || '',
+                taxable_amount: taxable > 0 ? taxable : total,
+                gst_amount: taxTotal,
+                category: exp.category || 'Direct Expense',
+                schedule_iii_head: exp.category || '4010 Direct Operational Expense',
+                itc_eligible: Boolean(exp.itc_eligible || taxTotal > 0)
+              };
+            });
           setExpenses(mapped);
         }
       } catch (e) {
@@ -151,6 +159,8 @@ export default function YearBookPage() {
       }
     }
     loadData();
+
+    return cleanup;
   }, [selectedFY]);
 
   // Handle Statement Upload
@@ -222,6 +232,8 @@ export default function YearBookPage() {
           setSelectedFY(data.date_validation.financial_year);
           setActiveTab('bills');
         }
+        setScannedReceiptKey(data.receipt_s3_key || null);
+        setScannedReceiptSha256(data.receipt_sha256 || null);
         setNewExp({
           vendor_name: data.merchant_name || 'Vendor',
           date: data.bill_date || `${startYear}-06-15`,
@@ -262,13 +274,17 @@ export default function YearBookPage() {
         cgst_amount: gst / 2,
         sgst_amount: gst / 2,
         igst_amount: 0,
-        itc_eligible: true
+        itc_eligible: true,
+        receipt_s3_key: scannedReceiptKey,
+        receipt_sha256: scannedReceiptSha256
       };
       await fetchApi('/api/v1/expenses/', {
         method: 'POST',
         body: JSON.stringify(payload)
       });
       setShowAddExpenseModal(false);
+      setScannedReceiptKey(null);
+      setScannedReceiptSha256(null);
       setNewExp({
         vendor_name: '',
         date: `${startYear}-06-15`,
@@ -280,26 +296,28 @@ export default function YearBookPage() {
       // Refresh expenses from backend
       const expRes = await fetchApi('/api/v1/expenses/');
       if (Array.isArray(expRes)) {
-        const mapped: ExpenseItem[] = expRes.map((exp: any) => {
-          const t = parseFloat(exp.total_amount || '0');
-          const cg = parseFloat(exp.cgst_amount || '0');
-          const sg = parseFloat(exp.sgst_amount || '0');
-          const ig = parseFloat(exp.igst_amount || '0');
-          const taxSum = cg + sg + ig;
-          const taxable = t - taxSum;
-          return {
-            id: exp.id,
-            vendor_name: exp.merchant_name || 'Vendor',
-            date: exp.expense_date,
-            amount: t,
-            gstin: exp.merchant_gstin || '',
-            taxable_amount: taxable > 0 ? taxable : t,
-            gst_amount: taxSum,
-            category: exp.category || 'Direct Expense',
-            schedule_iii_head: exp.category || '4010 Direct Operational Expense',
-            itc_eligible: taxSum > 0
-          };
-        });
+        const mapped: ExpenseItem[] = expRes
+          .filter((exp: any) => exp.status !== 'struck_off' && exp.status !== 'rejected')
+          .map((exp: any) => {
+            const t = parseFloat(exp.total_amount || '0');
+            const cg = parseFloat(exp.cgst_amount || '0');
+            const sg = parseFloat(exp.sgst_amount || '0');
+            const ig = parseFloat(exp.igst_amount || '0');
+            const taxSum = cg + sg + ig;
+            const taxable = t - taxSum;
+            return {
+              id: exp.id,
+              vendor_name: exp.merchant_name || 'Vendor',
+              date: exp.expense_date ? String(exp.expense_date).slice(0, 10) : '',
+              amount: t,
+              gstin: exp.merchant_gstin || '',
+              taxable_amount: taxable > 0 ? taxable : t,
+              gst_amount: taxSum,
+              category: exp.category || 'Direct Expense',
+              schedule_iii_head: exp.category || '4010 Direct Operational Expense',
+              itc_eligible: Boolean(exp.itc_eligible || taxSum > 0)
+            };
+          });
         setExpenses(mapped);
       }
     } catch (err: any) {
@@ -320,7 +338,7 @@ export default function YearBookPage() {
   });
 
   const displayedInvoices = invoices.filter(i => {
-    const d = i.issue_date;
+    const d = i.issue_date ? String(i.issue_date).slice(0, 10) : '';
     if (!d) return false;
     if (selectedMonth === 'all') {
       return d >= fyStartDate && d <= fyEndDate;
@@ -330,13 +348,15 @@ export default function YearBookPage() {
   });
 
   const displayedStatements = statements.filter(s => {
-    const from = s.statement_from || '';
-    const to = s.statement_to || '';
+    const from = (s.statement_from || '').slice(0, 10);
+    const to = (s.statement_to || '').slice(0, 10);
     if (selectedMonth === 'all') {
-      return (from >= fyStartDate && from <= fyEndDate) || (to >= fyStartDate && to <= fyEndDate) || (!from && !to);
+      return (from >= fyStartDate && from <= fyEndDate) || (to >= fyStartDate && to <= fyEndDate) || (from && to && from <= fyEndDate && to >= fyStartDate) || (!from && !to);
     }
     const targetYM = `${getTargetYearForMonth(selectedMonth)}-${selectedMonth}`;
-    return from.startsWith(targetYM) || to.startsWith(targetYM);
+    const mStart = `${targetYM}-01`;
+    const mEnd = `${targetYM}-31`;
+    return from.startsWith(targetYM) || to.startsWith(targetYM) || (from && to && from <= mEnd && to >= mStart);
   });
 
   // KPI metrics correctly scoped to selected financial year and period
@@ -397,7 +417,7 @@ export default function YearBookPage() {
               <div className="text-2xl font-bold text-emerald-400 font-mono">
                 ₹{totalInvoiceAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
               </div>
-              <p className="text-[11px] text-slate-500">{invoices.length} Registered Outward Invoices</p>
+              <p className="text-[11px] text-slate-500">{displayedInvoices.length} Registered Outward Invoices</p>
             </div>
 
             <div className="p-5 bg-slate-900 border border-slate-800 rounded-xl space-y-1">
@@ -405,7 +425,7 @@ export default function YearBookPage() {
               <div className="text-2xl font-bold text-rose-400 font-mono">
                 ₹{totalBillsAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
               </div>
-              <p className="text-[11px] text-slate-500">{expenses.length} Schedule III Vouchers Posted</p>
+              <p className="text-[11px] text-slate-500">{displayedExpenses.length} Schedule III Vouchers Posted</p>
             </div>
 
             <div className="p-5 bg-slate-900 border border-slate-800 rounded-xl space-y-1">
@@ -420,7 +440,7 @@ export default function YearBookPage() {
 
             <div className="p-5 bg-slate-900 border border-slate-800 rounded-xl space-y-1">
               <span className="text-xs text-slate-400 font-medium">Bank Statements Deposited</span>
-              <div className="text-2xl font-bold text-white font-mono">{statements.length}</div>
+              <div className="text-2xl font-bold text-white font-mono">{displayedStatements.length}</div>
               <Link href="/reconciliation" className="text-[11px] text-amber-400 hover:underline flex items-center gap-1">
                 Go to 3-Tier Matcher <ChevronRight className="w-3 h-3" />
               </Link>
@@ -473,9 +493,15 @@ export default function YearBookPage() {
                 const isSelected = selectedMonth === m.key;
                 const mYear = parseInt(m.key, 10) >= 4 ? startYear : endYear;
                 const monthDateStr = `${mYear}-${m.key}`;
-                const monthInvoices = invoices.filter(inv => inv.issue_date?.startsWith(monthDateStr));
+                const mStart = `${monthDateStr}-01`;
+                const mEnd = `${monthDateStr}-31`;
+                const monthInvoices = invoices.filter(inv => String(inv.issue_date || '').slice(0, 10).startsWith(monthDateStr));
                 const monthExpenses = expenses.filter(exp => exp.date?.startsWith(monthDateStr));
-                const hasStatement = statements.some(s => s.statement_from?.startsWith(monthDateStr) || s.statement_to?.startsWith(monthDateStr));
+                const hasStatement = statements.some(s => {
+                  const from = String(s.statement_from || '').slice(0, 10);
+                  const to = String(s.statement_to || '').slice(0, 10);
+                  return from.startsWith(monthDateStr) || to.startsWith(monthDateStr) || (from && to && from <= mEnd && to >= mStart);
+                });
 
                 return (
                   <button

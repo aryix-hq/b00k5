@@ -18,6 +18,32 @@ class LedgerService:
         return res.scalar_one_or_none()
 
     @staticmethod
+    async def ensure_account(
+        session: AsyncSession,
+        tenant_id: uuid.UUID,
+        code: str,
+        name: str,
+        acc_type: str,
+        sub_type: str,
+        normal_balance: str
+    ) -> ChartOfAccounts:
+        acc = await LedgerService.get_account_by_code(session, tenant_id, code)
+        if not acc:
+            acc = ChartOfAccounts(
+                id=uuid.uuid4(),
+                tenant_id=tenant_id,
+                code=code,
+                name=name,
+                type=acc_type,
+                sub_type=sub_type,
+                normal_balance=normal_balance,
+                is_system_account=True
+            )
+            session.add(acc)
+            await session.flush()
+        return acc
+
+    @staticmethod
     async def post_invoice_journal(
         session: AsyncSession,
         invoice: Invoice,
@@ -25,23 +51,20 @@ class LedgerService:
     ) -> JournalEntry:
         """
         Creates a balanced double-entry journal entry for an issued Tax Invoice:
-        DR 1020 Accounts Receivable  = Grand Total
-        CR 4010 Operating Revenue     = Subtotal
-        CR 2020 Output CGST           = CGST Total (if intra-state)
-        CR 2021 Output SGST           = SGST Total (if intra-state)
-        CR 2022 Output IGST           = IGST Total (if inter-state)
+        DR 1020 Trade Receivables     = Grand Total
+        CR 3010 Operating Revenue     = Subtotal
+        CR 2050 Output CGST           = CGST Total (if intra-state)
+        CR 2051 Output SGST           = SGST Total (if intra-state)
+        CR 2052 Output IGST           = IGST Total (if inter-state)
         """
         tenant_id = invoice.tenant_id
 
-        # Fetch required Schedule III accounts
-        ar_acc = await LedgerService.get_account_by_code(session, tenant_id, "1020")
-        rev_acc = await LedgerService.get_account_by_code(session, tenant_id, "3010")
-        cgst_acc = await LedgerService.get_account_by_code(session, tenant_id, "2050")
-        sgst_acc = await LedgerService.get_account_by_code(session, tenant_id, "2051")
-        igst_acc = await LedgerService.get_account_by_code(session, tenant_id, "2052")
-
-        if not (ar_acc and rev_acc):
-            raise ValueError("Required Schedule III accounts (1020 Trade Receivables, 3010 Revenue from Operations) not found.")
+        # Fetch or auto-provision required Schedule III accounts
+        ar_acc = await LedgerService.ensure_account(session, tenant_id, "1020", "Trade Receivables (Sundry Debtors)", "asset", "accounts_receivable", "debit")
+        rev_acc = await LedgerService.ensure_account(session, tenant_id, "3010", "Revenue from Operations (Sales / Services)", "revenue", "operating_revenue", "credit")
+        cgst_acc = await LedgerService.ensure_account(session, tenant_id, "2050", "Output CGST Payable", "liability", "tax_payable", "credit")
+        sgst_acc = await LedgerService.ensure_account(session, tenant_id, "2051", "Output SGST Payable", "liability", "tax_payable", "credit")
+        igst_acc = await LedgerService.ensure_account(session, tenant_id, "2052", "Output IGST Payable", "liability", "tax_payable", "credit")
 
         # Create Journal Entry header
         entry = JournalEntry(
@@ -114,6 +137,76 @@ class LedgerService:
         total_credits = sum(line.credit_amount for line in lines)
         if total_debits != total_credits:
             raise ValueError(f"Imbalanced Journal Entry! Debits: {total_debits}, Credits: {total_credits}")
+
+        session.add_all(lines)
+        return entry
+
+    @staticmethod
+    async def post_razorpay_settlement_journal(
+        session: AsyncSession,
+        invoice: Invoice,
+        razorpay_payment_id: Optional[str] = None,
+        gateway_fee: Decimal = Decimal("0.00"),
+        created_by_user_id: Optional[uuid.UUID] = None
+    ) -> JournalEntry:
+        """
+        Posts the balanced settlement entry when an imported Razorpay invoice is already paid:
+        DR 1010 Bank Current Account               = Grand Total - Gateway Fee
+        DR 4030 Payment Gateway & Bank Wire Charges = Gateway Fee (if > 0)
+        CR 1020 Trade Receivables (Sundry Debtors) = Grand Total
+        """
+        tenant_id = invoice.tenant_id
+        bank_acc = await LedgerService.ensure_account(session, tenant_id, "1010", "Bank Current Account (HDFC Bank)", "asset", "bank", "debit")
+        ar_acc = await LedgerService.ensure_account(session, tenant_id, "1020", "Trade Receivables (Sundry Debtors)", "asset", "accounts_receivable", "debit")
+        fee_acc = await LedgerService.ensure_account(session, tenant_id, "4030", "Payment Gateway & Bank Wire Charges", "expense", "bank_charges", "debit")
+
+        fee = max(Decimal("0.00"), round(Decimal(str(gateway_fee or "0.00")), 2))
+        if fee >= invoice.grand_total:
+            fee = Decimal("0.00")
+        net_bank = invoice.grand_total - fee
+        pay_ref = f" (Payment ID: {razorpay_payment_id})" if razorpay_payment_id else ""
+
+        entry = JournalEntry(
+            tenant_id=tenant_id,
+            entry_number=f"JV-RZP-{invoice.invoice_number}",
+            entry_date=invoice.issue_date,
+            reference_type="invoice_payment",
+            reference_id=invoice.id,
+            narration=f"Razorpay Invoice Settlement for Inv #{invoice.invoice_number}{pay_ref}",
+            status="posted",
+            is_posted=True,
+            created_by=created_by_user_id
+        )
+        session.add(entry)
+        await session.flush()
+
+        lines = [
+            JournalLine(
+                journal_entry_id=entry.id,
+                tenant_id=tenant_id,
+                account_id=bank_acc.id,
+                debit_amount=net_bank,
+                credit_amount=Decimal("0.00"),
+                description=f"Razorpay settlement received for Inv #{invoice.invoice_number}{pay_ref}"
+            )
+        ]
+        if fee > Decimal("0.00"):
+            lines.append(JournalLine(
+                journal_entry_id=entry.id,
+                tenant_id=tenant_id,
+                account_id=fee_acc.id,
+                debit_amount=fee,
+                credit_amount=Decimal("0.00"),
+                description=f"Razorpay gateway fee on Inv #{invoice.invoice_number}"
+            ))
+        lines.append(JournalLine(
+            journal_entry_id=entry.id,
+            tenant_id=tenant_id,
+            account_id=ar_acc.id,
+            debit_amount=Decimal("0.00"),
+            credit_amount=invoice.grand_total,
+            description=f"Debtor settlement for Inv #{invoice.invoice_number}"
+        ))
 
         session.add_all(lines)
         return entry

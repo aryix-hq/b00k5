@@ -29,6 +29,7 @@ export function ExpenseForm() {
 
   // Form Fields
   const [paymentSource, setPaymentSource] = useState<'company_bank' | 'personal_account'>('company_bank');
+  const [directors, setDirectors] = useState<Array<{ name: string; din: string; designation: string }>>([]);
   const [payeeDirector, setPayeeDirector] = useState<string>('');
   const [merchantName, setMerchantName] = useState<string>('');
   const [totalAmount, setTotalAmount] = useState<string>('');
@@ -61,7 +62,7 @@ export function ExpenseForm() {
   const [success, setSuccess] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  // Resolve verified company GSTIN from environment / auth
+  // Resolve verified company GSTIN and Director Roster from backend
   useEffect(() => {
     if (typeof window !== 'undefined') {
       const g = localStorage.getItem('b00k5_extracted_gstin') || localStorage.getItem('b00k5_gstin') || '';
@@ -69,6 +70,22 @@ export function ExpenseForm() {
         const cleanG = g.trim().toUpperCase();
         setCompanyGstin(cleanG);
       }
+
+      const token = localStorage.getItem('b00k5_token');
+      const tenantId = localStorage.getItem('b00k5_tenant_id');
+      const headers: Record<string, string> = {};
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      if (tenantId) headers['X-Tenant-ID'] = tenantId;
+
+      fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/compliance/directors`, { headers })
+        .then(r => r.ok ? r.json() : null)
+        .then(data => {
+          if (data && Array.isArray(data.directors) && data.directors.length > 0) {
+            setDirectors(data.directors);
+            setPayeeDirector(prev => prev || data.directors[0].name);
+          }
+        })
+        .catch(() => {});
     }
   }, []);
 
@@ -300,18 +317,32 @@ export function ExpenseForm() {
           <div className="pt-2 animate-fadeIn">
             <label className="block text-xs font-medium text-amber-300 mb-1.5 flex items-center gap-1.5">
               <User className="w-3.5 h-3.5" />
-              Director / Payee Claimant
+              Director / Payee Claimant (from Corporate Statutory Roster)
             </label>
-            <select
-              id="director-payee-select"
-              value={payeeDirector}
-              onChange={(e) => setPayeeDirector(e.target.value)}
-              className="w-full bg-slate-950 border border-amber-500/30 rounded-lg px-3 py-2 text-white text-xs font-medium focus:outline-none focus:border-amber-400 cursor-pointer"
-            >
-              <option value="Vikram (Director)">Vikram (Director / Founder)</option>
-              <option value="Raman (Director)">Raman (Director)</option>
-              <option value="Rohit (Director)">Rohit (Director)</option>
-            </select>
+            {directors.length > 0 ? (
+              <select
+                id="director-payee-select"
+                value={payeeDirector}
+                onChange={(e) => setPayeeDirector(e.target.value)}
+                className="w-full bg-slate-950 border border-amber-500/30 rounded-lg px-3 py-2 text-white text-xs font-medium focus:outline-none focus:border-amber-400 cursor-pointer"
+              >
+                {directors.map((d, idx) => (
+                  <option key={`${d.name}-${idx}`} value={d.name}>
+                    {d.name} ({d.designation || 'Director'}{d.din && d.din !== 'N/A' ? ` — DIN: ${d.din}` : ''})
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                type="text"
+                id="director-payee-select"
+                value={payeeDirector}
+                onChange={(e) => setPayeeDirector(e.target.value)}
+                placeholder="Enter Director Name"
+                className="w-full bg-slate-950 border border-amber-500/30 rounded-lg px-3 py-2 text-white text-xs font-medium focus:outline-none focus:border-amber-400"
+                required
+              />
+            )}
           </div>
         )}
       </div>

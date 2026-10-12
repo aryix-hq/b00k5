@@ -653,10 +653,10 @@ export default function SettingsPage() {
                   <div className="p-3 bg-slate-950 border border-slate-800/80 rounded-lg space-y-1">
                     <span className="text-slate-500 font-medium">Statutory Auditor (Form ADT-1)</span>
                     <p className="text-slate-200 font-medium">
-                      {profile.statutory_profile?.auditor_firm_name || profile.statutory_profile?.auditor_name || 'M/s S. Raman & Associates (Statutory Auditors)'}
+                      {profile.statutory_profile?.auditor_firm_name || profile.statutory_profile?.auditor_name || 'Not Uploaded (Upload ADT-1 / Auditor Report)'}
                     </p>
                     <span className="text-[10px] text-slate-500">
-                      FRN: {profile.statutory_profile?.auditor_frn || '012948N'} | Membership: {profile.statutory_profile?.membership_no || '208950'}
+                      FRN: {profile.statutory_profile?.auditor_frn || 'N/A'} | Membership: {profile.statutory_profile?.membership_no || 'N/A'}
                     </span>
                   </div>
 

@@ -216,6 +216,9 @@ export default function CompanyProfileSettingsPage() {
       'INC_20A': 'statutory_filing',
       'MGT_7A': 'statutory_filing',
       'AOC_4': 'statutory_filing',
+      'AUDITOR_REPORT': 'statutory_filing',
+      'BOARD_REPORT': 'equity_governance',
+      'DIR_12': 'equity_governance',
     };
     const cat = categoryMap[docType.toUpperCase()] || 'corporate_legal';
     fd.append('category', cat);

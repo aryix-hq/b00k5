@@ -26,8 +26,13 @@ async def get_tenant_director_roster(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Returns verified director roster binding DINs and designations for current tenant.
+    Returns verified director roster binding DINs and designations for current tenant
+    from both MCA Statutory Documents (tenant.statutory_profile['directors']) and TenantUser records.
     """
+    prof = tenant.statutory_profile or {}
+    mca_directors = list(prof.get("directors") or [])
+    fallback_dins = list(prof.get("founding_director_dins") or [])
+
     stmt = (
         select(User.first_name, User.last_name, User.email, TenantUser.role, TenantUser.din)
         .join(TenantUser, TenantUser.user_id == User.id)
@@ -35,25 +40,56 @@ async def get_tenant_director_roster(
     )
     res = await db.execute(stmt)
     rows = res.all()
+
     roster = []
+    used_mca_indices = set()
+
     for fn, ln, email, role, din in rows:
-        designation = "Managing Director" if role == "owner" else (role.replace("_", " ").title() if role else "Director")
+        if role and role.lower() in ("auditor", "ca", "external_auditor", "viewer"):
+            continue
+        user_full = f"{fn or ''} {ln or ''}".strip()
+        user_first = (fn or "").strip().lower()
+        matched_mca = None
+        for idx, md in enumerate(mca_directors):
+            md_name = (md.get("name") or "").strip()
+            if (din and md.get("din") == din) or (user_first and user_first in md_name.lower()) or (user_full and user_full.lower() in md_name.lower()):
+                matched_mca = md
+                used_mca_indices.add(idx)
+                break
+
+        resolved_name = (matched_mca.get("name") if matched_mca and len(matched_mca.get("name", "")) >= len(user_full) else user_full) or "Director"
+        resolved_din = (
+            (matched_mca.get("din") if matched_mca and matched_mca.get("din") not in (None, "", "N/A") else None)
+            or din
+            or (fallback_dins[0] if fallback_dins else "N/A")
+        )
+        resolved_desig = (
+            (matched_mca.get("designation") if matched_mca and matched_mca.get("designation") else None)
+            or ("Director" if role == "owner" else (role.replace("_", " ").title() if role else "Director"))
+        )
         roster.append({
-            "name": f"{fn} {ln}".strip(),
+            "name": resolved_name,
             "email": email,
-            "din": din or "N/A",
-            "designation": designation,
-            "role": role
+            "din": resolved_din,
+            "designation": resolved_desig,
+            "role": role or "director"
         })
 
-    if not roster and tenant.statutory_profile:
-        if tenant.statutory_profile.get("directors"):
-            roster = tenant.statutory_profile.get("directors")
-        elif tenant.statutory_profile.get("founding_director_dins"):
-            roster = [
-                {"name": f"Director ({d})", "din": d, "designation": "Director", "email": ""}
-                for d in tenant.statutory_profile.get("founding_director_dins")
-            ]
+    for idx, md in enumerate(mca_directors):
+        if idx not in used_mca_indices and md.get("name"):
+            roster.append({
+                "name": md["name"],
+                "email": md.get("email", ""),
+                "din": md.get("din") or "N/A",
+                "designation": md.get("designation") or "Director",
+                "role": "director"
+            })
+
+    if not roster and fallback_dins:
+        roster = [
+            {"name": f"Director (DIN: {d})", "din": d, "designation": "Director", "email": "", "role": "director"}
+            for d in fallback_dins
+        ]
 
     return {
         "tenant_id": str(tenant.id),
@@ -635,11 +671,11 @@ async def get_statutory_documents_status(
         "form_inc_22": "INC_22",
         "form_adt_1": "ADT_1",
         "form_dir_12": "DIR_12",
+        "dir_12": "DIR_12",
         "form_mgt_7": "MGT_7A",
         "form_aoc_4": "AOC_4",
         "board_report": "BOARD_REPORT",
-        "auditor_report": "AUDITOR_REPORT",
-        "minutes_of_meeting": "BOARD_REPORT"
+        "auditor_report": "AUDITOR_REPORT"
     }
 
     vault_stmt = select(DocumentVault).where(DocumentVault.tenant_id == tenant.id)
@@ -649,20 +685,26 @@ async def get_statutory_documents_status(
     vault_map = {}
     for d in vault_docs:
         meta = d.metadata_json or {}
-        doc_type = meta.get("document_type") or d.category
+        doc_type = meta.get("document_type")
         if doc_type:
             vault_map[doc_type] = d
             if doc_type in DOC_MAP:
                 vault_map[DOC_MAP[doc_type]] = d
-        if d.category:
-            vault_map[d.category] = d
-            if d.category in DOC_MAP:
-                vault_map[DOC_MAP[d.category]] = d
+        if d.category and d.category in DOC_MAP:
+            vault_map[DOC_MAP[d.category]] = d
         if d.document_name:
             vault_map[d.document_name] = d
-            for c, mapped_code in DOC_MAP.items():
-                if c.replace('_', ' ') in d.document_name.lower():
-                    vault_map[mapped_code] = d
+            dname_low = d.document_name.lower()
+            if "auditor" in dname_low and "report" in dname_low:
+                vault_map["AUDITOR_REPORT"] = d
+            elif ("board" in dname_low or "director" in dname_low) and "report" in dname_low:
+                vault_map["BOARD_REPORT"] = d
+            elif "dir-12" in dname_low or "dir 12" in dname_low:
+                vault_map["DIR_12"] = d
+            else:
+                for c, mapped_code in DOC_MAP.items():
+                    if c.replace('_', ' ') in dname_low:
+                        vault_map[mapped_code] = d
 
     prof = tenant.statutory_profile or {}
     docs_status = []
@@ -752,6 +794,36 @@ async def get_statutory_documents_status(
                     "declaration": "Pending Form INC-20A Filing",
                     "borrowing_powers": "Inactive until Form INC-20A uploaded"
                 }
+        elif code == "AUDITOR_REPORT":
+            if vault_doc or prof.get("auditor_report_verified"):
+                is_verified = True
+                extracted_info = {
+                    "audit_opinion": extracted_info.get("audit_opinion") or prof.get("audit_opinion") or "Unqualified (Clean Opinion)",
+                    "cin": extracted_info.get("cin") or tenant.cin or "",
+                    "srn": extracted_info.get("srn") or prof.get("srn") or ""
+                }
+            else:
+                is_verified = False
+                extracted_info = {"audit_opinion": "Pending Extract of Auditor's Report Upload"}
+        elif code == "BOARD_REPORT":
+            if vault_doc or prof.get("board_report_verified"):
+                is_verified = True
+                extracted_info = {
+                    "board_report_status": extracted_info.get("board_report_status") or prof.get("board_report_status") or "Verified u/s 134",
+                    "cin": extracted_info.get("cin") or tenant.cin or "",
+                    "srn": extracted_info.get("srn") or prof.get("srn") or ""
+                }
+            else:
+                is_verified = False
+                extracted_info = {"board_report_status": "Pending Extract of Board's Report Upload"}
+        elif code == "DIR_12":
+            if vault_doc or prof.get("dir12_verified"):
+                is_verified = True
+            else:
+                is_verified = False
+                if prof.get("directors"):
+                    d_str = ", ".join(f"{d.get('name')} (DIN: {d.get('din')})" for d in prof["directors"])
+                    extracted_info = {"directors_extracted": d_str}
         else:
             if vault_doc:
                 is_verified = True

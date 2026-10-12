@@ -271,9 +271,49 @@ async def smart_ingest_document(
 
     # 5. Merge into tenant.statutory_profile and update tenant attributes (Legal Source of Truth)
     current_statutory = dict(tenant.statutory_profile or {})
+
+    # Merge directors list cleanly without overwriting existing directors
+    existing_directors = list(current_statutory.get("directors") or [])
+    new_directors = ext_fields.get("directors") or []
+    for nd in new_directors:
+        if not isinstance(nd, dict) or not nd.get("name"):
+            continue
+        nd_name_low = nd["name"].strip().lower()
+        nd_din = (nd.get("din") or "").strip()
+        matched_existing = False
+        for ed in existing_directors:
+            ed_name_low = (ed.get("name") or "").strip().lower()
+            ed_din = (ed.get("din") or "").strip()
+            if (nd_din and nd_din != "N/A" and ed_din == nd_din) or (ed_name_low == nd_name_low) or (nd_name_low in ed_name_low) or (ed_name_low in nd_name_low):
+                # Prefer fuller name & valid DIN
+                if len(nd["name"]) > len(ed.get("name") or ""):
+                    ed["name"] = nd["name"]
+                if nd_din and nd_din != "N/A":
+                    ed["din"] = nd_din
+                if nd.get("designation"):
+                    ed["designation"] = nd["designation"]
+                matched_existing = True
+                break
+        if not matched_existing:
+            existing_directors.append(nd)
+
     for k, v in ext_fields.items():
-        if v is not None:
+        if v is not None and k != "directors":
             current_statutory[k] = v
+    if existing_directors:
+        current_statutory["directors"] = existing_directors
+        # Also sync DIN to TenantUser if the owner/director user matches
+        from app.models.tenant import TenantUser
+        tu_stmt = select(TenantUser, User).join(User, TenantUser.user_id == User.id).where(TenantUser.tenant_id == tenant.id)
+        tu_rows = (await db.execute(tu_stmt)).all()
+        for tu_obj, u_obj in tu_rows:
+            u_first = (u_obj.first_name or "").strip().lower()
+            for d_entry in existing_directors:
+                d_din = d_entry.get("din")
+                d_name_low = (d_entry.get("name") or "").lower()
+                if d_din and d_din != "N/A" and (not tu_obj.din or (u_first and u_first in d_name_low)):
+                    tu_obj.din = d_din
+                    db.add(tu_obj)
 
     # Legally binding fields updated strictly from authentic documents:
     doc_type_val = extracted.get("document_type")
@@ -345,6 +385,23 @@ async def smart_ingest_document(
         current_statutory["borrowing_powers_active"] = True
         current_statutory["inc20a_verified"] = True
 
+    # Auditor's Report / Extract of Auditor's Report
+    elif doc_type_val == "auditor_report":
+        current_statutory["auditor_report_verified"] = True
+        if ext_fields.get("audit_opinion"):
+            current_statutory["audit_opinion"] = ext_fields["audit_opinion"]
+        if ext_fields.get("auditor_firm_name") and not current_statutory.get("auditor_name"):
+            current_statutory["auditor_name"] = ext_fields["auditor_firm_name"]
+
+    # Board's Report / Extract of Board's Report
+    elif doc_type_val == "board_report":
+        current_statutory["board_report_verified"] = True
+        current_statutory["board_report_status"] = "Verified u/s 134"
+
+    # Form DIR-12
+    elif doc_type_val == "form_dir_12":
+        current_statutory["dir12_verified"] = True
+
     # Form GST REG-06 updates GSTIN, State Code, Legal/Trade Name
     elif doc_type_val == "gst_reg06":
         if ext_fields.get("gstin"):
@@ -359,15 +416,14 @@ async def smart_ingest_document(
         current_statutory["gst_reg06_verified"] = True
 
     # Generic fallbacks: never populate GSTIN or TAN without authentic document!
-    else:
-        if ext_fields.get("legal_name") and (not tenant.legal_name or "Acme" in tenant.legal_name):
-            tenant.legal_name = ext_fields["legal_name"]
-        if ext_fields.get("cin") and not tenant.cin:
-            tenant.cin = ext_fields["cin"]
-        if ext_fields.get("pan") and not tenant.pan:
-            tenant.pan = ext_fields["pan"]
-        if ext_fields.get("new_registered_office") and not tenant.registered_office:
-            tenant.registered_office = ext_fields["new_registered_office"]
+    if ext_fields.get("legal_name") and (not tenant.legal_name or "Acme" in tenant.legal_name or tenant.legal_name == "Web address"):
+        tenant.legal_name = ext_fields["legal_name"]
+    if ext_fields.get("cin") and not tenant.cin:
+        tenant.cin = ext_fields["cin"]
+    if ext_fields.get("pan") and not tenant.pan:
+        tenant.pan = ext_fields["pan"]
+    if ext_fields.get("registered_office") and (not tenant.registered_office or tenant.registered_office.lower().startswith("of the company")):
+        tenant.registered_office = ext_fields["registered_office"]
 
     tenant.statutory_profile = current_statutory
     db.add(tenant)

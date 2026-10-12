@@ -27,6 +27,20 @@ STANDARD_CATEGORIES = [c["display"] for c in SCHEDULE_III_EXPENSE_CATEGORIES]
 
 router = APIRouter()
 
+def resolve_primary_director_name(tenant: Tenant, current_user: Optional[User] = None, provided: Optional[str] = None) -> str:
+    if provided and provided.strip() and provided.strip() != "Vikram":
+        return provided.strip()
+    prof = tenant.statutory_profile or {}
+    directors = prof.get("directors") or []
+    if isinstance(directors, list) and len(directors) > 0 and isinstance(directors[0], dict) and directors[0].get("name"):
+        return directors[0]["name"].strip()
+    if current_user:
+        u_name = f"{current_user.first_name or ''} {current_user.last_name or ''}".strip()
+        if u_name:
+            return u_name
+    return provided.strip() if provided and provided.strip() else "Director"
+
+
 class ExpenseCreateRequest(BaseModel):
     merchant_name: str
     expense_date: Optional[date] = None
@@ -35,7 +49,7 @@ class ExpenseCreateRequest(BaseModel):
     currency: str = "INR"
     payment_mode: str = "company_bank" # "company_bank", "personal_savings", "cash"
     paid_personally: bool = False      # Out-of-pocket toggle
-    director_name: Optional[str] = "Vikram"
+    director_name: Optional[str] = None
     merchant_gstin: Optional[str] = None
     cgst_amount: Optional[Decimal] = Decimal("0.00")
     sgst_amount: Optional[Decimal] = Decimal("0.00")
@@ -127,9 +141,10 @@ async def create_expense(
 
     # 3. Schedule III Double-Entry Booking
     # Setup standard balance sheet accounts
+    resolved_director = resolve_primary_director_name(tenant, current_user, payload.director_name)
     bank_acc = await ensure_account(db, tenant.id, "1010", "Bank Current Account (HDFC Bank)", "asset", "bank", "debit")
     equip_acc = await ensure_account(db, tenant.id, "1020", "Office Equipment / Assets", "asset", "fixed_asset", "debit")
-    director_payable_acc = await ensure_account(db, tenant.id, "2105", f"Director Reimbursements Payable - {payload.director_name or 'Vikram'}", "liability", "director_reimbursement", "credit")
+    director_payable_acc = await ensure_account(db, tenant.id, "2105", f"Director Reimbursements Payable - {resolved_director}", "liability", "director_reimbursement", "credit")
     itc_igst_acc = await ensure_account(db, tenant.id, "1082", "GST Input Credit - IGST", "asset", "tax_asset", "debit")
 
     # Resolve statutory Schedule III Nominal Category Account
@@ -214,7 +229,7 @@ async def create_expense(
                 account_id=target_acc.id,
                 debit_amount=base_amount,
                 credit_amount=Decimal("0.00"),
-                description=f"Expense for {payload.merchant_name} (Paid personally by {payload.director_name})"
+                description=f"Expense for {payload.merchant_name} (Paid personally by {resolved_director})"
             ))
             lines.append(JournalLine(
                 id=uuid.uuid4(),
@@ -233,7 +248,7 @@ async def create_expense(
                 account_id=target_acc.id,
                 debit_amount=total,
                 credit_amount=Decimal("0.00"),
-                description=f"Asset/Expense addition paid personally by {payload.director_name}"
+                description=f"Asset/Expense addition paid personally by {resolved_director}"
             ))
 
         lines.append(JournalLine(
@@ -243,7 +258,7 @@ async def create_expense(
             account_id=director_payable_acc.id,
             debit_amount=Decimal("0.00"),
             credit_amount=total,
-            description=f"Director reimbursement payable to {payload.director_name}"
+            description=f"Director reimbursement payable to {resolved_director}"
         ))
     else:
         # COMPANY PAID EXPENSE:
@@ -320,7 +335,7 @@ async def create_expense(
         fiscal_year_id=fy_record.id,
         status="approved" if payload.paid_personally else "submitted",
         paid_personally=payload.paid_personally,
-        director_name=payload.director_name or ("Vikram" if payload.paid_personally else None),
+        director_name=resolved_director if payload.paid_personally else None,
         payment_mode=payload.payment_mode,
         journal_entry_number=jv_number,
         has_company_gstin=has_company_gstin,
@@ -387,7 +402,7 @@ async def create_expense(
     return resp
 
 class SettleReimbursementRequest(BaseModel):
-    director_name: Optional[str] = "Vikram"
+    director_name: Optional[str] = None
     settlement_amount: Decimal
     bank_account_code: str = "1010"
     reference_number: str = "NEFT-FOUNDER-SETTLE"
@@ -408,9 +423,10 @@ async def settle_director_reimbursement(
     """
     amount = payload.settlement_amount
     s_date = payload.settlement_date or date.today()
+    resolved_director = resolve_primary_director_name(tenant, current_user, payload.director_name)
 
     bank_acc = await ensure_account(db, tenant.id, payload.bank_account_code, "Bank Current Account (HDFC Bank)", "asset", "bank", "debit")
-    payable_acc = await ensure_account(db, tenant.id, "2105", f"Director Reimbursements Payable - {payload.director_name}", "liability", "director_reimbursement", "credit")
+    payable_acc = await ensure_account(db, tenant.id, "2105", f"Director Reimbursements Payable - {resolved_director}", "liability", "director_reimbursement", "credit")
 
     jv_num = f"JV-SETTLE-{uuid.uuid4().hex[:8].upper()}"
     entry = JournalEntry(
@@ -419,7 +435,7 @@ async def settle_director_reimbursement(
         entry_number=jv_num,
         entry_date=s_date,
         reference_type="director_settlement",
-        narration=f"Founder Settlement: {payload.reference_number} to {payload.director_name}",
+        narration=f"Founder Settlement: {payload.reference_number} to {resolved_director}",
         status="posted",
         is_posted=True,
         created_by=current_user.id
@@ -436,7 +452,7 @@ async def settle_director_reimbursement(
         account_id=payable_acc.id,
         debit_amount=amount,
         credit_amount=Decimal("0.00"),
-        description=f"Liability discharge for {payload.director_name}"
+        description=f"Liability discharge for {resolved_director}"
     )
     l2 = JournalLine(
         id=uuid.uuid4(),
@@ -591,9 +607,10 @@ async def sync_tenant_expenses_with_gl(
         lines_by_je.setdefault(l.journal_entry_id, []).append(l)
 
     # Setup standard accounts
+    primary_dir = resolve_primary_director_name(tenant, None, None)
     bank_acc = await ensure_account(db, tenant.id, "1010", "Bank Current Account (HDFC Bank)", "asset", "bank", "debit")
     equip_acc = await ensure_account(db, tenant.id, "1020", "Office Equipment / Assets", "asset", "fixed_asset", "debit")
-    director_payable_acc = await ensure_account(db, tenant.id, "2105", "Director Reimbursements Payable - Vikram", "liability", "director_reimbursement", "credit")
+    director_payable_acc = await ensure_account(db, tenant.id, "2105", f"Director Reimbursements Payable - {primary_dir}", "liability", "director_reimbursement", "credit")
     itc_igst_acc = await ensure_account(db, tenant.id, "1082", "GST Input Credit - IGST", "asset", "tax_asset", "debit")
 
     linked_count = 0

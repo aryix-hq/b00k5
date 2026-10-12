@@ -86,7 +86,9 @@ class BillInvoiceParser:
     def parse_customer_invoice(
         file_bytes: bytes,
         filename: str,
-        password: Optional[str] = None
+        password: Optional[str] = None,
+        company_gstin: Optional[str] = None,
+        closed_fiscal_years: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Parses outward customer invoice (PDF/image) using the StatutoryBillAnalyzer model.
@@ -97,6 +99,8 @@ class BillInvoiceParser:
             file_bytes=file_bytes,
             filename=filename,
             password=password,
+            company_gstin=company_gstin,
+            closed_fiscal_years=closed_fiscal_years,
             is_customer_invoice=True
         )
 

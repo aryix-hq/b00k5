@@ -137,6 +137,9 @@ export default function ExpensesHubPage() {
   const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
   const [loadingAudit, setLoadingAudit] = useState(false);
 
+  // Corporate Director Roster
+  const [directors, setDirectors] = useState<Array<{ name: string; din: string; designation: string }>>([]);
+
   // Edit Expense State
   const [editExpense, setEditExpense] = useState<ExpenseItem | null>(null);
   const [editMerchant, setEditMerchant] = useState('');
@@ -145,7 +148,7 @@ export default function ExpensesHubPage() {
   const [isEditCustomCategory, setIsEditCustomCategory] = useState(false);
   const [editDate, setEditDate] = useState('');
   const [editPaidPersonally, setEditPaidPersonally] = useState(false);
-  const [editDirectorName, setEditDirectorName] = useState('Vikram');
+  const [editDirectorName, setEditDirectorName] = useState('');
   const [editNotes, setEditNotes] = useState('');
   const [editReason, setEditReason] = useState('');
   const [submittingEdit, setSubmittingEdit] = useState(false);
@@ -158,7 +161,7 @@ export default function ExpensesHubPage() {
   // Settlement Modal State
   const [settlementOpen, setSettlementOpen] = useState(false);
   const [settleAmount, setSettleAmount] = useState('0');
-  const [settleDirector, setSettleDirector] = useState('Vikram');
+  const [settleDirector, setSettleDirector] = useState('');
   const [settleRef, setSettleRef] = useState('NEFT-FOUNDER-SETTLE');
   const [submittingSettle, setSubmittingSettle] = useState(false);
   const [syncingGL, setSyncingGL] = useState(false);
@@ -182,12 +185,18 @@ export default function ExpensesHubPage() {
   async function loadData() {
     setLoading(true);
     try {
-      const [sumRes, expRes] = await Promise.all([
+      const [sumRes, expRes, dirRes] = await Promise.all([
         fetchApi('/api/v1/expenses/summary').catch(() => null),
-        fetchApi('/api/v1/expenses').catch(() => [])
+        fetchApi('/api/v1/expenses').catch(() => []),
+        fetchApi('/api/v1/compliance/directors').catch(() => null)
       ]);
       if (sumRes) setSummary(sumRes);
       if (expRes && Array.isArray(expRes)) setExpenses(expRes);
+      if (dirRes && Array.isArray(dirRes.directors) && dirRes.directors.length > 0) {
+        setDirectors(dirRes.directors);
+        setEditDirectorName(prev => prev || dirRes.directors[0].name);
+        setSettleDirector(prev => prev || dirRes.directors[0].name);
+      }
     } catch (e: any) {
       console.error('Error fetching expenses:', e);
     } finally {
@@ -266,7 +275,7 @@ export default function ExpensesHubPage() {
     setIsEditCustomCategory(!isStandard && Boolean(item.category));
     setEditDate(item.expense_date ? item.expense_date.split('T')[0] : '');
     setEditPaidPersonally(Boolean(item.paid_personally));
-    setEditDirectorName(item.director_name || 'Vikram');
+    setEditDirectorName(item.director_name || directors[0]?.name || 'Director');
     setEditNotes(item.notes || '');
     setEditReason('');
   };
@@ -813,7 +822,7 @@ export default function ExpensesHubPage() {
                             {item.paid_personally ? (
                               <div className="space-y-0.5">
                                 <span className="px-2 py-0.5 rounded bg-sky-950 text-sky-400 border border-sky-800/60 text-[10px] font-semibold inline-flex items-center gap-1">
-                                  <UserCheck className="w-3 h-3" /> Founder Paid ({item.director_name || 'Vikram'})
+                                  <UserCheck className="w-3 h-3" /> Founder Paid ({item.director_name || directors[0]?.name || 'Director'})
                                 </span>
                                 <div className="text-[10px] text-slate-500 font-mono">Liability Account 2105</div>
                               </div>
@@ -1021,13 +1030,27 @@ export default function ExpensesHubPage() {
                     </label>
                     {editPaidPersonally && (
                       <div className="pt-2">
-                        <label className="text-slate-400 block mb-1">Director Payee Name:</label>
-                        <input
-                          type="text"
-                          value={editDirectorName}
-                          onChange={(e) => setEditDirectorName(e.target.value)}
-                          className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-white"
-                        />
+                        <label className="text-slate-400 block mb-1">Director Payee Name (Statutory Roster):</label>
+                        {directors.length > 0 ? (
+                          <select
+                            value={editDirectorName}
+                            onChange={(e) => setEditDirectorName(e.target.value)}
+                            className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-white"
+                          >
+                            {directors.map((d, idx) => (
+                              <option key={`${d.name}-${idx}`} value={d.name}>
+                                {d.name} ({d.designation || 'Director'}{d.din && d.din !== 'N/A' ? ` — DIN: ${d.din}` : ''})
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <input
+                            type="text"
+                            value={editDirectorName}
+                            onChange={(e) => setEditDirectorName(e.target.value)}
+                            className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-white"
+                          />
+                        )}
                       </div>
                     )}
                   </div>
@@ -1240,14 +1263,28 @@ export default function ExpensesHubPage() {
 
                 <form onSubmit={handleFounderSettlement} className="space-y-4 text-xs">
                   <div>
-                    <label className="text-slate-300 font-medium block mb-1">Director Name:</label>
-                    <input
-                      type="text"
-                      required
-                      value={settleDirector}
-                      onChange={(e) => setSettleDirector(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white"
-                    />
+                    <label className="text-slate-300 font-medium block mb-1">Director Name (Statutory Roster):</label>
+                    {directors.length > 0 ? (
+                      <select
+                        value={settleDirector}
+                        onChange={(e) => setSettleDirector(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white"
+                      >
+                        {directors.map((d, idx) => (
+                          <option key={`${d.name}-${idx}`} value={d.name}>
+                            {d.name} ({d.designation || 'Director'}{d.din && d.din !== 'N/A' ? ` — DIN: ${d.din}` : ''})
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        type="text"
+                        required
+                        value={settleDirector}
+                        onChange={(e) => setSettleDirector(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white"
+                      />
+                    )}
                   </div>
 
                   <div>

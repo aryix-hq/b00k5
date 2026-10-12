@@ -344,10 +344,10 @@ function NewInvoiceInner() {
           <div>
             <h3 className="text-sm font-semibold text-white flex items-center gap-2">
               <UploadCloud className="w-4 h-4 text-sky-400" />
-              Upload &amp; Scan Existing Invoice (SmartScan OCR)
+              Upload &amp; Scan Existing or Razorpay Invoice (SmartScan OCR)
             </h3>
             <p className="text-xs text-slate-400">
-              Upload customer invoices in PDF or image format to auto-extract line items, customer GSTIN, and check for duplicates.
+              Upload Razorpay or customer invoices (PDF, image, CSV, or JSON) to auto-extract line items, customer GSTIN, and sync with your ledger.
             </p>
           </div>
         </div>
@@ -357,7 +357,7 @@ function NewInvoiceInner() {
           <input
             type="file"
             id="invoice-file-upload"
-            accept=".pdf,.png,.jpg,.jpeg"
+            accept=".pdf,.png,.jpg,.jpeg,.csv,.json"
             onChange={handleInvoiceUpload}
             disabled={scanning}
             className="text-xs text-slate-400 file:mr-4 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-xs file:bg-sky-600 file:text-white hover:file:bg-sky-500 cursor-pointer disabled:opacity-50"

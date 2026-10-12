@@ -9,11 +9,13 @@ import uuid
 from datetime import date
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, func, delete
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.api.deps import get_db, get_current_user, get_current_tenant
 from app.models.tenant import User, Tenant
 from app.models.bank import BankStatement, BankStatementLine
+from app.models.ledger import ChartOfAccounts
 from app.models.expense import Expense, ExpenseAuditLog
 from app.core.config import settings
 from app.core.s3 import storage_manager
@@ -33,7 +35,16 @@ async def check_statement_exists(db: AsyncSession, tenant_id: uuid.UUID, file_ha
         )
     )
     res = await db.execute(query)
-    return res.scalars().first()
+    existing = res.scalars().first()
+    if existing:
+        # Check if this existing statement was an empty shell created from an encrypted PDF without password
+        cnt_q = select(func.count(BankStatementLine.id)).where(BankStatementLine.statement_id == existing.id)
+        line_cnt = (await db.execute(cnt_q)).scalar() or 0
+        if line_cnt == 0 and existing.statement_from is None and existing.statement_to is None:
+            await db.delete(existing)
+            await db.flush()
+            return None
+    return existing
 
 
 async def check_expense_hash_exists(db: AsyncSession, tenant_id: uuid.UUID, file_hash: str) -> Optional[Expense]:
@@ -50,6 +61,7 @@ async def check_expense_hash_exists(db: AsyncSession, tenant_id: uuid.UUID, file
 @router.post("/statements")
 async def upload_multiple_statements(
     bank_account_id: Optional[str] = Form(None),
+    password: Optional[str] = Form(None),
     files: List[UploadFile] = File(...),
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
@@ -57,6 +69,7 @@ async def upload_multiple_statements(
 ):
     """
     Ingests multiple bank statement PDF/CSV files concurrently.
+    Supports password-protected bank PDFs (e.g. HDFC Customer ID / PAN passwords).
     Computes cryptographic SHA-256 hash, blocks duplicates, extracts transaction lines,
     applies deterministic line fingerprints, and links to the dynamic fiscal year.
     """
@@ -69,7 +82,7 @@ async def upload_multiple_statements(
             continue
         file_hash = hashlib.sha256(contents).hexdigest()
 
-        # Check for immediate file-level duplicate
+        # 1. Check for immediate file-level duplicate (ignores empty encrypted shells)
         existing = await check_statement_exists(db, tenant.id, file_hash)
         if existing:
             job_manifest.append({
@@ -80,19 +93,24 @@ async def upload_multiple_statements(
             })
             continue
 
-        s3_key = f"{tenant.id}/statements/{batch_id}/{file.filename}"
-        obj_name, _, file_size = storage_manager.save_document(
-            bucket_name=settings.BUCKET_STATEMENTS,
-            object_name=s3_key,
-            file_bytes=contents,
-            content_type=file.content_type or "application/pdf"
-        )
-
-        # Parse bank statement
+        # 2. Parse bank statement first (before saving to S3/DB) so password-protected PDFs are caught cleanly
         try:
-            parsed = BankStatementParser.parse_pdf(contents, filename=file.filename or "")
+            parsed = BankStatementParser.parse_pdf(
+                contents,
+                filename=file.filename or "",
+                password=password.strip() if password else None
+            )
+            if parsed.get("needs_password"):
+                job_manifest.append({
+                    "filename": file.filename,
+                    "status": "needs_password",
+                    "needs_password": True,
+                    "message": parsed.get("error") or "This bank statement PDF is password-protected. Please enter your PDF password (e.g. Customer ID) to unlock and ingest."
+                })
+                continue
+
             detected_bank = parsed.get("bank_name", "HDFC")
-            acc_num = parsed.get("account_number") or bank_account_id or "50200099998888"
+            acc_num = parsed.get("account_number") or bank_account_id or "XXXX001"
             stmt_from = parsed.get("statement_from") or (parsed["lines"][0]["transaction_date"] if parsed.get("lines") else None)
             stmt_to = parsed.get("statement_to") or (parsed["lines"][-1]["transaction_date"] if parsed.get("lines") else None)
 
@@ -115,6 +133,47 @@ async def upload_multiple_statements(
                         "statement_id": str(period_dup.id)
                     })
                     continue
+
+            # Save unlocked/validated statement to S3
+            s3_key = f"{tenant.id}/statements/{batch_id}/{file.filename}"
+            storage_manager.save_document(
+                bucket_name=settings.BUCKET_STATEMENTS,
+                object_name=s3_key,
+                file_bytes=contents,
+                content_type=file.content_type or "application/pdf"
+            )
+
+            # Update tenant primary bank metadata & Chart of Accounts 1010 if real account number extracted
+            if acc_num and acc_num not in ("XXXX001", "50200099998888"):
+                try:
+                    profile = dict(tenant.statutory_profile or {})
+                    primary_bank = dict(profile.get("primary_bank_account", {}))
+                    primary_bank["bank_name"] = detected_bank
+                    primary_bank["account_number"] = acc_num
+                    if parsed.get("ifsc"):
+                        primary_bank["ifsc"] = parsed["ifsc"]
+                    if parsed.get("micr"):
+                        primary_bank["micr"] = parsed["micr"]
+                    if parsed.get("branch"):
+                        primary_bank["branch"] = parsed["branch"]
+                    if parsed.get("customer_id"):
+                        primary_bank["customer_id"] = parsed["customer_id"]
+                    if parsed.get("account_name"):
+                        primary_bank["account_holder_name"] = parsed["account_name"]
+                    profile["primary_bank_account"] = primary_bank
+                    tenant.statutory_profile = profile
+                    flag_modified(tenant, "statutory_profile")
+
+                    coa_stmt = select(ChartOfAccounts).where(
+                        ChartOfAccounts.tenant_id == tenant.id,
+                        ChartOfAccounts.code == "1010"
+                    )
+                    bank_coa = (await db.execute(coa_stmt)).scalars().first()
+                    if bank_coa:
+                        short_acc = acc_num[-4:] if len(acc_num) > 4 else acc_num
+                        bank_coa.name = f"Bank Current Account ({detected_bank} - {short_acc})"
+                except Exception:
+                    pass
 
             # Resolve Dynamic Fiscal Year record
             target_date = stmt_to or stmt_from or date.today()
@@ -141,9 +200,16 @@ async def upload_multiple_statements(
             db.add(statement)
             await db.flush()
 
+            # Existing fingerprints in DB for this tenant to prevent line collisions across partial overlaps
+            existing_fp_res = await db.execute(
+                select(BankStatementLine.fingerprint).where(BankStatementLine.tenant_id == tenant.id)
+            )
+            seen_fingerprints = {r[0] for r in existing_fp_res.all() if r[0]}
+
             # Insert statement lines with canonical fingerprint
             line_objs = []
-            for line_dict in parsed.get("lines", []):
+            skipped_lines = 0
+            for idx, line_dict in enumerate(parsed.get("lines", [])):
                 amt_str = str(line_dict.get("withdrawal_amount") or line_dict.get("deposit_amount") or "0.00")
                 bal_str = str(line_dict.get("running_balance") or "0.00")
                 fp = compute_line_fingerprint(
@@ -153,6 +219,10 @@ async def upload_multiple_statements(
                     bal_str,
                     line_dict.get("reference_number") or ""
                 )
+                if fp in seen_fingerprints:
+                    skipped_lines += 1
+                    continue
+                seen_fingerprints.add(fp)
 
                 line_obj = BankStatementLine(
                     id=uuid.uuid4(),
@@ -182,10 +252,15 @@ async def upload_multiple_statements(
                 "filename": file.filename,
                 "status": "complete",
                 "statement_id": str(statement.id),
+                "bank_name": detected_bank,
+                "account_number": acc_num,
                 "total_lines": len(line_objs),
-                "assigned_fy": fy_record.label
+                "skipped_duplicate_lines": skipped_lines,
+                "assigned_fy": fy_record.label,
+                "message": f"Extracted {len(line_objs)} transactions ({detected_bank} A/C {acc_num}) -> FY {fy_record.label}"
             })
         except Exception as e:
+            await db.rollback()
             job_manifest.append({
                 "filename": file.filename,
                 "status": "error",
@@ -199,12 +274,14 @@ async def upload_multiple_statements(
 async def upload_multiple_expenses(
     files: List[UploadFile] = File(...),
     active_ui_fy: Optional[str] = Form(None),
+    password: Optional[str] = Form(None),
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_current_tenant),
     current_user: User = Depends(get_current_user)
 ):
     """
     Ingests multiple expense receipt / vendor bill files concurrently.
+    Supports password-protected PDF bills/invoices.
     Computes cryptographic receipt SHA-256, blocks duplicate receipts, performs OCR analysis,
     auto-categorizes expenses, routes into the dynamic fiscal year, and returns mismatch notices.
     """
@@ -228,20 +305,29 @@ async def upload_multiple_expenses(
             })
             continue
 
-        s3_key = f"{tenant.id}/receipts/{batch_id}/{file.filename}"
-        obj_name, _, file_size = storage_manager.save_document(
-            bucket_name=settings.BUCKET_RECEIPTS,
-            object_name=s3_key,
-            file_bytes=contents,
-            content_type=file.content_type or "application/octet-stream"
-        )
-
         try:
-            # Parse bill/invoice
+            # Parse bill/invoice first to check for PDF encryption before storing
             parsed = StatutoryBillAnalyzer.parse_bill_or_invoice(
                 file_bytes=contents,
                 filename=file.filename or "",
-                company_gstin=tenant.gstin
+                company_gstin=tenant.gstin,
+                password=password.strip() if password else None
+            )
+            if parsed.get("needs_password"):
+                job_manifest.append({
+                    "filename": file.filename,
+                    "status": "needs_password",
+                    "needs_password": True,
+                    "message": parsed.get("error") or "This PDF bill/invoice is password-protected. Please enter the password to unlock."
+                })
+                continue
+
+            s3_key = f"{tenant.id}/receipts/{batch_id}/{file.filename}"
+            storage_manager.save_document(
+                bucket_name=settings.BUCKET_RECEIPTS,
+                object_name=s3_key,
+                file_bytes=contents,
+                content_type=file.content_type or "application/octet-stream"
             )
 
             merchant = parsed.get("supplier_name") or "Vendor"
@@ -339,6 +425,7 @@ async def upload_multiple_expenses(
 
             job_manifest.append(manifest_entry)
         except Exception as e:
+            await db.rollback()
             job_manifest.append({
                 "filename": file.filename,
                 "status": "error",

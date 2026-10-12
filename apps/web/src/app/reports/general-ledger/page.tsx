@@ -100,7 +100,7 @@ function GeneralLedgerContent() {
             } else {
               loadedAccounts.push({
                 code: '2105',
-                name: `Director Reimbursements Payable - ${pending.director || 'Vikram'}`,
+                name: `Director Reimbursements Payable - ${pending.director || 'Director'}`,
                 type: 'liability',
                 debit_balance: 0,
                 credit_balance: pendingAmt

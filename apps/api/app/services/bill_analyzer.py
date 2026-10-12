@@ -656,6 +656,19 @@ class StatutoryBillAnalyzer:
     @staticmethod
     def _extract_merchant_name(text: str, filename: str = "", is_customer_invoice: bool = False) -> str:
         """Extracts genuine vendor or customer legal name while discarding metadata noise."""
+        # For outward customer invoices (including Razorpay-generated invoices), check "Bill To" / "Billed To" / "Customer" first
+        if is_customer_invoice:
+            bill_to_patterns = [
+                r'(?:Billed\s*To|Bill\s*To|Customer\s*Name|Customer\s*Details|Issued\s*To|Buyer|Client)[.:\s]*\n?\s*([^\n\r]+)',
+                r'BILLING\s*ADDRESS\s*\n\s*([^\n\r]+)',
+            ]
+            for pat in bill_to_patterns:
+                bill_to_m = re.search(pat, text, re.I)
+                if bill_to_m:
+                    cand = bill_to_m.group(1).strip()
+                    if len(cand) > 2 and not any(w in cand.upper() for w in ["GSTIN", "STATE", "DATE", "ADDRESS", "INVOICE", "RAZORPAY"]):
+                        return cand
+
         # Check known common vendors
         text_upper = text.upper()
         known_vendors = [
@@ -687,17 +700,10 @@ class StatutoryBillAnalyzer:
             ("S SHASTRY", "S Shastry & Co (Chartered Accountants)"),
             ("RAMAN & ASSOCIATES", "M/s S. Raman & Associates (Statutory Auditors)")
         ]
-        for kw, vname in known_vendors:
-            if kw in text_upper:
-                return vname
-
-        # For customer invoices, search for "Bill To" or "Customer"
-        if is_customer_invoice:
-            bill_to_m = re.search(r'(?:Bill\s*To|Customer\s*Name|Buyer|Client)[.:\s]*([^\n\r]+)', text, re.I)
-            if bill_to_m:
-                cand = bill_to_m.group(1).strip()
-                if len(cand) > 3 and not any(w in cand.upper() for w in ["GSTIN", "STATE", "DATE", "ADDRESS"]):
-                    return cand
+        if not is_customer_invoice:
+            for kw, vname in known_vendors:
+                if kw in text_upper:
+                    return vname
 
         # Heuristic line scan: top 12 lines
         lines = [l.strip() for l in text.splitlines() if l.strip()]

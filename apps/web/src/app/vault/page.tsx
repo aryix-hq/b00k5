@@ -318,8 +318,21 @@ export default function DocumentLockerPage() {
                         <p className="text-xs text-slate-400 font-mono mt-0.5">Ref: {doc.document_number}</p>
                       )}
                     </div>
-                    <div className="p-2 rounded-lg bg-emerald-500/10 text-emerald-400">
-                      <ShieldCheck className="w-5 h-5" />
+                    <div className="flex items-center gap-1.5">
+                      <a
+                        href={`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/vault/${doc.id}/download`}
+                        target="_blank"
+                        rel="noreferrer"
+                        download
+                        onClick={(e) => e.stopPropagation()}
+                        className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition"
+                        title="Download Document"
+                      >
+                        <Download className="w-4 h-4" />
+                      </a>
+                      <div className="p-2 rounded-lg bg-emerald-500/10 text-emerald-400">
+                        <ShieldCheck className="w-5 h-5" />
+                      </div>
                     </div>
                   </div>
 
@@ -542,13 +555,34 @@ export default function DocumentLockerPage() {
               )}
             </div>
 
-            <div className="flex justify-end pt-2 border-t border-slate-800">
-              <button
-                onClick={() => setViewDoc(null)}
-                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-lg"
+            <div className="flex items-center justify-between pt-3 border-t border-slate-800">
+              <a
+                href={`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/vault/${viewDoc.id}/download`}
+                target="_blank"
+                rel="noreferrer"
+                download
+                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-lg flex items-center gap-2 transition shadow-md shadow-emerald-600/20"
               >
-                Close
-              </button>
+                <Download className="w-4 h-4" />
+                <span>Download Document</span>
+              </a>
+              <div className="flex items-center gap-2">
+                <a
+                  href={`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/vault/${viewDoc.id}/download`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-lg flex items-center gap-1.5 transition border border-slate-700"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  <span>Open in Tab</span>
+                </a>
+                <button
+                  onClick={() => setViewDoc(null)}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold rounded-lg"
+                >
+                  Close
+                </button>
+              </div>
             </div>
           </div>
         </div>

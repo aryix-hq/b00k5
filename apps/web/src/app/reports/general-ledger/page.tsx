@@ -84,32 +84,6 @@ function GeneralLedgerContent() {
         setIsBalanced(Boolean(tbRes.is_balanced));
       }
 
-      if (typeof window !== 'undefined') {
-        const pendingRaw = localStorage.getItem('b00k5_last_expense_settlement_pending');
-        const isCleared = localStorage.getItem('b00k5_reimbursement_cleared') === 'true';
-        if (pendingRaw && !isCleared) {
-          try {
-            const pending = JSON.parse(pendingRaw);
-            const pendingAmt = Number(pending.amount) || 11800.0;
-            const existingIdx = loadedAccounts.findIndex((a) => a.code === '2105');
-            if (existingIdx >= 0) {
-              loadedAccounts[existingIdx] = {
-                ...loadedAccounts[existingIdx],
-                credit_balance: pendingAmt
-              };
-            } else {
-              loadedAccounts.push({
-                code: '2105',
-                name: `Director Reimbursements Payable - ${pending.director || 'Director'}`,
-                type: 'liability',
-                debit_balance: 0,
-                credit_balance: pendingAmt
-              });
-            }
-          } catch {}
-        }
-      }
-
       setAccounts(loadedAccounts);
 
       if (Array.isArray(jRes)) {
@@ -215,28 +189,97 @@ function GeneralLedgerContent() {
             </div>
           </div>
 
-          {/* Telemetry Bar */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl">
-              <span className="text-xs text-slate-400">Total General Ledger Debits</span>
-              <p className="text-xl font-bold font-mono text-white mt-1">
-                ₹{totalDebits.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-              </p>
-            </div>
-            <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl">
-              <span className="text-xs text-slate-400">Total General Ledger Credits</span>
-              <p className="text-xl font-bold font-mono text-white mt-1">
-                ₹{totalCredits.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-              </p>
-            </div>
-            <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl">
-              <span className="text-xs text-slate-400">Ledger Invariant Status</span>
-              <p className="text-sm font-bold font-mono text-emerald-400 mt-2 flex items-center gap-1.5">
-                <CheckCircle2 className="w-4 h-4" />
-                {isBalanced ? 'Σ DEBITS = Σ CREDITS (0.00 Drift)' : 'Unbalanced Ledger Warning'}
-              </p>
-            </div>
-          </div>
+          {/* Founder Executive Financial Metrics */}
+          {(() => {
+            const bankAccount = accounts.find((a) => a.code === '1010');
+            const bankBalance = (bankAccount?.debit_balance || 0) - (bankAccount?.credit_balance || 0);
+            const arAccount = accounts.find((a) => a.code === '1020');
+            const tradeReceivables = (arAccount?.debit_balance || 0) - (arAccount?.credit_balance || 0);
+            const dirAccount = accounts.find((a) => a.code === '2105');
+            const directorPayable = (dirAccount?.credit_balance || 0) - (dirAccount?.debit_balance || 0);
+            const suspenseAccount = accounts.find((a) => a.code === '2099');
+            const suspenseBalance = (suspenseAccount?.credit_balance || 0) - (suspenseAccount?.debit_balance || 0);
+
+            const totalRev = accounts
+              .filter((a) => a.type === 'revenue')
+              .reduce((sum, a) => sum + (a.credit_balance - a.debit_balance), 0);
+            const totalExp = accounts
+              .filter((a) => a.type === 'expense')
+              .reduce((sum, a) => sum + (a.debit_balance - a.credit_balance), 0);
+            const netPL = totalRev - totalExp;
+
+            return (
+              <div className="space-y-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                  {/* Card 1: Operating P&L */}
+                  <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl space-y-1">
+                    <span className="text-xs text-slate-400 font-medium">Net Operating P&L</span>
+                    <p className={`text-xl font-bold font-mono ${netPL >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                      {netPL >= 0 ? '+' : '-'}₹{Math.abs(netPL).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                    </p>
+                    <p className="text-[11px] text-slate-500">
+                      Revenue ₹{totalRev.toLocaleString('en-IN')} − Expenses ₹{totalExp.toLocaleString('en-IN')}
+                    </p>
+                  </div>
+
+                  {/* Card 2: Company Bank Balance */}
+                  <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl space-y-1">
+                    <span className="text-xs text-slate-400 font-medium">Bank Current Account (1010)</span>
+                    <p className="text-xl font-bold font-mono text-white">
+                      ₹{bankBalance.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                    </p>
+                    <p className="text-[11px] text-slate-500">
+                      Receivables Owed: ₹{tradeReceivables.toLocaleString('en-IN')}
+                    </p>
+                  </div>
+
+                  {/* Card 3: Director Reimbursements Payable */}
+                  <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl space-y-1">
+                    <span className="text-xs text-slate-400 font-medium">Owed to Director (2105)</span>
+                    <p className="text-xl font-bold font-mono text-amber-300">
+                      ₹{directorPayable.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                    </p>
+                    <p className="text-[11px] text-slate-500">
+                      Company liability for expenses paid out-of-pocket
+                    </p>
+                  </div>
+
+                  {/* Card 4: Double-Entry Balanced Status */}
+                  <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl space-y-1">
+                    <span className="text-xs text-slate-400 font-medium">Mathematical Invariant</span>
+                    <p className="text-sm font-bold font-mono text-emerald-400 flex items-center gap-1.5 mt-1">
+                      <CheckCircle2 className="w-4 h-4 shrink-0" />
+                      {isBalanced ? 'Books in Perfect Balance' : 'Discrepancy Detected'}
+                    </p>
+                    <p className="text-[11px] text-slate-500 font-mono">
+                      Debits ₹{totalDebits.toLocaleString('en-IN')} = Credits ₹{totalCredits.toLocaleString('en-IN')}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Educational Double-Entry Banner */}
+                <div className="p-3.5 bg-slate-950 border border-slate-800 rounded-xl flex items-start gap-3 text-xs text-slate-400">
+                  <div className="p-1.5 rounded-lg bg-sky-500/10 text-sky-400 border border-sky-500/20 shrink-0 mt-0.5">
+                    <BookOpen className="w-4 h-4" />
+                  </div>
+                  <div className="space-y-1 leading-relaxed">
+                    <span className="font-semibold text-slate-200">How the Trial Balance Equation Works:</span>
+                    <p>
+                      In Indian Schedule III Double-Entry accounting, every rupee has two sides. Total Debits (Assets ₹{(bankBalance + tradeReceivables).toLocaleString('en-IN')} + Operating Expenses ₹{totalExp.toLocaleString('en-IN')}) strictly equals Total Credits (Liabilities ₹{(directorPayable + suspenseBalance).toLocaleString('en-IN')} + Revenue ₹{totalRev.toLocaleString('en-IN')}). Both sides sum to ₹{totalDebits.toLocaleString('en-IN')}, proving zero leakage.
+                    </p>
+                    {suspenseBalance > 0 && (
+                      <p className="text-amber-400 flex items-center gap-1.5 pt-1">
+                        <span>Notice: ₹{suspenseBalance.toLocaleString('en-IN')} is temporarily parked in Suspense Account (2099) until reconciled with your invoices.</span>
+                        <Link href="/reconciliation" className="underline font-semibold hover:text-amber-300">
+                          Reconcile Now →
+                        </Link>
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
 
           {/* Tabs and Search Bar */}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">

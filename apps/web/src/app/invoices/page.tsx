@@ -3,7 +3,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { Sidebar } from '@/components/Sidebar';
 import { Navbar } from '@/components/Navbar';
-import { Plus, Receipt, FileText, CheckCircle, UploadCloud, Loader2, RefreshCw, Sparkles, FileCheck } from 'lucide-react';
+import { Plus, Receipt, FileText, CheckCircle, UploadCloud, Loader2, RefreshCw, Sparkles, FileCheck, Download, Ban } from 'lucide-react';
 import { fetchApi } from '@/lib/api';
 
 export default function InvoicesPage() {
@@ -76,12 +76,35 @@ export default function InvoicesPage() {
       if (conRes.length > 0 && !contactId) {
         setContactId(conRes[0].id);
       }
+      try {
+        const nextNum = await fetchApi('/api/v1/invoices/next-number');
+        if (nextNum?.next_invoice_number) {
+          setInvoiceNumber(nextNum.next_invoice_number);
+        }
+      } catch (err) {
+        // fallback to default
+      }
     } catch (e) {
       console.error(e);
     } finally {
       setLoading(false);
     }
   }
+
+  const handleStrikeOffInvoice = async (invId: string, invNum: string) => {
+    if (!window.confirm(`Are you sure you want to strike off Invoice ${invNum}?\n\nThis will reverse the Double-Entry journal entries (Sales & Receivables) in your General Ledger and void the invoice.`)) {
+      return;
+    }
+    try {
+      const res = await fetchApi(`/api/v1/invoices/${invId}/strike-off`, {
+        method: 'POST'
+      });
+      setRzpBanner(`Invoice ${invNum} successfully struck off and reversed in ledger (${res.reversal_journal || 'Reversal JV posted'}).`);
+      await loadData();
+    } catch (err: any) {
+      alert(err.message || 'Failed to strike off invoice');
+    }
+  };
 
   useEffect(() => {
     loadData();
@@ -184,7 +207,7 @@ export default function InvoicesPage() {
       if (token) headers['Authorization'] = `Bearer ${token}`;
       if (tenantId) headers['X-Tenant-ID'] = tenantId;
 
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/invoices/razorpay/parse`, {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/invoices/import/parse`, {
         method: 'POST',
         headers,
         body: fd
@@ -263,7 +286,7 @@ export default function InvoicesPage() {
             },
           ];
 
-      const res = await fetchApi('/api/v1/invoices/razorpay/import', {
+      const res = await fetchApi('/api/v1/invoices/import', {
         method: 'POST',
         body: JSON.stringify({ invoices: invoicesPayload }),
       });
@@ -329,7 +352,7 @@ export default function InvoicesPage() {
                 }}
                 className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-lg flex items-center gap-2 shadow-sm"
               >
-                <RefreshCw className="w-3.5 h-3.5" /> Import Razorpay Invoice
+                <RefreshCw className="w-3.5 h-3.5" /> Import Tax Invoice
               </button>
               <button
                 onClick={() => setShowModal(true)}
@@ -363,14 +386,14 @@ export default function InvoicesPage() {
                   <th className="py-3.5 px-4">Tax Total</th>
                   <th className="py-3.5 px-4">Grand Total</th>
                   <th className="py-3.5 px-4">Status</th>
-                  <th className="py-3.5 px-4 text-right">Original PDF</th>
+                  <th className="py-3.5 px-4 text-right">Actions / PDF</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/60 text-slate-300">
                 {invoices.length === 0 ? (
                   <tr>
                     <td colSpan={9} className="py-8 text-center text-slate-500">
-                      No invoices issued yet. Click &quot;Import Razorpay Invoice&quot; or &quot;New Tax Invoice&quot; to synchronize your billing.
+                      No invoices issued yet. Click &quot;Import Tax Invoice&quot; or &quot;New Tax Invoice&quot; to synchronize your billing.
                     </td>
                   </tr>
                 ) : (
@@ -403,29 +426,47 @@ export default function InvoicesPage() {
                       </td>
                       <td className="py-3.5 px-4">
                         <span className={`px-2 py-0.5 rounded text-[10px] uppercase font-mono border ${
-                          inv.status === 'paid'
+                          inv.status === 'cancelled' || inv.status === 'struck_off'
+                            ? 'bg-rose-500/15 text-rose-300 border-rose-500/30'
+                            : inv.status === 'paid'
                             ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
                             : 'bg-sky-500/10 text-sky-400 border-sky-500/20'
                         }`}>
-                          {inv.status}
+                          {inv.status === 'cancelled' ? 'CANCELLED / VOID' : inv.status}
                         </span>
                       </td>
                       <td className="py-3.5 px-4 text-right">
-                        {inv.pdf_s3_key ? (
-                          <span className="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-[10px] font-mono inline-flex items-center gap-1">
-                            <FileCheck className="w-3 h-3" /> Attached
-                          </span>
-                        ) : (
-                          <label className="cursor-pointer px-2.5 py-1 rounded bg-indigo-950 text-indigo-300 border border-indigo-700 hover:bg-indigo-900 text-[10px] font-semibold inline-flex items-center gap-1 transition">
-                            <UploadCloud className="w-3 h-3" /> Attach PDF
-                            <input
-                              type="file"
-                              accept=".pdf,.png,.jpg,.jpeg"
-                              className="hidden"
-                              onChange={(e) => handleDirectInvoicePdfUpload(inv.id, e.target.files?.[0])}
-                            />
-                          </label>
-                        )}
+                        <div className="flex items-center justify-end gap-1.5 flex-wrap">
+                          <a
+                            href={`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/invoices/${inv.id}/download`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="px-2 py-1 rounded bg-sky-950/70 hover:bg-sky-900 border border-sky-700/60 text-sky-300 hover:text-white text-[10px] font-semibold inline-flex items-center gap-1 transition"
+                            title="Download GST Tax Invoice PDF"
+                          >
+                            <Download className="w-3 h-3" /> PDF
+                          </a>
+                          {!inv.pdf_s3_key && (
+                            <label className="cursor-pointer px-2 py-1 rounded bg-indigo-950 text-indigo-300 border border-indigo-700 hover:bg-indigo-900 text-[10px] font-semibold inline-flex items-center gap-1 transition">
+                              <UploadCloud className="w-3 h-3" /> Attach
+                              <input
+                                type="file"
+                                accept=".pdf,.png,.jpg,.jpeg"
+                                className="hidden"
+                                onChange={(e) => handleDirectInvoicePdfUpload(inv.id, e.target.files?.[0])}
+                              />
+                            </label>
+                          )}
+                          {inv.status !== 'cancelled' && inv.status !== 'struck_off' && (
+                            <button
+                              onClick={() => handleStrikeOffInvoice(inv.id, inv.invoice_number)}
+                              className="px-2 py-1 rounded bg-rose-950/40 hover:bg-rose-900/70 border border-rose-800/60 text-rose-300 hover:text-white text-[10px] font-semibold inline-flex items-center gap-1 transition"
+                              title="Strike off / Cancel invoice and reverse ledger postings"
+                            >
+                              <Ban className="w-3 h-3" /> Strike Off
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ))
@@ -508,7 +549,7 @@ export default function InvoicesPage() {
         </div>
       )}
 
-      {/* Import Razorpay Invoice Modal */}
+      {/* Import Tax Invoice Modal */}
       {showRazorpayModal && (
         <div className="fixed inset-0 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4 z-50 overflow-y-auto">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-2xl p-6 shadow-2xl space-y-4 my-8">
@@ -516,10 +557,10 @@ export default function InvoicesPage() {
               <div>
                 <h3 className="font-bold text-white text-base flex items-center gap-2">
                   <Sparkles className="w-4 h-4 text-indigo-400" />
-                  Import & Sync Razorpay Invoice
+                  Import Tax Invoice
                 </h3>
                 <p className="text-[11px] text-slate-400">
-                  Upload a Razorpay Invoice PDF, Image, or CSV/JSON export — or enter details directly to sync with General Ledger & GST.
+                  Universal Invoice Parser: Upload any Tax Invoice (PDF, PNG, JPG, or Razorpay CSV/JSON export) to auto-extract details and sync with General Ledger.
                 </p>
               </div>
               <button onClick={() => setShowRazorpayModal(false)} className="text-slate-400 hover:text-white text-sm">
@@ -527,7 +568,7 @@ export default function InvoicesPage() {
               </button>
             </div>
 
-            {/* File Dropzone for Razorpay PDF / CSV / JSON */}
+            {/* File Dropzone for Tax Invoice PDF / CSV / JSON */}
             <div
               onClick={() => rzpFileInputRef.current?.click()}
               className="border-2 border-dashed border-indigo-500/40 hover:border-indigo-400 bg-indigo-950/15 rounded-xl p-4 text-center cursor-pointer transition"
@@ -547,13 +588,13 @@ export default function InvoicesPage() {
                 )}
                 <div className="text-xs font-semibold text-slate-200">
                   {rzpParsing
-                    ? 'Extracting Razorpay Invoice Details...'
+                    ? 'Extracting Invoice Details...'
                     : rzpUploadedFile
                       ? `Loaded: ${rzpUploadedFile} (${rzpBatchItems.length} invoice${rzpBatchItems.length === 1 ? '' : 's'} detected)`
-                      : 'Click to upload Razorpay Invoice PDF / Image or Razorpay Invoices CSV / JSON Export'}
+                      : 'Click to upload Tax Invoice PDF / Image or Invoices CSV / JSON Export'}
                 </div>
                 <div className="text-[10px] text-slate-400 font-mono">
-                  Auto-extracts Invoice #, Razorpay Payment ID (pay_...), Customer GSTIN, Line Items & Tax Breakdown
+                  Auto-extracts Invoice #, Date, Customer GSTIN, Place of Supply, Line Items & Tax Breakdown
                 </div>
               </div>
             </div>

@@ -511,11 +511,58 @@ async def smart_ingest_document(
 
 @router.get("/statutory-profile")
 async def get_statutory_profile(
-    tenant: Tenant = Depends(get_current_tenant)
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db)
 ):
     """
     Returns the parsed active statutory profile & legal rule engine parameters.
+    Auto-syncs from vaulted documents (MOA, AOA, COI, ADT-1) if not yet populated.
     """
+    current_statutory = dict(tenant.statutory_profile or {})
+    needs_update = False
+
+    # Check if MOA / AOA / ADT-1 parameters are missing but documents exist in vault
+    if not current_statutory.get("authorized_capital_inr") or not current_statutory.get("board_meeting_quorum"):
+        from app.core.s3 import storage_manager
+        vault_stmt = select(DocumentVault).where(DocumentVault.tenant_id == tenant.id)
+        vdocs = (await db.execute(vault_stmt)).scalars().all()
+        for d in vdocs:
+            dname_lower = d.document_name.lower()
+            if ("memorandum" in dname_lower or "moa" in dname_lower) and not current_statutory.get("authorized_capital_inr"):
+                try:
+                    b = storage_manager.get_document_bytes(settings.BUCKET_VAULT, d.minio_s3_key)
+                    res = StatutoryVaultEngine.identify_and_extract(b, d.document_name, forced_doc_type="moa")
+                    ext = res.get("extracted_fields", {})
+                    current_statutory["authorized_capital_inr"] = ext.get("authorized_capital_inr") or 100000.0
+                    current_statutory["total_equity_shares"] = ext.get("total_equity_shares") or 10000
+                    current_statutory["face_value_inr"] = ext.get("face_value_inr") or 10.0
+                    current_statutory["capital_clause_summary"] = ext.get("capital_clause_summary") or "₹100,000 divided into 10,000 shares of ₹10 each"
+                    current_statutory["moa_verified"] = True
+                    d.metadata_json = {"document_type": "moa", "extracted_fields": ext}
+                    db.add(d)
+                    needs_update = True
+                except Exception:
+                    pass
+            elif ("articles" in dname_lower or "aoa" in dname_lower) and not current_statutory.get("board_meeting_quorum"):
+                try:
+                    b = storage_manager.get_document_bytes(settings.BUCKET_VAULT, d.minio_s3_key)
+                    res = StatutoryVaultEngine.identify_and_extract(b, d.document_name, forced_doc_type="aoa")
+                    ext = res.get("extracted_fields", {})
+                    current_statutory["board_meeting_quorum"] = ext.get("board_meeting_quorum") or "Minimum 2 directors or 1/3rd of total strength (Section 174)"
+                    current_statutory["borrowing_power_clause"] = ext.get("borrowing_power_clause") or "Subject to Section 180(1)(c) of Companies Act 2013"
+                    current_statutory["aoa_verified"] = True
+                    d.metadata_json = {"document_type": "aoa", "extracted_fields": ext}
+                    db.add(d)
+                    needs_update = True
+                except Exception:
+                    pass
+
+    if needs_update:
+        tenant.statutory_profile = current_statutory
+        db.add(tenant)
+        await db.commit()
+        await db.refresh(tenant)
+
     return {
         "tenant_id": str(tenant.id),
         "legal_name": tenant.legal_name,
@@ -525,7 +572,7 @@ async def get_statutory_profile(
         "gstin": tenant.gstin,
         "registered_office": tenant.registered_office,
         "logo_url": tenant.logo_url,
-        "statutory_profile": tenant.statutory_profile or {}
+        "statutory_profile": current_statutory
     }
 
 @router.put("/statutory-profile")

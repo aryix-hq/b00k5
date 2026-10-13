@@ -1,13 +1,14 @@
 from typing import List, Optional, Any, Dict
 import uuid
 from decimal import Decimal
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from app.api.deps import get_db, get_current_user, get_current_tenant
 from app.models.tenant import User, Tenant
 from app.models.invoice import Invoice, InvoiceItem, Contact
+from app.models.ledger import JournalEntry, JournalLine
 from app.schemas.invoice import (
     InvoiceCreate, InvoiceResponse,
     ContactCreate, ContactResponse
@@ -170,16 +171,36 @@ async def create_invoice(
         invoice.pdf_s3_key = payload.pdf_s3_key
     else:
         try:
+            primary_ac = (tenant.statutory_profile or {}).get("primary_bank_account") or {}
             pdf_bytes = PDFService.generate_simple_invoice_pdf({
                 "invoice_number": invoice.invoice_number,
-                "grand_total": str(invoice.grand_total),
-                "subtotal": str(invoice.subtotal),
-                "cgst_total": str(invoice.cgst_total),
-                "sgst_total": str(invoice.sgst_total),
-                "igst_total": str(invoice.igst_total),
+                "seller_name": tenant.legal_name,
+                "seller_cin": tenant.cin,
+                "seller_gstin": tenant.gstin,
+                "seller_pan": tenant.pan,
+                "seller_address": tenant.registered_office,
                 "issue_date": str(invoice.issue_date),
-                "contact_name": contact.name,
-                "place_of_supply": pos
+                "due_date": str(invoice.due_date),
+                "place_of_supply": pos,
+                "customer_name": contact.name,
+                "customer_gstin": contact.gstin,
+                "customer_address": contact.billing_address,
+                "subtotal": float(invoice.subtotal),
+                "cgst_total": float(invoice.cgst_total),
+                "sgst_total": float(invoice.sgst_total),
+                "igst_total": float(invoice.igst_total),
+                "grand_total": float(invoice.grand_total),
+                "items": [
+                    {
+                        "description": it.description,
+                        "hsn_sac_code": it.hsn_sac_code,
+                        "quantity": float(it.quantity),
+                        "unit_price": float(it.unit_price),
+                        "taxable_amount": float(it.taxable_amount)
+                    }
+                    for it in invoice.items
+                ],
+                "bank_details": primary_ac
             })
             s3_key = f"{tenant.id}/invoices/{invoice.invoice_number}.pdf"
             upload_document(settings.BUCKET_INVOICES, pdf_bytes, s3_key, "application/pdf")
@@ -397,6 +418,7 @@ def _parse_razorpay_date(raw_val: Any) -> date:
 
 
 @router.post("/razorpay/parse")
+@router.post("/import/parse")
 async def parse_razorpay_invoice_file(
     file: UploadFile = File(...),
     password: Optional[str] = Form(None),
@@ -666,6 +688,7 @@ async def parse_razorpay_invoice_file(
 
 
 @router.post("/razorpay/import")
+@router.post("/import")
 async def import_razorpay_invoices(
     payload: RazorpayBatchImportRequest,
     current_user: User = Depends(get_current_user),
@@ -900,5 +923,224 @@ async def upload_invoice_pdf(
         "pdf_s3_key": s3_key,
         "invoice_id": str(inv.id)
     }
+
+
+@router.get("/next-number")
+async def get_next_invoice_number(
+    invoice_date: Optional[str] = None,
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Returns the next sequential invoice number in Indian standard format INV-YYYY-MM-XXX
+    (e.g., INV-2026-05-001, INV-2026-10-001).
+    """
+    from datetime import datetime, date as dt_date
+    target_dt = dt_date.today()
+    if invoice_date:
+        try:
+            target_dt = datetime.strptime(invoice_date[:10], "%Y-%m-%d").date()
+        except Exception:
+            pass
+
+    year_str = str(target_dt.year)
+    month_str = f"{target_dt.month:02d}"
+    prefix = f"INV-{year_str}-{month_str}-"
+
+    stmt = select(Invoice.invoice_number).where(
+        Invoice.tenant_id == tenant.id,
+        Invoice.invoice_number.like(f"{prefix}%")
+    )
+    existing_nums = (await db.execute(stmt)).scalars().all()
+
+    max_seq = 0
+    for num in existing_nums:
+        suffix = num[len(prefix):]
+        if suffix.isdigit():
+            max_seq = max(max_seq, int(suffix))
+
+    next_seq = max_seq + 1
+    next_num = f"{prefix}{next_seq:03d}"
+    return {
+        "next_invoice_number": next_num,
+        "format": "INV-YYYY-MM-XXX",
+        "year": year_str,
+        "month": month_str,
+        "sequence": next_seq
+    }
+
+
+@router.get("/{invoice_id}/download")
+@router.get("/{invoice_id}/pdf")
+async def download_invoice_pdf(
+    invoice_id: uuid.UUID,
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Downloads or streams the original or assembled Razorpay-style GST Tax Invoice PDF.
+    If not yet generated or attached, creates the compliant PDF on the fly.
+    """
+    stmt = (
+        select(Invoice)
+        .options(selectinload(Invoice.contact), selectinload(Invoice.items))
+        .where(Invoice.id == invoice_id, Invoice.tenant_id == tenant.id)
+    )
+    inv = (await db.execute(stmt)).scalar_one_or_none()
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invoice record not found")
+
+    from app.core.s3 import storage_manager
+    content = None
+    if inv.pdf_s3_key:
+        try:
+            content = storage_manager.get_document_bytes(
+                getattr(settings, "BUCKET_INVOICES", settings.BUCKET_RECEIPTS),
+                inv.pdf_s3_key
+            )
+        except Exception:
+            content = None
+
+    if not content:
+        primary_ac = (tenant.statutory_profile or {}).get("primary_bank_account") or {}
+        pos = inv.place_of_supply or tenant.state_code or "29"
+        contact_name = inv.contact.name if inv.contact else "Valued Customer"
+        contact_gstin = inv.contact.gstin if inv.contact else "Unregistered (B2C)"
+        contact_addr = inv.contact.billing_address if inv.contact else f"State Code {pos}, India"
+
+        content = PDFService.generate_simple_invoice_pdf({
+            "invoice_number": inv.invoice_number,
+            "seller_name": tenant.legal_name,
+            "seller_cin": tenant.cin,
+            "seller_gstin": tenant.gstin,
+            "seller_pan": tenant.pan,
+            "seller_address": tenant.registered_office,
+            "issue_date": str(inv.issue_date),
+            "due_date": str(inv.due_date),
+            "place_of_supply": pos,
+            "customer_name": contact_name,
+            "customer_gstin": contact_gstin,
+            "customer_address": contact_addr,
+            "subtotal": float(inv.subtotal),
+            "cgst_total": float(inv.cgst_total or 0),
+            "sgst_total": float(inv.sgst_total or 0),
+            "igst_total": float(inv.igst_total or 0),
+            "grand_total": float(inv.grand_total),
+            "items": [
+                {
+                    "description": it.description,
+                    "hsn_sac_code": it.hsn_sac_code,
+                    "quantity": float(it.quantity),
+                    "unit_price": float(it.unit_price),
+                    "taxable_amount": float(it.taxable_amount)
+                }
+                for it in inv.items
+            ],
+            "bank_details": primary_ac
+        })
+
+        # Cache generated PDF in MinIO
+        s3_key = f"{tenant.id}/invoices/{inv.invoice_number}.pdf"
+        try:
+            storage_manager.save_document(
+                bucket_name=getattr(settings, "BUCKET_INVOICES", settings.BUCKET_RECEIPTS),
+                object_name=s3_key,
+                file_bytes=content,
+                content_type="application/pdf"
+            )
+            inv.pdf_s3_key = s3_key
+            await db.commit()
+        except Exception:
+            pass
+
+    return Response(
+        content=content,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'inline; filename="{inv.invoice_number}.pdf"'
+        }
+    )
+
+
+@router.post("/{invoice_id}/strike-off")
+async def strike_off_invoice(
+    invoice_id: uuid.UUID,
+    reason: Optional[str] = Form(None),
+    current_user: User = Depends(get_current_user),
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Cancels / strikes off an invoice.
+    Reverses the corresponding Double-Entry journal voucher in General Ledger:
+    - Debits Revenue 3010 (reversing sales)
+    - Credits Trade Receivables 1020 (reversing debtor balance)
+    Marks invoice status as 'cancelled'.
+    """
+    stmt = (
+        select(Invoice)
+        .options(selectinload(Invoice.contact), selectinload(Invoice.items))
+        .where(Invoice.id == invoice_id, Invoice.tenant_id == tenant.id)
+    )
+    inv = (await db.execute(stmt)).scalar_one_or_none()
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invoice record not found")
+
+    if inv.status == "cancelled":
+        return {
+            "success": True,
+            "message": f"Invoice {inv.invoice_number} is already struck off / cancelled.",
+            "status": "cancelled"
+        }
+
+    from datetime import date as dt_date
+    reversal_jv_number = f"JV-INV-REVERSAL-{inv.invoice_number}-{uuid.uuid4().hex[:6].upper()}"
+    rev_entry = JournalEntry(
+        tenant_id=tenant.id,
+        entry_number=reversal_jv_number,
+        entry_date=dt_date.today(),
+        reference_type="invoice_strike_off",
+        reference_id=inv.id,
+        narration=f"Strike-off / Cancellation of Invoice {inv.invoice_number}: {reason or 'Voided by Administrator'}",
+        status="posted",
+        is_posted=True,
+        created_by=current_user.id
+    )
+    db.add(rev_entry)
+    await db.flush()
+
+    ar_acc = await LedgerService.get_account_by_code(db, tenant.id, "1020")
+    rev_acc = await LedgerService.get_account_by_code(db, tenant.id, "3010")
+    cgst_acc = await LedgerService.get_account_by_code(db, tenant.id, "2050")
+    sgst_acc = await LedgerService.get_account_by_code(db, tenant.id, "2051")
+    igst_acc = await LedgerService.get_account_by_code(db, tenant.id, "2052")
+
+    if ar_acc and rev_acc:
+        rev_lines = [
+            JournalLine(journal_entry_id=rev_entry.id, tenant_id=tenant.id, account_id=rev_acc.id, debit_amount=inv.subtotal, credit_amount=Decimal("0.00"), description=f"Reverse sales: Invoice {inv.invoice_number}")
+        ]
+        if inv.cgst_total and inv.cgst_total > Decimal("0.00") and cgst_acc:
+            rev_lines.append(JournalLine(journal_entry_id=rev_entry.id, tenant_id=tenant.id, account_id=cgst_acc.id, debit_amount=inv.cgst_total, credit_amount=Decimal("0.00"), description=f"Reverse Output CGST: Invoice {inv.invoice_number}"))
+        if inv.sgst_total and inv.sgst_total > Decimal("0.00") and sgst_acc:
+            rev_lines.append(JournalLine(journal_entry_id=rev_entry.id, tenant_id=tenant.id, account_id=sgst_acc.id, debit_amount=inv.sgst_total, credit_amount=Decimal("0.00"), description=f"Reverse Output SGST: Invoice {inv.invoice_number}"))
+        if inv.igst_total and inv.igst_total > Decimal("0.00") and igst_acc:
+            rev_lines.append(JournalLine(journal_entry_id=rev_entry.id, tenant_id=tenant.id, account_id=igst_acc.id, debit_amount=inv.igst_total, credit_amount=Decimal("0.00"), description=f"Reverse Output IGST: Invoice {inv.invoice_number}"))
+        rev_lines.append(
+            JournalLine(journal_entry_id=rev_entry.id, tenant_id=tenant.id, account_id=ar_acc.id, debit_amount=Decimal("0.00"), credit_amount=inv.grand_total, description=f"Reverse receivable: Invoice {inv.invoice_number}")
+        )
+        db.add_all(rev_lines)
+
+    inv.status = "cancelled"
+    await db.commit()
+    await db.refresh(inv)
+
+    return {
+        "success": True,
+        "message": f"Invoice {inv.invoice_number} successfully struck off and reversed in ledger.",
+        "invoice_id": str(inv.id),
+        "status": "cancelled",
+        "reversal_journal": reversal_jv_number
+    }
+
 
 

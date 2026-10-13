@@ -229,6 +229,8 @@ async def get_compliance_dashboard(
     events_updated = False
     new_recurring_events = []
 
+    curr_year = date.today().year
+
     for ev in events:
         if ev.category == "inc_20a" and has_inc20a and ev.status != "completed":
             ev.status = "completed"
@@ -238,13 +240,13 @@ async def get_compliance_dashboard(
             ev.status = "completed"
             ev.completed_at = datetime.utcnow()
             events_updated = True
-        elif ev.category == "aoc_4" and has_aoc4 and ev.status != "completed":
+        elif ev.category == "aoc_4" and has_aoc4 and ev.status != "completed" and ev.due_date.year <= curr_year:
             ev.status = "completed"
             ev.completed_at = datetime.utcnow()
             events_updated = True
             # Roll over to next annual cycle
-            next_due = date(ev.due_date.year + 1, 10, 30)
-            if not any(e.category == "aoc_4" and e.due_date == next_due for e in events):
+            next_due = date(curr_year + 1, 10, 30)
+            if not any(e.category == "aoc_4" and e.due_date == next_due for e in events) and not any(e.category == "aoc_4" and e.due_date == next_due for e in new_recurring_events):
                 new_recurring_events.append(ComplianceEvent(
                     tenant_id=tenant.id,
                     category="aoc_4",
@@ -255,13 +257,13 @@ async def get_compliance_dashboard(
                     fine_per_day_inr=Decimal("100.00"),
                     status="upcoming"
                 ))
-        elif ev.category == "mgt_7" and has_mgt7 and ev.status != "completed":
+        elif ev.category == "mgt_7" and has_mgt7 and ev.status != "completed" and ev.due_date.year <= curr_year:
             ev.status = "completed"
             ev.completed_at = datetime.utcnow()
             events_updated = True
             # Roll over to next annual cycle (Nov 29 next year)
-            next_due = date(ev.due_date.year + 1, 11, 29)
-            if not any(e.category == "mgt_7" and e.due_date == next_due for e in events):
+            next_due = date(curr_year + 1, 11, 29)
+            if not any(e.category == "mgt_7" and e.due_date == next_due for e in events) and not any(e.category == "mgt_7" and e.due_date == next_due for e in new_recurring_events):
                 new_recurring_events.append(ComplianceEvent(
                     tenant_id=tenant.id,
                     category="mgt_7",
@@ -272,13 +274,13 @@ async def get_compliance_dashboard(
                     fine_per_day_inr=Decimal("100.00"),
                     status="upcoming"
                 ))
-        elif ev.category == "itr_filing" and has_itr and ev.status != "completed":
+        elif ev.category == "itr_filing" and has_itr and ev.status != "completed" and ev.due_date.year <= curr_year:
             ev.status = "completed"
             ev.completed_at = datetime.utcnow()
             events_updated = True
             # Roll over to next annual ITR cycle (Oct 31 next year)
-            next_due = date(ev.due_date.year + 1, 10, 31)
-            if not any(e.category == "itr_filing" and e.due_date == next_due for e in events):
+            next_due = date(curr_year + 1, 10, 31)
+            if not any(e.category == "itr_filing" and e.due_date == next_due for e in events) and not any(e.category == "itr_filing" and e.due_date == next_due for e in new_recurring_events):
                 new_recurring_events.append(ComplianceEvent(
                     tenant_id=tenant.id,
                     category="itr_filing",

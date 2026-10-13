@@ -113,6 +113,31 @@ function NewInvoiceInner() {
     };
   }, [invoiceDate]);
 
+  // Fetch sequential invoice number in INV-YYYY-MM-XXX format
+  useEffect(() => {
+    async function fetchNextNumber() {
+      try {
+        const token = typeof window !== 'undefined' ? localStorage.getItem('b00k5_token') : null;
+        const tenantId = typeof window !== 'undefined' ? localStorage.getItem('b00k5_tenant_id') : null;
+        const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/invoices/next-number?invoice_date=${invoiceDate}`, {
+          headers: {
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            ...(tenantId ? { 'X-Tenant-ID': tenantId } : {})
+          }
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.next_invoice_number && (!invoiceNumber || invoiceNumber.startsWith('INV-'))) {
+            setInvoiceNumber(data.next_invoice_number);
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to fetch next invoice number:', e);
+      }
+    }
+    fetchNextNumber();
+  }, [invoiceDate]);
+
   // Financial Year Date Validator
   const handleDateChange = (val: string) => {
     setInvoiceDate(val);

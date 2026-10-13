@@ -670,6 +670,14 @@ STATUTORY_CATALOG = [
         "purpose": "True and fair view audit opinion, CARO 2020 clauses, and internal financial controls.",
         "category": "statutory_filing",
         "key_entity": "audit_opinion"
+    },
+    {
+        "code": "ITR",
+        "name": "Income Tax Return (Form ITR-6 / ITR-V Ack)",
+        "authority": "Income Tax Department / CBDT",
+        "purpose": "Mandatory corporate tax return filed u/s 139 with computation of taxable income.",
+        "category": "tax_registration",
+        "key_entity": "itr_ack"
     }
 ]
 
@@ -679,7 +687,7 @@ async def get_statutory_documents_status(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Returns the comprehensive 14-document statutory compliance status for the company,
+    Returns the comprehensive 15-document statutory compliance status for the company,
     showing verified documents, extracted entity metadata, and direct download links.
     """
     DOC_MAP = {
@@ -697,7 +705,11 @@ async def get_statutory_documents_status(
         "form_mgt_7": "MGT_7A",
         "form_aoc_4": "AOC_4",
         "board_report": "BOARD_REPORT",
-        "auditor_report": "AUDITOR_REPORT"
+        "auditor_report": "AUDITOR_REPORT",
+        "itr": "ITR",
+        "form_itr": "ITR",
+        "itr_6": "ITR",
+        "itr-6": "ITR"
     }
 
     vault_stmt = select(DocumentVault).where(DocumentVault.tenant_id == tenant.id)
@@ -723,6 +735,12 @@ async def get_statutory_documents_status(
                 vault_map["BOARD_REPORT"] = d
             elif "dir-12" in dname_low or "dir 12" in dname_low:
                 vault_map["DIR_12"] = d
+            elif "itr" in dname_low or "income tax return" in dname_low:
+                vault_map["ITR"] = d
+            elif "aoc-4" in dname_low or "aoc 4" in dname_low or "aoc_4" in dname_low:
+                vault_map["AOC_4"] = d
+            elif "mgt-7" in dname_low or "mgt 7" in dname_low or "mgt_7" in dname_low:
+                vault_map["MGT_7A"] = d
             else:
                 for c, mapped_code in DOC_MAP.items():
                     if c.replace('_', ' ') in dname_low:
@@ -846,6 +864,39 @@ async def get_statutory_documents_status(
                 if prof.get("directors"):
                     d_str = ", ".join(f"{d.get('name')} (DIN: {d.get('din')})" for d in prof["directors"])
                     extracted_info = {"directors_extracted": d_str}
+        elif code == "AOC_4":
+            if vault_doc or prof.get("aoc4_verified"):
+                is_verified = True
+                extracted_info = {
+                    "srn": extracted_info.get("srn") or prof.get("aoc4_srn") or "Verified AOC-4 Filing",
+                    "financial_year": extracted_info.get("financial_year") or prof.get("financial_year") or "",
+                    "agm_date": extracted_info.get("agm_date") or ""
+                }
+            else:
+                is_verified = False
+                extracted_info = {"srn": "Pending Form AOC-4 Filing"}
+        elif code == "MGT_7A":
+            if vault_doc or prof.get("mgt7_verified"):
+                is_verified = True
+                extracted_info = {
+                    "srn": extracted_info.get("srn") or prof.get("mgt7_srn") or "Verified MGT-7A Return",
+                    "board_meetings_count": str(extracted_info.get("board_meetings_held_count") or "")
+                }
+            else:
+                is_verified = False
+                extracted_info = {"srn": "Pending Form MGT-7A Filing"}
+        elif code == "ITR":
+            if vault_doc or prof.get("itr_verified"):
+                is_verified = True
+                extracted_info = {
+                    "acknowledgement_number": extracted_info.get("itr_ack_number") or extracted_info.get("acknowledgement_number") or prof.get("itr_ack") or "Verified u/s 139",
+                    "assessment_year": extracted_info.get("assessment_year") or prof.get("assessment_year") or "",
+                    "pan": extracted_info.get("pan") or tenant.pan or "",
+                    "filing_date": extracted_info.get("filing_date") or ""
+                }
+            else:
+                is_verified = False
+                extracted_info = {"acknowledgement_number": "Pending Income Tax Return (ITR-6) Upload"}
         else:
             if vault_doc:
                 is_verified = True

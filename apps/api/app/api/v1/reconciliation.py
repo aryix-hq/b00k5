@@ -301,7 +301,11 @@ async def list_statements(
         select(BankStatement)
         .options(selectinload(BankStatement.lines))
         .where(BankStatement.tenant_id == tenant.id)
-        .order_by(BankStatement.created_at.desc())
+        .order_by(
+            BankStatement.statement_from.asc().nulls_last(),
+            BankStatement.statement_to.asc().nulls_last(),
+            BankStatement.created_at.asc()
+        )
     )
     res = await db.execute(stmt)
     return res.scalars().all()
@@ -576,8 +580,9 @@ async def confirm_line_match(
         import re as _re
         from app.models.invoice import Invoice
         matched_inv_obj = None
-        if payload.matched_invoice_id:
-            matched_inv_obj = await db.get(Invoice, payload.matched_invoice_id)
+        inv_id = getattr(payload, "matched_invoice_id", None) or getattr(payload, "invoice_id", None)
+        if inv_id:
+            matched_inv_obj = await db.get(Invoice, inv_id)
         if not matched_inv_obj and line.notes:
             m = _re.search(r"Inv\s*#([A-Za-z0-9\-_/]+)", line.notes)
             if m:
@@ -603,6 +608,15 @@ async def confirm_line_match(
             JournalLine(journal_entry_id=entry.id, tenant_id=tenant.id, account_id=debit_acc_id, debit_amount=amount, credit_amount=Decimal("0.00"), description=f"Expense discharge: {line.counterparty_name or line.description[:50]}"),
             JournalLine(journal_entry_id=entry.id, tenant_id=tenant.id, account_id=credit_acc_id, debit_amount=Decimal("0.00"), credit_amount=amount, description=credit_desc)
         ])
+
+        # Mark matched expense as reimbursed/settled if provided
+        exp_id = getattr(payload, "matched_expense_id", None) or getattr(payload, "expense_id", None)
+        if exp_id:
+            from app.models.expense import Expense
+            matched_exp_obj = await db.get(Expense, exp_id)
+            if matched_exp_obj and matched_exp_obj.tenant_id == tenant.id:
+                matched_exp_obj.settlement_status = "settled"
+                matched_exp_obj.status = "reimbursed"
 
     line.reconciliation_status = "reconciled"
     line.matched_journal_entry_id = entry.id

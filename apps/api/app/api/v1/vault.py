@@ -39,6 +39,15 @@ DOCUMENT_CATEGORY_MAP = {
     "gst_reg_06": "tax_registration",
     "reg06": "tax_registration",
     "reg_06": "tax_registration",
+    "itr": "tax_registration",
+    "itr-6": "tax_registration",
+    "itr_6": "tax_registration",
+    "itr 6": "tax_registration",
+    "itr-v": "tax_registration",
+    "itr_v": "tax_registration",
+    "itr v": "tax_registration",
+    "income_tax_return": "tax_registration",
+    "form_itr": "tax_registration",
     
     # Statutory Filing
     "statutory_filing": "statutory_filing",
@@ -52,17 +61,27 @@ DOCUMENT_CATEGORY_MAP = {
     "form_inc_20a": "statutory_filing",
     "mgt_7": "statutory_filing",
     "mgt-7": "statutory_filing",
+    "mgt 7": "statutory_filing",
     "mgt_7a": "statutory_filing",
     "mgt-7a": "statutory_filing",
+    "mgt 7a": "statutory_filing",
+    "mgt7a": "statutory_filing",
     "form_mgt_7": "statutory_filing",
+    "form_mgt_7a": "statutory_filing",
     "aoc_4": "statutory_filing",
     "aoc-4": "statutory_filing",
+    "aoc 4": "statutory_filing",
+    "aoc4": "statutory_filing",
     "form_aoc_4": "statutory_filing",
     "dir_12": "statutory_filing",
     "dir-12": "statutory_filing",
     "form_dir_12": "statutory_filing",
     "auditor_report": "statutory_filing",
+    "auditor-report": "statutory_filing",
+    "extract_of_auditors_report": "statutory_filing",
     "board_report": "statutory_filing",
+    "board-report": "statutory_filing",
+    "extract_of_boards_report": "statutory_filing",
     
     # Equity & Governance
     "equity_governance": "equity_governance",
@@ -161,6 +180,7 @@ async def smart_ingest_document(
     file: UploadFile = File(...),
     category: Optional[str] = Form(None),
     doc_type: Optional[str] = Form(None),
+    fiscal_year: Optional[str] = Form(None),
     pdf_password: Optional[str] = Form(None),
     current_user: User = Depends(get_current_user),
     tenant: Tenant = Depends(get_current_tenant),
@@ -213,6 +233,10 @@ async def smart_ingest_document(
 
     # 3. Determine document reference number
     ext_fields = extracted.get("extracted_fields", {})
+    resolved_fy = fiscal_year or ext_fields.get("financial_year")
+    if resolved_fy:
+        ext_fields["fiscal_year"] = resolved_fy
+
     doc_num = (
         ext_fields.get("cin") or
         ext_fields.get("srn") or
@@ -220,10 +244,12 @@ async def smart_ingest_document(
         ext_fields.get("pan") or
         ext_fields.get("tan") or
         ext_fields.get("auditor_frn") or
+        ext_fields.get("itr_ack_number") or
+        ext_fields.get("acknowledgement_number") or
         ext_fields.get("meeting_number")
     )
 
-    # 4. De-duplicate: check if document with same sha256 or same (tenant_id, category, doc_title) already exists
+    # 4. De-duplicate: check if document with same sha256 or same (tenant_id, category, doc_title, fiscal_year) already exists
     existing_stmt = select(DocumentVault).where(
         DocumentVault.tenant_id == tenant.id,
         (
@@ -231,7 +257,16 @@ async def smart_ingest_document(
             ((DocumentVault.category == assigned_category) & (DocumentVault.document_name == doc_title))
         )
     )
-    existing_doc = (await db.execute(existing_stmt)).scalars().first()
+    existing_docs = (await db.execute(existing_stmt)).scalars().all()
+    existing_doc = None
+    if resolved_fy:
+        for ed in existing_docs:
+            ed_fy = (ed.metadata_json or {}).get("fiscal_year")
+            if ed.sha256_hash == sha256_hash or ed_fy == resolved_fy:
+                existing_doc = ed
+                break
+    else:
+        existing_doc = existing_docs[0] if existing_docs else None
 
     if existing_doc:
         doc = existing_doc
@@ -245,7 +280,8 @@ async def smart_ingest_document(
         doc.metadata_json = {
             "document_type": extracted.get("document_type"),
             "extracted_fields": ext_fields,
-            "filename": file.filename
+            "filename": file.filename,
+            "fiscal_year": resolved_fy
         }
     else:
         doc = DocumentVault(
@@ -264,7 +300,8 @@ async def smart_ingest_document(
             metadata_json={
                 "document_type": extracted.get("document_type"),
                 "extracted_fields": ext_fields,
-                "filename": file.filename
+                "filename": file.filename,
+                "fiscal_year": resolved_fy
             }
         )
         db.add(doc)
@@ -402,6 +439,28 @@ async def smart_ingest_document(
     elif doc_type_val == "form_dir_12":
         current_statutory["dir12_verified"] = True
 
+    # Form AOC-4
+    elif doc_type_val == "form_aoc_4":
+        current_statutory["aoc4_verified"] = True
+        if ext_fields.get("srn"):
+            current_statutory["aoc4_srn"] = ext_fields["srn"]
+        if ext_fields.get("financial_year"):
+            current_statutory["aoc4_fy"] = ext_fields["financial_year"]
+
+    # Form MGT-7 / MGT-7A
+    elif doc_type_val == "form_mgt_7":
+        current_statutory["mgt7_verified"] = True
+        if ext_fields.get("srn"):
+            current_statutory["mgt7_srn"] = ext_fields["srn"]
+
+    # Income Tax Return
+    elif doc_type_val == "itr":
+        current_statutory["itr_verified"] = True
+        if ext_fields.get("itr_ack_number"):
+            current_statutory["itr_ack"] = ext_fields["itr_ack_number"]
+        if ext_fields.get("assessment_year"):
+            current_statutory["assessment_year"] = ext_fields["assessment_year"]
+
     # Form GST REG-06 updates GSTIN, State Code, Legal/Trade Name
     elif doc_type_val == "gst_reg06":
         if ext_fields.get("gstin"):
@@ -507,6 +566,199 @@ async def update_statutory_profile(
     await db.commit()
     await db.refresh(tenant)
     return {"message": "Statutory profile updated successfully", "statutory_profile": tenant.statutory_profile}
+
+ANNUAL_STATUTORY_DOCS = [
+    {
+        "code": "MGT_7A",
+        "name": "Form MGT-7A: Annual Return for Small Company / OPC",
+        "section": "Section 92(1)",
+        "authority": "Ministry of Corporate Affairs (MCA)",
+        "purpose": "Abridged annual return disclosing shareholding, director details, and meeting frequency.",
+        "category": "statutory_filing",
+        "due_date_rule": "60 days from AGM (Typically November 29)",
+        "accepted_doc_types": ["form_mgt_7", "form_mgt_7a", "mgt_7a", "mgt-7a", "mgt_7"]
+    },
+    {
+        "code": "AOC_4",
+        "name": "Form AOC-4: Annual Financial Statements Filing",
+        "section": "Section 137",
+        "authority": "Ministry of Corporate Affairs (MCA)",
+        "purpose": "Filing of audited balance sheet, profit & loss, and notes to accounts with RoC.",
+        "category": "statutory_filing",
+        "due_date_rule": "30 days from AGM (Typically October 30)",
+        "accepted_doc_types": ["form_aoc_4", "aoc_4", "aoc-4", "aoc4"]
+    },
+    {
+        "code": "BOARD_REPORT",
+        "name": "Extract of Board's Report (Section 134)",
+        "section": "Section 134",
+        "authority": "Board of Directors",
+        "purpose": "Directors' responsibility statement, state of company affairs, and statutory disclosures.",
+        "category": "equity_governance",
+        "due_date_rule": "Approved prior to AGM and attached to Form AOC-4",
+        "accepted_doc_types": ["board_report", "extract_of_boards_report"]
+    },
+    {
+        "code": "AUDITOR_REPORT",
+        "name": "Extract of Auditor's Report (Standalone)",
+        "section": "Section 143",
+        "authority": "Independent Statutory Auditor",
+        "purpose": "Unqualified / clean audit opinion on true & fair financial view, CARO, and internal controls.",
+        "category": "statutory_filing",
+        "due_date_rule": "Delivered by Statutory Auditor and attached to Form AOC-4",
+        "accepted_doc_types": ["auditor_report", "extract_of_auditors_report"]
+    },
+    {
+        "code": "ITR",
+        "name": "Income Tax Return (Form ITR-6 / ITR-V Ack)",
+        "section": "Section 139(1)",
+        "authority": "Income Tax Department (CBDT)",
+        "purpose": "Statutory corporate tax filing, computation of taxable income, MAT, and TDS tax credits.",
+        "category": "tax_registration",
+        "due_date_rule": "October 31 of Assessment Year (Corporate Tax Audit)",
+        "accepted_doc_types": ["itr", "itr_6", "itr-6", "form_itr"]
+    }
+]
+
+@router.get("/annual-statutory-filings")
+async def get_annual_statutory_filings(
+    fy: Optional[str] = None,
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Returns the 5 annual statutory compliance documents for a specified financial year
+    (e.g., '2026-27', '2025-26', '2024-25').
+    """
+    clean_fy = (fy or "").replace("FY", "").strip()
+    stmt = select(DocumentVault).where(DocumentVault.tenant_id == tenant.id)
+    all_docs = (await db.execute(stmt)).scalars().all()
+
+    result = []
+    for item in ANNUAL_STATUTORY_DOCS:
+        matched_doc = None
+        for d in all_docs:
+            meta = d.metadata_json or {}
+            doc_fy = str(meta.get("fiscal_year") or "").replace("FY", "").strip()
+            dtype = str(meta.get("document_type") or "").lower()
+            dname = d.document_name.lower()
+            
+            # Check FY match if specified
+            fy_matches = not clean_fy or (doc_fy and (clean_fy in doc_fy or doc_fy in clean_fy))
+            
+            # Check document type match
+            is_type_match = False
+            if dtype in item["accepted_doc_types"]:
+                is_type_match = True
+            elif item["code"] == "MGT_7A" and ("mgt-7" in dname or "mgt 7" in dname or "mgt7" in dname):
+                is_type_match = True
+            elif item["code"] == "AOC_4" and ("aoc-4" in dname or "aoc 4" in dname or "aoc4" in dname):
+                is_type_match = True
+            elif item["code"] == "BOARD_REPORT" and ("board" in dname and "report" in dname):
+                is_type_match = True
+            elif item["code"] == "AUDITOR_REPORT" and ("auditor" in dname and "report" in dname):
+                is_type_match = True
+            elif item["code"] == "ITR" and ("itr" in dname or "income tax return" in dname):
+                is_type_match = True
+
+            if is_type_match and fy_matches:
+                matched_doc = d
+                break
+
+        # Fallback if specific FY match not found
+        if not matched_doc and not clean_fy:
+            for d in all_docs:
+                meta = d.metadata_json or {}
+                dtype = str(meta.get("document_type") or "").lower()
+                if dtype in item["accepted_doc_types"]:
+                    matched_doc = d
+                    break
+
+        doc_data = None
+        if matched_doc:
+            meta = matched_doc.metadata_json or {}
+            ext = meta.get("extracted_fields", {})
+            doc_data = {
+                "id": str(matched_doc.id),
+                "document_name": matched_doc.document_name,
+                "document_number": matched_doc.document_number,
+                "sha256_hash": matched_doc.sha256_hash,
+                "file_size_bytes": matched_doc.file_size_bytes,
+                "created_at": matched_doc.created_at.isoformat() if matched_doc.created_at else None,
+                "fiscal_year": meta.get("fiscal_year") or clean_fy,
+                "extracted_fields": ext,
+                "download_url": f"/api/v1/vault/{matched_doc.id}/download"
+            }
+
+        result.append({
+            "code": item["code"],
+            "name": item["name"],
+            "section": item["section"],
+            "authority": item["authority"],
+            "purpose": item["purpose"],
+            "category": item["category"],
+            "due_date_rule": item["due_date_rule"],
+            "status": "verified" if doc_data else "pending",
+            "fiscal_year": clean_fy,
+            "document": doc_data
+        })
+
+    return {"fiscal_year": clean_fy, "documents": result}
+
+
+@router.post("/annual-statutory-filings/upload")
+async def upload_annual_statutory_filing(
+    file: UploadFile = File(...),
+    document_code: str = Form(...),
+    fiscal_year: str = Form(...),
+    pdf_password: Optional[str] = Form(None),
+    current_user: User = Depends(get_current_user),
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Dedicated annual statutory filing ingestion: verifies, parses, and vaults
+    one of the 5 mandatory annual compliance documents for a specified financial year.
+    """
+    return await smart_ingest_document(
+        file=file,
+        category=None,
+        doc_type=document_code,
+        fiscal_year=fiscal_year,
+        pdf_password=pdf_password,
+        current_user=current_user,
+        tenant=tenant,
+        db=db
+    )
+
+
+@router.get("/{document_id}/download")
+async def download_vault_document_file(
+    document_id: uuid.UUID,
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db)
+):
+    stmt = select(DocumentVault).where(
+        DocumentVault.id == document_id,
+        DocumentVault.tenant_id == tenant.id
+    )
+    res = await db.execute(stmt)
+    doc = res.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    try:
+        content = storage_manager.get_document_bytes(settings.BUCKET_VAULT, doc.minio_s3_key)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not retrieve file from vault storage: {str(e)}")
+
+    return Response(
+        content=content,
+        media_type=doc.mime_type or "application/pdf",
+        headers={
+            "Content-Disposition": f'inline; filename="{doc.document_name}"'
+        }
+    )
+
 
 @router.get("/", response_model=List[DocumentVaultResponse])
 async def list_vault_documents(

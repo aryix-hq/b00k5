@@ -166,9 +166,10 @@ export default function BankReconciliationPage() {
     try {
       const stmts = await fetchApi('/api/v1/reconciliation/statements');
       if (Array.isArray(stmts) && stmts.length > 0) {
-        setAvailableStatements(stmts);
+        const sorted = [...stmts].sort((a: any, b: any) => (a.statement_from || '').localeCompare(b.statement_from || ''));
+        setAvailableStatements(sorted);
         // Prefer active statement with transactions
-        const withLines = stmts.find((s: any) => s.lines && s.lines.length > 0) || stmts[0];
+        const withLines = sorted.find((s: any) => s.lines && s.lines.length > 0) || sorted[0];
         switchStatement(withLines);
       }
     } catch (e) {

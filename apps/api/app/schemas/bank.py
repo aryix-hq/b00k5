@@ -51,7 +51,9 @@ class BankStatementResponse(BaseModel):
 class ConfirmMatchRequest(BaseModel):
     journal_line_id: Optional[uuid.UUID] = None
     invoice_id: Optional[uuid.UUID] = None
+    matched_invoice_id: Optional[uuid.UUID] = None
     expense_id: Optional[uuid.UUID] = None
+    matched_expense_id: Optional[uuid.UUID] = None
     notes: Optional[str] = None
 
 class AllocateSuspenseRequest(BaseModel):

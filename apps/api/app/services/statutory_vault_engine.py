@@ -280,30 +280,37 @@ class StatutoryVaultEngine:
         forced_upper = (forced_doc_type or "").upper()
         fname_upper = (filename or "").upper()
 
+        # Universal string normalization for punctuation & Unicode quotes
+        text_norm = text_upper.replace("’", "'").replace("`", "'").replace("‘", "'")
+        fname_norm = fname_upper.replace("’", "'").replace("`", "'").replace("‘", "'")
+        forced_norm = forced_upper.replace("’", "'").replace("`", "'").replace("‘", "'")
+
         # -------------------------------------------------------------------------
         # Specific MCA Statutory Forms & Reports checked FIRST to avoid false matches
         # -------------------------------------------------------------------------
 
         # 1. Auditor's Report / Extract of Auditor's Report (MUST be checked BEFORE AOC-4 because MCA Extract of Auditor's Report mentions "attached with form AOC-4")
         if (
-            "AUDITOR_REPORT" in forced_upper or "AUDITOR-REPORT" in forced_upper or
-            "EXTRACT OF AUDITOR'S REPORT" in text_upper or "EXTRACT OF AUDITOR REPORT" in text_upper or
-            "INDEPENDENT AUDITOR'S REPORT" in text_upper or "INDEPENDENT AUDITOR REPORT" in text_upper or
-            "AUDITOR'S REPORT" in fname_upper or "AUDITOR REPORT" in fname_upper or
-            ("AUDITOR'S REPORT" in text_upper and "FORM NO. ADT-1" not in text_upper and "APPOINTMENT OF AUDITOR" not in text_upper)
+            "AUDITOR_REPORT" in forced_norm or "AUDITOR-REPORT" in forced_norm or "AUDITOR REPORT" in forced_norm or
+            "EXTRACT OF AUDITOR'S REPORT" in text_norm or "EXTRACT OF AUDITOR REPORT" in text_norm or "EXTRACT OF AUDITORS REPORT" in text_norm or
+            "INDEPENDENT AUDITOR'S REPORT" in text_norm or "INDEPENDENT AUDITOR REPORT" in text_norm or "INDEPENDENT AUDITORS REPORT" in text_norm or
+            "AUDITOR'S REPORT" in fname_norm or "AUDITOR REPORT" in fname_norm or "AUDITORS REPORT" in fname_norm or
+            ("AUDITOR" in fname_norm and "REPORT" in fname_norm) or
+            ("AUDITOR'S REPORT" in text_norm and "FORM NO. ADT-1" not in text_norm and "APPOINTMENT OF AUDITOR" not in text_norm) or
+            ("AUDITOR REPORT" in text_norm and "FORM NO. ADT-1" not in text_norm and "APPOINTMENT OF AUDITOR" not in text_norm)
         ):
             doc_type = "auditor_report"
             detected_category = "statutory_filing"
             extracted["document_title"] = "Extract of Independent Auditor's Report (Standalone)"
 
-            if "TRUE AND FAIR VIEW" in text_upper and "ADVERSE" not in text_upper:
+            if "TRUE AND FAIR VIEW" in text_norm and "ADVERSE" not in text_norm:
                 extracted["extracted_fields"]["audit_opinion"] = "Unqualified (Clean Opinion)"
-            elif "QUALIFIED OPINION" in text_upper:
+            elif "QUALIFIED OPINION" in text_norm:
                 extracted["extracted_fields"]["audit_opinion"] = "Qualified Opinion"
             else:
                 extracted["extracted_fields"]["audit_opinion"] = "Unqualified / Clean Statutory Auditor Report"
 
-            if "COMPANIES (AUDITOR'S REPORT) ORDER" in text_upper or "CARO" in text_upper:
+            if "COMPANIES (AUDITOR'S REPORT) ORDER" in text_norm or "CARO" in text_norm:
                 extracted["extracted_fields"]["caro_reported"] = True
 
             aud_firm_m = re.search(r'(?:M/s\.?\s+[A-Za-z0-9\s\.\&]+(?:Associates|LLP|Chartered\s+Accountants))', text, re.I)
@@ -312,11 +319,16 @@ class StatutoryVaultEngine:
 
         # 2. Board's Report / Extract of Board's Report (MUST be checked BEFORE MGT-7 because MCA Extract of Board's Report mentions "annual return referred to in sub-section (3) of section 92")
         elif (
-            "BOARD_REPORT" in forced_upper or "BOARD-REPORT" in forced_upper or
-            "EXTRACT OF BOARD'S REPORT" in text_upper or "EXTRACT OF BOARD REPORT" in text_upper or
-            "BOARD'S REPORT" in fname_upper or "BOARD REPORT" in fname_upper or "DIRECTORS' REPORT" in fname_upper or
-            ("BOARD'S REPORT" in text_upper and "FORM NO. MGT-7" not in text_upper) or
-            "DIRECTORS' REPORT" in text_upper
+            "BOARD_REPORT" in forced_norm or "BOARD-REPORT" in forced_norm or "BOARD REPORT" in forced_norm or
+            "EXTRACT OF BOARD'S REPORT" in text_norm or "EXTRACT OF BOARD REPORT" in text_norm or "EXTRACT OF BOARDS REPORT" in text_norm or
+            "BOARD'S REPORT" in fname_norm or "BOARD REPORT" in fname_norm or "BOARDS REPORT" in fname_norm or
+            "DIRECTORS' REPORT" in fname_norm or "DIRECTOR'S REPORT" in fname_norm or "DIRECTORS REPORT" in fname_norm or
+            ("BOARD" in fname_norm and "REPORT" in fname_norm) or
+            ("SECTION 134" in fname_norm or "SEC 134" in fname_norm or "SEC. 134" in fname_norm) or
+            ("BOARD'S REPORT" in text_norm and "FORM NO. MGT-7" not in text_norm) or
+            ("BOARDS REPORT" in text_norm and "FORM NO. MGT-7" not in text_norm) or
+            "DIRECTORS' REPORT" in text_norm or "DIRECTORS REPORT" in text_norm or "DIRECTOR'S REPORT" in text_norm or
+            ("SECTION 134" in text_norm and "BOARD" in text_norm)
         ):
             doc_type = "board_report"
             detected_category = "equity_governance"
@@ -454,9 +466,14 @@ class StatutoryVaultEngine:
 
         # 7. Form AOC-4 (Financial Statements Filing)
         elif (
-            "AOC_4" in forced_upper or "AOC-4" in forced_upper or
-            "FORM NO. AOC-4" in text_upper or "AOC-4" in fname_upper or "AOC4" in fname_upper or
-            "AOC-4" in text_upper or "FINANCIAL STATEMENTS AND OTHER DOCUMENTS" in text_upper
+            "AOC_4" in forced_norm or "AOC-4" in forced_norm or "AOC 4" in forced_norm or "AOC4" in forced_norm or
+            "FORM NO. AOC-4" in text_norm or "FORM NO. AOC 4" in text_norm or "FORM NO AOC-4" in text_norm or "FORM NO AOC 4" in text_norm or
+            "FORM AOC-4" in text_norm or "FORM AOC 4" in text_norm or "FORM AOC" in text_norm or
+            "AOC-4" in fname_norm or "AOC 4" in fname_norm or "AOC4" in fname_norm or "AOC_4" in fname_norm or
+            ("AOC" in fname_norm and "4" in fname_norm) or
+            "AOC-4" in text_norm or "AOC 4" in text_norm or "AOC4" in text_norm or
+            "FINANCIAL STATEMENTS AND OTHER DOCUMENTS" in text_norm or
+            ("BALANCE SHEET" in text_norm and "PROFIT AND LOSS" in text_norm and ("AOC" in text_norm or "AOC" in fname_norm))
         ):
             doc_type = "form_aoc_4"
             detected_category = "statutory_filing"
@@ -472,9 +489,15 @@ class StatutoryVaultEngine:
 
         # 8. Form MGT-7 / MGT-7A (Annual Return)
         elif (
-            "MGT_7" in forced_upper or "MGT-7" in forced_upper or "MGT_7A" in forced_upper or
-            "FORM NO. MGT-7" in text_upper or "MGT-7" in fname_upper or "MGT7" in fname_upper or
-            "MGT-7" in text_upper or "ANNUAL RETURN" in text_upper
+            "MGT_7" in forced_norm or "MGT-7" in forced_norm or "MGT 7" in forced_norm or "MGT7" in forced_norm or
+            "MGT_7A" in forced_norm or "MGT-7A" in forced_norm or "MGT 7A" in forced_norm or "MGT7A" in forced_norm or
+            "FORM NO. MGT-7" in text_norm or "FORM NO. MGT-7A" in text_norm or "FORM NO. MGT 7" in text_norm or "FORM NO. MGT 7A" in text_norm or
+            "FORM MGT-7" in text_norm or "FORM MGT-7A" in text_norm or "FORM MGT 7" in text_norm or "FORM MGT 7A" in text_norm or
+            "MGT-7" in fname_norm or "MGT-7A" in fname_norm or "MGT 7" in fname_norm or "MGT 7A" in fname_norm or "MGT7" in fname_norm or "MGT7A" in fname_norm or
+            ("MGT" in fname_norm and "7" in fname_norm) or
+            "MGT-7" in text_norm or "MGT-7A" in text_norm or "MGT 7" in text_norm or "MGT 7A" in text_norm or
+            "ABRIDGED ANNUAL RETURN" in text_norm or
+            ("ANNUAL RETURN" in text_norm and ("SMALL COMPANY" in text_norm or "ONE PERSON COMPANY" in text_norm or "MGT" in text_norm))
         ):
             doc_type = "form_mgt_7"
             detected_category = "statutory_filing"
@@ -627,6 +650,48 @@ class StatutoryVaultEngine:
                 extracted["extracted_fields"]["pan"] = pan_m.group(1)
             if tan_m:
                 extracted["extracted_fields"]["tan"] = tan_m.group(1)
+
+        # 14. Income Tax Return (ITR / Form ITR-6 / ITR-V Ack)
+        elif (
+            "ITR" in forced_norm or "ITR-6" in forced_norm or "ITR_6" in forced_norm or "ITR 6" in forced_norm or
+            "ITR-V" in forced_norm or "ITR_V" in forced_norm or "ITR V" in forced_norm or
+            "INCOME TAX RETURN" in forced_norm or
+            "ITR" in fname_norm or "ITR-6" in fname_norm or "ITR 6" in fname_norm or "ITR-V" in fname_norm or "ITR V" in fname_norm or
+            "INCOME TAX RETURN" in fname_norm or
+            "INDIAN INCOME TAX RETURN" in text_norm or "INCOME TAX RETURN ACKNOWLEDGEMENT" in text_norm or
+            "ITR-6" in text_norm or "FORM ITR-6" in text_norm or "ITR-V" in text_norm or
+            ("INCOME TAX" in text_norm and ("ASSESSMENT YEAR" in text_norm or "ACK. NO." in text_norm or "ACKNOWLEDGEMENT" in text_norm))
+        ):
+            doc_type = "itr"
+            detected_category = "tax_registration"
+            extracted["document_title"] = "Income Tax Return (Form ITR-6 / ITR-V Ack)"
+
+            ay_m = re.search(r'Assessment\s+Year[ \t]*[:\-]?[ \t]*([0-9]{4}-[0-9]{2,4})', text, re.I)
+            if ay_m:
+                extracted["extracted_fields"]["assessment_year"] = ay_m.group(1).strip()
+
+            py_m = re.search(r'(?:Previous\s+Year|Financial\s+Year)[ \t]*[:\-]?[ \t]*([0-9]{4}-[0-9]{2,4})', text, re.I)
+            if py_m:
+                extracted["extracted_fields"]["financial_year"] = py_m.group(1).strip()
+
+            ack_m = re.search(r'(?:Acknowledgement\s+Number|e-Filing\s+Acknowledgement\s+Number|Ack\.?\s+No\.?)[ \t]*[:\-]?[ \t]*([0-9]{15})', text, re.I) or re.search(r'\b([0-9]{15})\b', text)
+            if ack_m:
+                extracted["extracted_fields"]["itr_ack_number"] = ack_m.group(1).strip()
+                extracted["extracted_fields"]["acknowledgement_number"] = ack_m.group(1).strip()
+
+            pan_m = PAN_REGEX.search(text)
+            if pan_m:
+                extracted["extracted_fields"]["pan"] = pan_m.group(1).strip().upper()
+
+            filing_date_m = re.search(r'(?:Date\s+of\s+Filing|Filed\s+on)[ \t]*[:\-]?[ \t]*([0-9]{2}[/-][0-9]{2}[/-][0-9]{4})', text, re.I)
+            if filing_date_m:
+                extracted["extracted_fields"]["filing_date"] = filing_date_m.group(1).strip()
+
+            inc_m = re.search(r'(?:Total\s+Income|Gross\s+Total\s+Income)[ \t]*[:\-]?[ \t]*(?:Rs\.|INR|₹)?[ \t]*([0-9,]+)', text, re.I)
+            if inc_m:
+                extracted["extracted_fields"]["total_income"] = inc_m.group(1).strip().replace(',', '')
+
+            extracted["extracted_fields"]["itr_status"] = "Filed u/s 139"
 
         # 14. GST Registration (Form GST REG-06)
         elif "GST REG-06" in text_upper or "REG-06" in text_upper or "GST" in forced_upper or "GST" in fname_upper or ("GOODS AND SERVICES TAX" in text_upper and GSTIN_REGEX.search(text)):

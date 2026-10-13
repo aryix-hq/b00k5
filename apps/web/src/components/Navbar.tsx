@@ -4,10 +4,14 @@ import React, { useEffect, useState, useRef } from 'react';
 import { Building2, Shield, User as UserIcon, Users, LogOut, Calendar, ChevronDown, Settings, Cloud, FolderLock, Check, AlertTriangle } from 'lucide-react';
 
 export function Navbar() {
+  const now = new Date();
+  const currentYr = now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1;
+  const currentActiveFY = `FY ${currentYr}-${currentYr + 1}`;
+
   const [companyName, setCompanyName] = useState('Organization');
   const [cin, setCin] = useState('');
   const [role, setRole] = useState('Owner / Founder');
-  const [selectedFY, setSelectedFY] = useState('FY 2026-2027');
+  const [selectedFY, setSelectedFY] = useState(currentActiveFY);
   const [userDropdownOpen, setUserDropdownOpen] = useState(false);
   const [currentUser, setCurrentUser] = useState<any>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -23,7 +27,11 @@ export function Navbar() {
       if (storedName) setCompanyName(storedName);
       if (storedCin) setCin(storedCin);
       if (storedRole) setRole(storedRole);
-      if (storedFY) setSelectedFY(storedFY);
+      if (storedFY) {
+        setSelectedFY(storedFY);
+      } else {
+        localStorage.setItem('b00k5_selected_fy', currentActiveFY);
+      }
 
       // Fetch authentic user session & multi-tenant profile
       if (token) {
@@ -57,9 +65,20 @@ export function Navbar() {
         setUserDropdownOpen(false);
       }
     };
+
+    const handleFYEvent = (e: any) => {
+      if (e.detail) {
+        setSelectedFY(e.detail);
+      }
+    };
+
     document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
+    window.addEventListener('b00k5_fy_changed', handleFYEvent);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      window.removeEventListener('b00k5_fy_changed', handleFYEvent);
+    };
+  }, [currentActiveFY]);
 
   const handleFYChange = (newFY: string) => {
     setSelectedFY(newFY);
@@ -108,8 +127,6 @@ export function Navbar() {
     }
   };
 
-  const now = new Date();
-  const currentYr = now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1;
 
   // Dynamically calculate Selected Period FY & AY
   const parseStartYear = (fy: string) => {
@@ -120,13 +137,16 @@ export function Navbar() {
   const selectedStartYr = parseStartYear(selectedFY);
   const selectedPeriodFY = `${selectedStartYr}-${String(selectedStartYr + 1).slice(-2)}`;
   const selectedPeriodAY = `${selectedStartYr + 1}-${String(selectedStartYr + 2).slice(-2)}`;
+  const isCurrent = selectedStartYr === currentYr;
   const isPrior = selectedStartYr < currentYr;
+  const isFuture = selectedStartYr > currentYr;
 
-  // Dynamic available periods (e.g. FY 2027-2028 down to FY 2023-2024)
-  const availablePeriods: string[] = [];
-  for (let y = currentYr + 1; y >= currentYr - 3; y--) {
+  // Dynamic available periods (e.g. Current FY first, past 5 years, upcoming year)
+  const availablePeriods: string[] = [currentActiveFY];
+  for (let y = currentYr - 1; y >= currentYr - 5; y--) {
     availablePeriods.push(`FY ${y}-${y + 1}`);
   }
+  availablePeriods.push(`FY ${currentYr + 1}-${currentYr + 2}`);
 
   const displayName = currentUser ? `${currentUser.first_name} ${currentUser.last_name}` : 'Corporate Officer';
   const displayEmail = currentUser?.email || 'officer@b00k5.internal';
@@ -152,9 +172,13 @@ export function Navbar() {
         <div className="flex items-center gap-4">
           {/* Active FY/AY Selected Period Badge */}
           <div id="active-fy-ay-badge" className={`hidden sm:flex items-center gap-1.5 px-3 py-1 rounded-lg border text-xs font-mono font-bold ${
-            isPrior ? 'bg-amber-500/10 border-amber-500/30 text-amber-300' : 'bg-sky-500/10 border-sky-500/20 text-sky-300'
+            isCurrent
+              ? 'bg-sky-500/10 border-sky-500/20 text-sky-300'
+              : isPrior
+              ? 'bg-amber-500/10 border-amber-500/30 text-amber-300'
+              : 'bg-purple-500/10 border-purple-500/30 text-purple-300'
           }`}>
-            <span>{isPrior ? 'Prior Period: ' : 'Active: '}FY {selectedPeriodFY} | AY {selectedPeriodAY}</span>
+            <span>{isCurrent ? 'Active: ' : isPrior ? 'Prior Period: ' : 'Upcoming Period: '}FY {selectedPeriodFY} | AY {selectedPeriodAY}</span>
           </div>
 
           {/* Financial Year Switcher */}
@@ -170,7 +194,7 @@ export function Navbar() {
             >
               {availablePeriods.map((fy) => (
                 <option key={fy} value={fy} className="bg-slate-900 text-white">
-                  {fy}
+                  {fy} {fy === currentActiveFY ? '(Current)' : ''}
                 </option>
               ))}
             </select>

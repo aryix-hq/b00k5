@@ -20,7 +20,11 @@ import {
   ExternalLink,
   ChevronRight,
   TrendingUp,
-  FileText
+  FileText,
+  Download,
+  Shield,
+  FileCheck,
+  RefreshCw
 } from 'lucide-react';
 import { fetchApi } from '@/lib/api';
 import Link from 'next/link';
@@ -39,8 +43,27 @@ interface ExpenseItem {
 }
 
 export default function YearBookPage() {
-  const [selectedFY, setSelectedFY] = useState('2025-26');
+  const now = new Date();
+  const currentCalendarYr = now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1;
+  const currentDefaultFY = `${currentCalendarYr}-${String(currentCalendarYr + 1).slice(-2)}`;
+
+  const parseFYString = (val: string) => {
+    const match = (val || '').match(/(\d{4})/);
+    if (match) {
+      const yr = parseInt(match[1]);
+      return `${yr}-${String(yr + 1).slice(-2)}`;
+    }
+    return currentDefaultFY;
+  };
+
+  const [selectedFY, setSelectedFY] = useState(currentDefaultFY);
   const [activeTab, setActiveTab] = useState<'statements' | 'bills' | 'invoices' | 'close'>('statements');
+
+  // Dynamic available periods (e.g. Current FY, past 5 years)
+  const availableFYs: string[] = [];
+  for (let y = currentCalendarYr; y >= currentCalendarYr - 5; y--) {
+    availableFYs.push(`${y}-${String(y + 1).slice(-2)}`);
+  }
 
   // Statements State
   const [statements, setStatements] = useState<any[]>([]);
@@ -59,8 +82,18 @@ export default function YearBookPage() {
   // Invoices State
   const [invoices, setInvoices] = useState<any[]>([]);
 
+  // Annual Statutory Filings State (5 documents)
+  const [statutoryFilings, setStatutoryFilings] = useState<any[]>([]);
+  const [loadingFilings, setLoadingFilings] = useState(false);
+  const [filingUploadModalOpen, setFilingUploadModalOpen] = useState(false);
+  const [targetFilingDoc, setTargetFilingDoc] = useState<any | null>(null);
+  const [selectedFilingFile, setSelectedFilingFile] = useState<File | null>(null);
+  const [filingPdfPassword, setFilingPdfPassword] = useState('');
+  const [filingUploading, setFilingUploading] = useState(false);
+  const [filingUploadError, setFilingUploadError] = useState('');
+
   // Dynamic Indian Financial Year (1 April - 31 March)
-  const startYear = parseInt(selectedFY.split('-')[0]) || 2025;
+  const startYear = parseInt(selectedFY.split('-')[0]) || currentCalendarYr;
   const endYear = startYear + 1;
   const fyStartDate = `${startYear}-04-01`;
   const fyEndDate = `${endYear}-03-31`;
@@ -85,6 +118,31 @@ export default function YearBookPage() {
     vendor_gstin: ''
   });
 
+  const loadAnnualStatutoryFilings = async (fy: string) => {
+    setLoadingFilings(true);
+    try {
+      const res = await fetchApi(`/api/v1/vault/annual-statutory-filings?fy=${fy}`);
+      if (res && res.documents) {
+        setStatutoryFilings(res.documents);
+      }
+    } catch (e) {
+      console.error('Failed to load annual statutory filings:', e);
+    } finally {
+      setLoadingFilings(false);
+    }
+  };
+
+  const handleSelectFY = (fy: string) => {
+    setSelectedFY(fy);
+    const startY = parseInt(fy.split('-')[0]);
+    if (typeof window !== 'undefined') {
+      const full = `FY ${startY}-${startY + 1}`;
+      localStorage.setItem('b00k5_selected_fy', full);
+      window.dispatchEvent(new CustomEvent('b00k5_fy_changed', { detail: full }));
+    }
+    loadAnnualStatutoryFilings(fy);
+  };
+
   // Load existing records and URL parameters
   useEffect(() => {
     let cleanup: (() => void) | undefined;
@@ -93,14 +151,18 @@ export default function YearBookPage() {
       const params = new URLSearchParams(window.location.search);
       const fy = params.get('fy');
       const tab = params.get('tab');
-      if (fy) setSelectedFY(fy);
-      else {
+      if (fy) {
+        const parsed = parseFYString(fy);
+        setSelectedFY(parsed);
+        loadAnnualStatutoryFilings(parsed);
+      } else {
         const stored = localStorage.getItem('b00k5_selected_fy');
         if (stored) {
-          const clean = stored.replace(/[^0-9]/g, '');
-          if (clean.startsWith('2025')) setSelectedFY('2025-26');
-          else if (clean.startsWith('2026')) setSelectedFY('2026-27');
-          else if (clean.startsWith('2024')) setSelectedFY('2024-25');
+          const parsed = parseFYString(stored);
+          setSelectedFY(parsed);
+          loadAnnualStatutoryFilings(parsed);
+        } else {
+          loadAnnualStatutoryFilings(currentDefaultFY);
         }
       }
       if (tab && ['statements', 'bills', 'invoices', 'close'].includes(tab)) {
@@ -109,10 +171,11 @@ export default function YearBookPage() {
 
       const onFY = (e: any) => {
         const val = e.detail || '';
-        const clean = val.replace(/[^0-9]/g, '');
-        if (clean.startsWith('2025')) setSelectedFY('2025-26');
-        else if (clean.startsWith('2026')) setSelectedFY('2026-27');
-        else if (clean.startsWith('2024')) setSelectedFY('2024-25');
+        if (val) {
+          const parsed = parseFYString(val);
+          setSelectedFY(parsed);
+          loadAnnualStatutoryFilings(parsed);
+        }
       };
       window.addEventListener('b00k5_fy_changed', onFY);
       cleanup = () => window.removeEventListener('b00k5_fy_changed', onFY);
@@ -327,6 +390,55 @@ export default function YearBookPage() {
     }
   };
 
+  const executeFilingUpload = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedFilingFile || !targetFilingDoc) return;
+    setFilingUploading(true);
+    setFilingUploadError('');
+
+    const fd = new FormData();
+    fd.append('file', selectedFilingFile);
+    fd.append('document_code', targetFilingDoc.code);
+    fd.append('fiscal_year', selectedFY);
+    if (filingPdfPassword) {
+      fd.append('pdf_password', filingPdfPassword);
+    }
+
+    try {
+      const token = localStorage.getItem('b00k5_token');
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/vault/annual-statutory-filings/upload`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: fd
+      });
+
+      if (res.status === 422) {
+        const errData = await res.json();
+        if (errData?.detail?.needs_password) {
+          setFilingUploadError(filingPdfPassword ? 'Incorrect password. Please verify and re-enter.' : 'Password required for this document.');
+          setFilingUploading(false);
+          return;
+        }
+      }
+
+      if (res.ok) {
+        setFilingUploadModalOpen(false);
+        setTargetFilingDoc(null);
+        setSelectedFilingFile(null);
+        setFilingPdfPassword('');
+        setFilingUploadError('');
+        await loadAnnualStatutoryFilings(selectedFY);
+      } else {
+        const err = await res.json();
+        setFilingUploadError(err.detail?.message || err.detail || 'Upload failed');
+      }
+    } catch (err: any) {
+      setFilingUploadError(err.message || 'Upload failed');
+    } finally {
+      setFilingUploading(false);
+    }
+  };
+
   // Calculations & Calendar Filters
   const displayedExpenses = expenses.filter(e => {
     if (!e.date) return false;
@@ -347,17 +459,19 @@ export default function YearBookPage() {
     return d.startsWith(targetYM);
   });
 
-  const displayedStatements = statements.filter(s => {
-    const from = (s.statement_from || '').slice(0, 10);
-    const to = (s.statement_to || '').slice(0, 10);
-    if (selectedMonth === 'all') {
-      return (from >= fyStartDate && from <= fyEndDate) || (to >= fyStartDate && to <= fyEndDate) || (from && to && from <= fyEndDate && to >= fyStartDate) || (!from && !to);
-    }
-    const targetYM = `${getTargetYearForMonth(selectedMonth)}-${selectedMonth}`;
-    const mStart = `${targetYM}-01`;
-    const mEnd = `${targetYM}-31`;
-    return from.startsWith(targetYM) || to.startsWith(targetYM) || (from && to && from <= mEnd && to >= mStart);
-  });
+  const displayedStatements = statements
+    .filter(s => {
+      const from = (s.statement_from || '').slice(0, 10);
+      const to = (s.statement_to || '').slice(0, 10);
+      if (selectedMonth === 'all') {
+        return (from >= fyStartDate && from <= fyEndDate) || (to >= fyStartDate && to <= fyEndDate) || (from && to && from <= fyEndDate && to >= fyStartDate) || (!from && !to);
+      }
+      const targetYM = `${getTargetYearForMonth(selectedMonth)}-${selectedMonth}`;
+      const mStart = `${targetYM}-01`;
+      const mEnd = `${targetYM}-31`;
+      return from.startsWith(targetYM) || to.startsWith(targetYM) || (from && to && from <= mEnd && to >= mStart);
+    })
+    .sort((a, b) => (a.statement_from || '').localeCompare(b.statement_from || ''));
 
   // KPI metrics correctly scoped to selected financial year and period
   const totalBillsAmount = displayedExpenses.reduce((acc, e) => acc + e.amount, 0);
@@ -390,23 +504,35 @@ export default function YearBookPage() {
             </div>
 
             {/* FY Switcher */}
-            <div className="flex items-center gap-2 bg-slate-900 p-1.5 rounded-xl border border-slate-800">
-              <span className="text-xs text-slate-400 px-2 font-medium flex items-center gap-1.5">
+            <div className="flex items-center gap-1.5 bg-slate-900 p-1.5 rounded-xl border border-slate-800 overflow-x-auto max-w-full">
+              <span className="text-xs text-slate-400 px-2 font-medium flex items-center gap-1.5 shrink-0">
                 <Calendar className="w-3.5 h-3.5 text-amber-400" /> Assessment Period:
               </span>
-              {(['2024-25', '2025-26', '2026-27'] as const).map((fy) => (
-                <button
-                  key={fy}
-                  onClick={() => setSelectedFY(fy)}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                    selectedFY === fy
-                      ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
-                      : 'text-slate-400 hover:text-white hover:bg-slate-800'
-                  }`}
-                >
-                  FY {fy}
-                </button>
-              ))}
+              {availableFYs.map((fy) => {
+                const isSelected = selectedFY === fy;
+                const isCurrent = fy === currentDefaultFY;
+                return (
+                  <button
+                    key={fy}
+                    type="button"
+                    onClick={() => handleSelectFY(fy)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all shrink-0 flex items-center gap-1 ${
+                      isSelected
+                        ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20 font-bold'
+                        : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                    }`}
+                  >
+                    <span>FY {fy}</span>
+                    {isCurrent && (
+                      <span className={`text-[9px] px-1 py-0.5 rounded font-mono ${
+                        isSelected ? 'bg-slate-950/20 text-slate-950 font-bold' : 'bg-emerald-500/20 text-emerald-400'
+                      }`}>
+                        Current
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
             </div>
           </div>
 
@@ -858,80 +984,225 @@ export default function YearBookPage() {
                 </p>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {/* Advance Tax Schedule */}
-                <div className="p-5 bg-slate-900 border border-slate-800 rounded-xl space-y-3">
-                  <div className="flex items-center justify-between">
-                    <h4 className="text-xs font-semibold text-white uppercase tracking-wider flex items-center gap-2">
-                      <IndianRupee className="w-4 h-4 text-amber-400" />
-                      Advance Tax Cadence (Sec 208)
-                    </h4>
-                    <span className="text-[10px] text-amber-400 font-mono">FY {selectedFY}</span>
+              <div className="space-y-6">
+                {/* 5 Annual Statutory Filings Workbench */}
+                <div className="p-6 bg-slate-900 border border-slate-800 rounded-2xl space-y-5">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-4">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <Shield className="w-5 h-5 text-emerald-400" />
+                        <h4 className="text-base font-bold text-white">
+                          Annual Statutory Compliance Filings — FY {selectedFY}
+                        </h4>
+                      </div>
+                      <p className="text-xs text-slate-400 mt-1">
+                        Mandatory compliance filings required every financial year. Documents are cryptographically hashed (SHA-256) and verified into the legal vault.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => loadAnnualStatutoryFilings(selectedFY)}
+                      disabled={loadingFilings}
+                      className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold rounded-lg flex items-center gap-1.5 self-start sm:self-auto transition"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${loadingFilings ? 'animate-spin text-sky-400' : ''}`} />
+                      <span>{loadingFilings ? 'Refreshing...' : 'Refresh Status'}</span>
+                    </button>
                   </div>
-                  <div className="space-y-2 text-xs">
-                    <div className="p-2.5 bg-slate-950/70 border border-slate-800 rounded-lg flex items-center justify-between">
-                      <span>15% Cumulative (Q1) — 15th June 2025</span>
-                      <span className="px-2 py-0.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded font-mono text-[10px]">
-                        Cleared
-                      </span>
-                    </div>
-                    <div className="p-2.5 bg-slate-950/70 border border-slate-800 rounded-lg flex items-center justify-between">
-                      <span>45% Cumulative (Q2) — 15th Sept 2025</span>
-                      <span className="px-2 py-0.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded font-mono text-[10px]">
-                        Cleared
-                      </span>
-                    </div>
-                    <div className="p-2.5 bg-slate-950/70 border border-slate-800 rounded-lg flex items-center justify-between">
-                      <span>75% Cumulative (Q3) — 15th Dec 2025</span>
-                      <span className="px-2 py-0.5 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded font-mono text-[10px]">
-                        Due in Q3
-                      </span>
-                    </div>
-                    <div className="p-2.5 bg-slate-950/70 border border-slate-800 rounded-lg flex items-center justify-between">
-                      <span>100% Cumulative (Q4) — 15th March 2026</span>
-                      <span className="text-slate-500 font-mono text-[10px]">Upcoming</span>
-                    </div>
+
+                  {/* Document Grid */}
+                  <div className="grid grid-cols-1 gap-3.5">
+                    {statutoryFilings.map((doc) => {
+                      const isVerified = doc.status === 'verified' && doc.document;
+                      const docObj = doc.document;
+                      return (
+                        <div
+                          key={doc.code}
+                          className={`p-4 rounded-xl border transition-all ${
+                            isVerified
+                              ? 'bg-slate-950/70 border-emerald-500/30 ring-1 ring-emerald-500/10'
+                              : 'bg-slate-950/40 border-slate-800/80 hover:border-slate-700'
+                          }`}
+                        >
+                          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                            <div className="space-y-1.5 flex-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="font-bold text-sm text-white">{doc.name}</span>
+                                <span className="px-2 py-0.5 rounded bg-sky-500/10 text-sky-400 border border-sky-500/20 text-[10px] font-mono">
+                                  {doc.section}
+                                </span>
+                                <span className="px-2 py-0.5 rounded bg-slate-800 text-slate-400 text-[10px]">
+                                  {doc.authority}
+                                </span>
+                                <span className={`px-2 py-0.5 rounded text-[10px] font-semibold border flex items-center gap-1 ${
+                                  isVerified
+                                    ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
+                                    : 'bg-amber-500/10 text-amber-400 border-amber-500/20'
+                                }`}>
+                                  {isVerified ? (
+                                    <>
+                                      <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                                      Verified &amp; Sealed
+                                    </>
+                                  ) : (
+                                    <>
+                                      <AlertTriangle className="w-3 h-3 text-amber-400" />
+                                      Pending Upload (FY {selectedFY})
+                                    </>
+                                  )}
+                                </span>
+                              </div>
+
+                              <p className="text-xs text-slate-400">{doc.purpose}</p>
+
+                              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-500 font-mono">
+                                <span>Cadence: {doc.due_date_rule}</span>
+                                {docObj && (
+                                  <>
+                                    <span>•</span>
+                                    <span className="text-slate-400 font-medium">File: {docObj.document_name}</span>
+                                    <span>•</span>
+                                    <span className="text-slate-500">SHA: {docObj.sha256_hash?.slice(0, 10)}...</span>
+                                    {docObj.extracted_fields?.financial_year && (
+                                      <>
+                                        <span>•</span>
+                                        <span className="text-sky-400">FY: {docObj.extracted_fields.financial_year}</span>
+                                      </>
+                                    )}
+                                    {docObj.extracted_fields?.assessment_year && (
+                                      <>
+                                        <span>•</span>
+                                        <span className="text-amber-400">AY: {docObj.extracted_fields.assessment_year}</span>
+                                      </>
+                                    )}
+                                    {(docObj.extracted_fields?.srn || docObj.extracted_fields?.acknowledgement_number || docObj.extracted_fields?.itr_ack_number) && (
+                                      <>
+                                        <span>•</span>
+                                        <span className="text-emerald-400">
+                                          Ref: {docObj.extracted_fields.srn || docObj.extracted_fields.acknowledgement_number || docObj.extracted_fields.itr_ack_number}
+                                        </span>
+                                      </>
+                                    )}
+                                  </>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-2 self-start md:self-auto shrink-0">
+                              {isVerified && docObj?.id && (
+                                <a
+                                  href={`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/vault/${docObj.id}/download`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-lg flex items-center gap-1.5 transition border border-slate-700"
+                                >
+                                  <Download className="w-3.5 h-3.5 text-sky-400" />
+                                  <span>Download</span>
+                                </a>
+                              )}
+
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setTargetFilingDoc(doc);
+                                  setSelectedFilingFile(null);
+                                  setFilingPdfPassword('');
+                                  setFilingUploadError('');
+                                  setFilingUploadModalOpen(true);
+                                }}
+                                className={`px-3 py-1.5 text-xs font-semibold rounded-lg flex items-center gap-1.5 transition ${
+                                  isVerified
+                                    ? 'bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700'
+                                    : 'bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold shadow-md shadow-amber-500/20'
+                                }`}
+                              >
+                                <UploadCloud className="w-3.5 h-3.5" />
+                                <span>{isVerified ? 'Re-upload' : 'Upload Document'}</span>
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
 
-                {/* MCA Statutory Returns */}
-                <div className="p-5 bg-slate-900 border border-slate-800 rounded-xl space-y-3">
-                  <div className="flex items-center justify-between">
-                    <h4 className="text-xs font-semibold text-white uppercase tracking-wider flex items-center gap-2">
-                      <FileText className="w-4 h-4 text-sky-400" />
-                      MCA Annual Statutory Filings
-                    </h4>
-                    <span className="text-[10px] text-sky-400 font-mono">Schedule III</span>
+                {/* Advance Tax Cadence & Filing Deadlines */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {/* Advance Tax Schedule */}
+                  <div className="p-5 bg-slate-900 border border-slate-800 rounded-xl space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-xs font-semibold text-white uppercase tracking-wider flex items-center gap-2">
+                        <IndianRupee className="w-4 h-4 text-amber-400" />
+                        Advance Tax Cadence (Sec 208)
+                      </h4>
+                      <span className="text-[10px] text-amber-400 font-mono">FY {selectedFY}</span>
+                    </div>
+                    <div className="space-y-2 text-xs">
+                      <div className="p-2.5 bg-slate-950/70 border border-slate-800 rounded-lg flex items-center justify-between">
+                        <span>15% Cumulative (Q1) — 15th June {startYear}</span>
+                        <span className="px-2 py-0.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded font-mono text-[10px]">
+                          Scheduled
+                        </span>
+                      </div>
+                      <div className="p-2.5 bg-slate-950/70 border border-slate-800 rounded-lg flex items-center justify-between">
+                        <span>45% Cumulative (Q2) — 15th Sept {startYear}</span>
+                        <span className="px-2 py-0.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded font-mono text-[10px]">
+                          Scheduled
+                        </span>
+                      </div>
+                      <div className="p-2.5 bg-slate-950/70 border border-slate-800 rounded-lg flex items-center justify-between">
+                        <span>75% Cumulative (Q3) — 15th Dec {startYear}</span>
+                        <span className="px-2 py-0.5 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded font-mono text-[10px]">
+                          Scheduled
+                        </span>
+                      </div>
+                      <div className="p-2.5 bg-slate-950/70 border border-slate-800 rounded-lg flex items-center justify-between">
+                        <span>100% Cumulative (Q4) — 15th March {endYear}</span>
+                        <span className="text-slate-500 font-mono text-[10px]">Scheduled</span>
+                      </div>
+                    </div>
                   </div>
-                  <div className="space-y-2 text-xs">
-                    <div className="p-2.5 bg-slate-950/70 border border-slate-800 rounded-lg flex items-center justify-between">
-                      <div>
-                        <div className="font-semibold text-slate-200">Form AOC-4 / AOC-4 (CFS)</div>
-                        <div className="text-[11px] text-slate-500">Balance sheet & P&L direct from general ledger</div>
-                      </div>
-                      <span className="px-2 py-0.5 bg-sky-500/10 text-sky-400 border border-sky-500/20 rounded font-mono text-[10px]">
-                        Ready to Draft
-                      </span>
-                    </div>
 
-                    <div className="p-2.5 bg-slate-950/70 border border-slate-800 rounded-lg flex items-center justify-between">
-                      <div>
-                        <div className="font-semibold text-slate-200">Form MGT-7 / MGT-7A (Annual Return)</div>
-                        <div className="text-[11px] text-slate-500">Shareholding pattern & meeting count verification</div>
-                      </div>
-                      <span className="px-2 py-0.5 bg-sky-500/10 text-sky-400 border border-sky-500/20 rounded font-mono text-[10px]">
-                        SS-1 Synced
-                      </span>
+                  {/* MCA Statutory Returns */}
+                  <div className="p-5 bg-slate-900 border border-slate-800 rounded-xl space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-xs font-semibold text-white uppercase tracking-wider flex items-center gap-2">
+                        <FileText className="w-4 h-4 text-sky-400" />
+                        Statutory Filing Deadlines
+                      </h4>
+                      <span className="text-[10px] text-sky-400 font-mono">FY {selectedFY}</span>
                     </div>
-
-                    <div className="p-2.5 bg-slate-950/70 border border-slate-800 rounded-lg flex items-center justify-between">
-                      <div>
-                        <div className="font-semibold text-slate-200">Form 3CD / Tax Audit Report</div>
-                        <div className="text-[11px] text-slate-500">Exempt up to ₹10 Cr if &gt;95% transactions are digital</div>
+                    <div className="space-y-2 text-xs">
+                      <div className="p-2.5 bg-slate-950/70 border border-slate-800 rounded-lg flex items-center justify-between">
+                        <div>
+                          <div className="font-semibold text-slate-200">Form AOC-4 (Financial Statements)</div>
+                          <div className="text-[11px] text-slate-500">Within 30 days of AGM (Due 30 Oct {endYear})</div>
+                        </div>
+                        <span className="px-2 py-0.5 bg-sky-500/10 text-sky-400 border border-sky-500/20 rounded font-mono text-[10px]">
+                          Sec 137
+                        </span>
                       </div>
-                      <span className="px-2 py-0.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded font-mono text-[10px]">
-                        Digital Pass
-                      </span>
+
+                      <div className="p-2.5 bg-slate-950/70 border border-slate-800 rounded-lg flex items-center justify-between">
+                        <div>
+                          <div className="font-semibold text-slate-200">Form MGT-7A (Annual Return)</div>
+                          <div className="text-[11px] text-slate-500">Within 60 days of AGM (Due 29 Nov {endYear})</div>
+                        </div>
+                        <span className="px-2 py-0.5 bg-sky-500/10 text-sky-400 border border-sky-500/20 rounded font-mono text-[10px]">
+                          Sec 92
+                        </span>
+                      </div>
+
+                      <div className="p-2.5 bg-slate-950/70 border border-slate-800 rounded-lg flex items-center justify-between">
+                        <div>
+                          <div className="font-semibold text-slate-200">Income Tax Return (ITR-6)</div>
+                          <div className="text-[11px] text-slate-500">Audit Return Due 31 Oct {endYear} (AY {endYear}-{String(endYear + 1).slice(-2)})</div>
+                        </div>
+                        <span className="px-2 py-0.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded font-mono text-[10px]">
+                          Sec 139(1)
+                        </span>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -940,6 +1211,110 @@ export default function YearBookPage() {
           )}
         </main>
       </div>
+
+      {/* STATUTORY FILING UPLOAD MODAL */}
+      {filingUploadModalOpen && targetFilingDoc && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <form
+            onSubmit={executeFilingUpload}
+            className="bg-slate-900 border border-slate-800 rounded-2xl max-w-lg w-full p-6 space-y-4 shadow-2xl"
+          >
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-amber-500/10 text-amber-400 rounded-lg border border-amber-500/20">
+                  <ShieldCheck className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white">Upload Statutory Filing</h3>
+                  <p className="text-xs text-amber-400 font-mono">Financial Year {selectedFY}</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setFilingUploadModalOpen(false);
+                  setTargetFilingDoc(null);
+                  setSelectedFilingFile(null);
+                  setFilingPdfPassword('');
+                  setFilingUploadError('');
+                }}
+                className="text-slate-400 hover:text-white text-xs"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="p-3.5 bg-slate-950/70 border border-slate-800 rounded-xl space-y-1 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-white">{targetFilingDoc.name}</span>
+                <span className="px-2 py-0.5 bg-sky-500/10 text-sky-400 border border-sky-500/20 rounded font-mono text-[10px]">
+                  {targetFilingDoc.section}
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-400">{targetFilingDoc.purpose}</p>
+              <div className="text-[10px] text-slate-500 pt-1">Authority: {targetFilingDoc.authority}</div>
+            </div>
+
+            {filingUploadError && (
+              <div className="p-3 bg-rose-500/10 border border-rose-500/20 rounded-lg text-xs text-rose-400 flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0" />
+                <span>{filingUploadError}</span>
+              </div>
+            )}
+
+            <div className="space-y-3 text-xs">
+              <div className="space-y-1.5">
+                <label className="text-slate-300 font-medium">Select Signed PDF Document</label>
+                <input
+                  type="file"
+                  required
+                  accept=".pdf"
+                  onChange={(e) => setSelectedFilingFile(e.target.files?.[0] || null)}
+                  className="w-full text-xs text-slate-400 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-slate-800 file:text-slate-200 hover:file:bg-slate-700 bg-slate-950 border border-slate-800 rounded-lg p-1.5 cursor-pointer"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-slate-300 font-medium flex items-center justify-between">
+                  <span>PDF Decryption Password (if encrypted)</span>
+                  <span className="text-[10px] text-slate-500">Optional</span>
+                </label>
+                <input
+                  type="password"
+                  value={filingPdfPassword}
+                  onChange={(e) => setFilingPdfPassword(e.target.value)}
+                  placeholder="e.g. PAN or Mobile Number if protected"
+                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-sm text-white font-mono focus:outline-none focus:border-amber-400"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => {
+                  setFilingUploadModalOpen(false);
+                  setTargetFilingDoc(null);
+                  setSelectedFilingFile(null);
+                  setFilingPdfPassword('');
+                  setFilingUploadError('');
+                }}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold rounded-lg"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={!selectedFilingFile || filingUploading}
+                className="px-4 py-2 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 font-bold text-xs rounded-lg flex items-center gap-1.5 shadow-md shadow-amber-500/20"
+              >
+                <UploadCloud className="w-3.5 h-3.5" />
+                <span>{filingUploading ? 'Verifying & Vaulting...' : `Verify & Vault to FY ${selectedFY}`}</span>
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
 
       {/* PASSWORD PROMPT MODAL FOR ENCRYPTED STATEMENTS */}
       {passwordModalOpen && (

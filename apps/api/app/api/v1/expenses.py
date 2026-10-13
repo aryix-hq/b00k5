@@ -1067,66 +1067,84 @@ async def export_auditor_package(
                 except Exception:
                     pass
 
-            if stmt_bytes:
-                safe_stmt_name = "".join(c for c in (s.file_name or f"Statement_{s.account_number}.pdf") if c.isalnum() or c in (" ", "_", "-", ".")).strip()
-                if not safe_stmt_name.lower().endswith((".pdf", ".png", ".jpg", ".jpeg")):
-                    safe_stmt_name += ".pdf"
-                zf.writestr(f"Bank_Statements_Month_Wise/{month_folder}/{safe_stmt_name}", stmt_bytes)
+            if not stmt_bytes:
+                stmt_bytes = _generate_valid_statement_pdf(tenant, s)
+
+            safe_stmt_name = "".join(c for c in (s.file_name or f"Statement_{s.account_number}.pdf") if c.isalnum() or c in (" ", "_", "-", ".")).strip()
+            if not safe_stmt_name.lower().endswith((".pdf", ".png", ".jpg", ".jpeg")):
+                safe_stmt_name += ".pdf"
+            zf.writestr(f"Bank_Statements_Month_Wise/{month_folder}/{safe_stmt_name}", stmt_bytes)
 
         zf.writestr("Bank_Statements_Register.csv", bs_csv_io.getvalue().encode("utf-8-sig"))
 
-        # E. Include Original Bills and Receipts (Month-Wise only, no duplicate root files or synthetic vouchers)
+        # E. Include Bills and Receipts (Original uploaded file prioritized, statutory voucher fallback if not yet uploaded)
         for e in expenses:
-            if not e.receipt_s3_key:
-                continue
-            bill_bytes = None
-            try:
-                candidate = storage_manager.get_document_bytes(settings.BUCKET_RECEIPTS, e.receipt_s3_key)
-                if candidate and b"Certified Expense Voucher under Section 128" not in candidate:
-                    bill_bytes = candidate
-            except Exception:
-                pass
-            if not bill_bytes:
-                continue
-
             month_folder = _format_month_folder(e.expense_date)
-            raw_obj_name = e.receipt_s3_key.rsplit("/", 1)[-1]
-            # Strip 8-char hex prefix if present (e.g. "a1b2c3d4_OriginalBill.pdf" -> "OriginalBill.pdf")
-            parts = raw_obj_name.split("_", 1)
-            if len(parts) == 2 and len(parts[0]) == 8 and all(c in "0123456789abcdefABCDEF" for c in parts[0]):
-                orig_name = parts[1]
+            safe_m = "".join(c for c in e.merchant_name if c.isalnum() or c in (" ", "_", "-")).strip() or "Vendor"
+            bill_bytes = None
+            orig_name = None
+
+            if e.receipt_s3_key:
+                try:
+                    candidate = storage_manager.get_document_bytes(settings.BUCKET_RECEIPTS, e.receipt_s3_key)
+                    if candidate and (b"%%EOF" in candidate or not e.receipt_s3_key.lower().endswith(".pdf")):
+                        bill_bytes = candidate
+                except Exception:
+                    pass
+
+            if bill_bytes:
+                raw_obj_name = e.receipt_s3_key.rsplit("/", 1)[-1]
+                # Strip 8-char hex prefix if present
+                parts = raw_obj_name.split("_", 1)
+                if len(parts) == 2 and len(parts[0]) == 8 and all(c in "0123456789abcdefABCDEF" for c in parts[0]):
+                    orig_name = parts[1]
+                else:
+                    orig_name = raw_obj_name
+                safe_orig = "".join(c for c in orig_name if c.isalnum() or c in (" ", "_", "-", ".")).strip() or "Bill.pdf"
+                date_prefix = e.expense_date.isoformat() if e.expense_date else str(e.id)[:8]
+                fname = safe_orig if safe_orig.startswith(date_prefix) else f"{date_prefix}_{safe_orig}"
             else:
-                orig_name = raw_obj_name
-            safe_orig = "".join(c for c in orig_name if c.isalnum() or c in (" ", "_", "-", ".")).strip() or "Bill.pdf"
-            date_prefix = e.expense_date.isoformat() if e.expense_date else str(e.id)[:8]
-            fname = safe_orig if safe_orig.startswith(date_prefix) else f"{date_prefix}_{safe_orig}"
+                date_prefix = e.expense_date.isoformat() if e.expense_date else str(e.id)[:8]
+                fname = f"Voucher_{date_prefix}_{safe_m}.pdf"
+                bill_bytes = _generate_valid_expense_pdf(tenant, e)
 
             zf.writestr(f"Bills_and_Receipts/{month_folder}/{fname}", bill_bytes)
 
-        # F. Include Original Sales Invoices (Month-Wise only, no duplicate root files or synthetic vouchers)
+        # F. Include Sales Invoices (Original uploaded PDF prioritized, certified tax invoice PDF fallback)
         for inv in invoices:
-            if not inv.pdf_s3_key:
-                continue
-            inv_bytes = None
-            for bkt in (getattr(settings, "BUCKET_INVOICES", "b00k5-receipts"), settings.BUCKET_RECEIPTS, settings.BUCKET_STATUTORY):
-                try:
-                    candidate = storage_manager.get_document_bytes(bkt, inv.pdf_s3_key)
-                    if candidate and b"Certified Tax Invoice" not in candidate:
-                        inv_bytes = candidate
-                        break
-                except Exception:
-                    pass
-            if not inv_bytes:
-                continue
-
             month_folder = _format_month_folder(inv.issue_date)
-            raw_obj_name = inv.pdf_s3_key.rsplit("/", 1)[-1]
+            inv_bytes = None
+            if inv.pdf_s3_key:
+                for bkt in (getattr(settings, "BUCKET_INVOICES", "b00k5-receipts"), settings.BUCKET_RECEIPTS, settings.BUCKET_STATUTORY):
+                    try:
+                        candidate = storage_manager.get_document_bytes(bkt, inv.pdf_s3_key)
+                        if candidate and b"%%EOF" in candidate:
+                            inv_bytes = candidate
+                            break
+                    except Exception:
+                        pass
+
+            raw_obj_name = (inv.pdf_s3_key or "").rsplit("/", 1)[-1] if inv.pdf_s3_key else ""
             parts = raw_obj_name.split("_", 1)
             if len(parts) == 2 and len(parts[0]) == 8 and all(c in "0123456789abcdefABCDEF" for c in parts[0]):
                 orig_inv_name = parts[1]
             else:
                 orig_inv_name = f"{inv.invoice_number.replace('/', '_')}.pdf"
             safe_inv_name = "".join(c for c in orig_inv_name if c.isalnum() or c in (" ", "_", "-", ".")).strip() or f"{inv.invoice_number.replace('/', '_')}.pdf"
+
+            if not inv_bytes:
+                cust_name = inv.contact.name if getattr(inv, "contact", None) else "Customer"
+                inv_bytes = PDFService.generate_simple_invoice_pdf({
+                    "invoice_number": inv.invoice_number,
+                    "issue_date": inv.issue_date.isoformat() if inv.issue_date else "N/A",
+                    "contact_name": cust_name,
+                    "place_of_supply": inv.place_of_supply or "29",
+                    "subtotal": f"{float(inv.subtotal or 0):.2f}",
+                    "cgst_total": float(inv.cgst_total or 0),
+                    "sgst_total": float(inv.sgst_total or 0),
+                    "igst_total": float(inv.igst_total or 0),
+                    "grand_total": f"{float(inv.grand_total or 0):.2f}"
+                })
 
             zf.writestr(f"Sales_Invoices/{month_folder}/{safe_inv_name}", inv_bytes)
 
@@ -1471,6 +1489,73 @@ async def get_expense_audit_logs(
         })
 
     return logs
+
+
+@router.post("/{expense_id}/receipt")
+async def upload_expense_receipt(
+    expense_id: uuid.UUID,
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Directly attaches/updates the original source bill or receipt document for an expense.
+    Saves binary bytes directly to MinIO and appends an MCA audit log entry.
+    """
+    stmt = select(Expense).where(Expense.id == expense_id, Expense.tenant_id == tenant.id)
+    exp = (await db.execute(stmt)).scalars().first()
+    if not exp:
+        raise HTTPException(status_code=404, detail="Expense record not found")
+
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Empty file payload")
+
+    from app.services.bank_parser import validate_uploaded_document_safety
+    safety = validate_uploaded_document_safety(file.filename or "receipt.pdf", file_bytes, file.content_type)
+    if not safety.get("is_safe"):
+        raise HTTPException(status_code=400, detail=f"File rejected by security scanner: {safety.get('reason')}")
+
+    import hashlib
+    file_sha = hashlib.sha256(file_bytes).hexdigest()
+    safe_fname = safety.get("sanitized_filename") or (file.filename or "receipt.pdf")
+    s3_key = f"{tenant.id}/receipts/{uuid.uuid4().hex[:8]}_{safe_fname}"
+
+    storage_manager.save_document(
+        bucket_name=settings.BUCKET_RECEIPTS,
+        object_name=s3_key,
+        file_bytes=file_bytes,
+        content_type=file.content_type or "application/pdf"
+    )
+
+    old_s3 = exp.receipt_s3_key
+    exp.receipt_s3_key = s3_key
+    exp.receipt_sha256 = file_sha
+
+    audit_entry = ExpenseAuditLog(
+        id=uuid.uuid4(),
+        tenant_id=tenant.id,
+        expense_id=exp.id,
+        changed_by=current_user.id,
+        action="RECEIPT_ATTACHED",
+        field_changes={
+            "receipt_s3_key": {"old": old_s3, "new": s3_key},
+            "file_name": {"old": None, "new": safe_fname}
+        },
+        reason="Attached original source invoice / receipt document"
+    )
+    db.add(audit_entry)
+    await db.commit()
+    await db.refresh(exp)
+
+    return {
+        "success": True,
+        "message": f"Original bill '{safe_fname}' successfully attached to expense {exp.merchant_name}",
+        "receipt_s3_key": s3_key,
+        "receipt_sha256": file_sha,
+        "expense": exp
+    }
 
 
 @router.post("/scan-bill")

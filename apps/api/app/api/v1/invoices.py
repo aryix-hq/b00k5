@@ -853,3 +853,52 @@ async def import_razorpay_invoices(
     }
 
 
+@router.post("/{invoice_id}/pdf")
+async def upload_invoice_pdf(
+    invoice_id: uuid.UUID,
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Directly attaches/updates the original tax invoice PDF document for a sales invoice.
+    Saves binary bytes directly to MinIO and updates the invoice record.
+    """
+    stmt = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant.id)
+    inv = (await db.execute(stmt)).scalars().first()
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invoice record not found")
+
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Empty file payload")
+
+    from app.services.bank_parser import validate_uploaded_document_safety
+    safety = validate_uploaded_document_safety(file.filename or "invoice.pdf", file_bytes, file.content_type)
+    if not safety.get("is_safe"):
+        raise HTTPException(status_code=400, detail=f"File rejected by security scanner: {safety.get('reason')}")
+
+    safe_fname = safety.get("sanitized_filename") or (file.filename or "invoice.pdf")
+    s3_key = f"{tenant.id}/invoices/{uuid.uuid4().hex[:8]}_{safe_fname}"
+
+    from app.core.s3 import storage_manager
+    storage_manager.save_document(
+        bucket_name=getattr(settings, "BUCKET_INVOICES", settings.BUCKET_RECEIPTS),
+        object_name=s3_key,
+        file_bytes=file_bytes,
+        content_type=file.content_type or "application/pdf"
+    )
+
+    inv.pdf_s3_key = s3_key
+    await db.commit()
+    await db.refresh(inv)
+
+    return {
+        "success": True,
+        "message": f"Original invoice PDF '{safe_fname}' successfully attached to invoice {inv.invoice_number}",
+        "pdf_s3_key": s3_key,
+        "invoice_id": str(inv.id)
+    }
+
+

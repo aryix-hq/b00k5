@@ -3,7 +3,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { Sidebar } from '@/components/Sidebar';
 import { Navbar } from '@/components/Navbar';
-import { Plus, Receipt, FileText, CheckCircle, UploadCloud, Loader2, RefreshCw, Sparkles } from 'lucide-react';
+import { Plus, Receipt, FileText, CheckCircle, UploadCloud, Loader2, RefreshCw, Sparkles, FileCheck } from 'lucide-react';
 import { fetchApi } from '@/lib/api';
 
 export default function InvoicesPage() {
@@ -86,6 +86,32 @@ export default function InvoicesPage() {
   useEffect(() => {
     loadData();
   }, []);
+
+  const handleDirectInvoicePdfUpload = async (invoiceId: string, file?: File | null) => {
+    if (!file) return;
+    const fd = new FormData();
+    fd.append('file', file);
+    try {
+      const token = typeof window !== 'undefined' ? localStorage.getItem('b00k5_token') : null;
+      const tenantId = typeof window !== 'undefined' ? localStorage.getItem('b00k5_tenant_id') : null;
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/invoices/${invoiceId}/pdf`, {
+        method: 'POST',
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          ...(tenantId ? { 'X-Tenant-ID': tenantId } : {})
+        },
+        body: fd
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to upload invoice PDF');
+      }
+      setRzpBanner(`Original tax invoice PDF "${file.name}" attached successfully!`);
+      await loadData();
+    } catch (err: any) {
+      alert(err.message || 'Error attaching invoice PDF');
+    }
+  };
 
   const handleCreateContact = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -337,12 +363,13 @@ export default function InvoicesPage() {
                   <th className="py-3.5 px-4">Tax Total</th>
                   <th className="py-3.5 px-4">Grand Total</th>
                   <th className="py-3.5 px-4">Status</th>
+                  <th className="py-3.5 px-4 text-right">Original PDF</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/60 text-slate-300">
                 {invoices.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="py-8 text-center text-slate-500">
+                    <td colSpan={9} className="py-8 text-center text-slate-500">
                       No invoices issued yet. Click &quot;Import Razorpay Invoice&quot; or &quot;New Tax Invoice&quot; to synchronize your billing.
                     </td>
                   </tr>
@@ -382,6 +409,23 @@ export default function InvoicesPage() {
                         }`}>
                           {inv.status}
                         </span>
+                      </td>
+                      <td className="py-3.5 px-4 text-right">
+                        {inv.pdf_s3_key ? (
+                          <span className="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-[10px] font-mono inline-flex items-center gap-1">
+                            <FileCheck className="w-3 h-3" /> Attached
+                          </span>
+                        ) : (
+                          <label className="cursor-pointer px-2.5 py-1 rounded bg-indigo-950 text-indigo-300 border border-indigo-700 hover:bg-indigo-900 text-[10px] font-semibold inline-flex items-center gap-1 transition">
+                            <UploadCloud className="w-3 h-3" /> Attach PDF
+                            <input
+                              type="file"
+                              accept=".pdf,.png,.jpg,.jpeg"
+                              className="hidden"
+                              onChange={(e) => handleDirectInvoicePdfUpload(inv.id, e.target.files?.[0])}
+                            />
+                          </label>
+                        )}
                       </td>
                     </tr>
                   ))

@@ -323,6 +323,57 @@ async def get_statement_details(
         raise HTTPException(status_code=404, detail="Bank statement not found")
     return statement
 
+
+@router.post("/statements/{statement_id}/file")
+async def upload_statement_file(
+    statement_id: uuid.UUID,
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Directly attaches/updates the original bank statement document (PDF/CSV).
+    Saves binary bytes directly to MinIO and updates statement record.
+    """
+    stmt_q = select(BankStatement).where(BankStatement.id == statement_id, BankStatement.tenant_id == tenant.id)
+    statement = (await db.execute(stmt_q)).scalars().first()
+    if not statement:
+        raise HTTPException(status_code=404, detail="Bank statement not found")
+
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Empty file payload")
+
+    from app.services.bank_parser import validate_uploaded_document_safety
+    safety = validate_uploaded_document_safety(file.filename or "statement.pdf", file_bytes, file.content_type)
+    if not safety.get("is_safe"):
+        raise HTTPException(status_code=400, detail=f"File rejected by security scanner: {safety.get('reason')}")
+
+    safe_filename = safety.get("sanitized_filename") or (file.filename or "statement.pdf")
+    file_sha256 = hashlib.sha256(file_bytes).hexdigest()
+    s3_key = f"{tenant.id}/statements/{safe_filename}"
+
+    upload_document(
+        bucket_name=settings.BUCKET_STATEMENTS,
+        file_bytes=file_bytes,
+        object_name=s3_key,
+        content_type=file.content_type or "application/pdf"
+    )
+
+    statement.s3_key = s3_key
+    statement.file_name = safe_filename
+    statement.file_sha256 = file_sha256
+    await db.commit()
+    await db.refresh(statement)
+
+    return {
+        "success": True,
+        "message": f"Original statement file '{safe_filename}' successfully attached.",
+        "s3_key": s3_key,
+        "file_sha256": file_sha256
+    }
+
 @router.post("/statements/{statement_id}/reconcile", response_model=Dict[str, Any])
 async def execute_reconciliation(
     statement_id: uuid.UUID,

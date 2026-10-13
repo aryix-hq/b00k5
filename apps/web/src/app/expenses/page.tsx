@@ -27,7 +27,8 @@ import {
   XCircle,
   Ban,
   UploadCloud,
-  Calendar
+  Calendar,
+  FileCheck
 } from 'lucide-react';
 import { fetchApi } from '@/lib/api';
 import { BatchDropzone } from '@/components/upload/BatchDropzone';
@@ -92,6 +93,7 @@ interface ExpenseItem {
   itc_eligible: boolean;
   igst_amount: number;
   journal_entry_number?: string;
+  receipt_s3_key?: string;
   created_at?: string;
   notes?: string;
 }
@@ -251,6 +253,35 @@ export default function ExpensesHubPage() {
       setNotification({ type: 'error', message: err.message || 'Error exporting auditor package' });
     } finally {
       setExportingAuditor(false);
+    }
+  };
+
+  const handleDirectReceiptUpload = async (expenseId: string, file?: File | null) => {
+    if (!file) return;
+    const fd = new FormData();
+    fd.append('file', file);
+    try {
+      const token = typeof window !== 'undefined' ? localStorage.getItem('b00k5_token') : null;
+      const tenantId = typeof window !== 'undefined' ? localStorage.getItem('b00k5_tenant_id') : null;
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/expenses/${expenseId}/receipt`, {
+        method: 'POST',
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          ...(tenantId ? { 'X-Tenant-ID': tenantId } : {})
+        },
+        body: fd
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to attach bill');
+      }
+      setNotification({
+        type: 'success',
+        message: `Original bill "${file.name}" attached successfully!`
+      });
+      await loadData();
+    } catch (err: any) {
+      setNotification({ type: 'error', message: err.message || 'Error attaching bill document' });
     }
   };
 
@@ -798,10 +829,27 @@ export default function ExpensesHubPage() {
                               {item.merchant_name}
                             </div>
                             {item.merchant_gstin && (
-                              <span className="text-[10px] font-mono text-slate-400">
+                              <div className="text-[10px] font-mono text-slate-400">
                                 GSTIN: {item.merchant_gstin}
-                              </span>
+                              </div>
                             )}
+                            <div className="mt-1">
+                              {item.receipt_s3_key ? (
+                                <span className="inline-flex items-center gap-1 text-[10px] font-mono text-emerald-400">
+                                  <FileCheck className="w-3 h-3 text-emerald-400" /> Original Bill Attached
+                                </span>
+                              ) : (
+                                <label className="cursor-pointer inline-flex items-center gap-1 text-[10px] font-semibold text-sky-400 hover:text-sky-300 bg-sky-950/60 hover:bg-sky-900/60 border border-sky-800/60 rounded px-1.5 py-0.5 transition">
+                                  <UploadCloud className="w-3 h-3 text-sky-400" /> Attach Original Bill PDF
+                                  <input
+                                    type="file"
+                                    accept=".pdf,.png,.jpg,.jpeg"
+                                    className="hidden"
+                                    onChange={(e) => handleDirectReceiptUpload(item.id, e.target.files?.[0])}
+                                  />
+                                </label>
+                              )}
+                            </div>
                             {isStruckOff && item.notes && (
                               <div className="text-[10px] text-rose-400 font-normal italic mt-0.5">
                                 {item.notes}

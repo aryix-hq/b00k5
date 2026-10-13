@@ -165,25 +165,27 @@ async def create_invoice(
         # If journal posting encounters an error, roll back
         raise HTTPException(status_code=500, detail=f"Ledger posting error: {str(e)}")
 
-    # 6. Generate and upload Invoice PDF to MinIO
-    try:
-        pdf_bytes = PDFService.generate_simple_invoice_pdf({
-            "invoice_number": invoice.invoice_number,
-            "grand_total": str(invoice.grand_total),
-            "subtotal": str(invoice.subtotal),
-            "cgst_total": str(invoice.cgst_total),
-            "sgst_total": str(invoice.sgst_total),
-            "igst_total": str(invoice.igst_total),
-            "issue_date": str(invoice.issue_date),
-            "contact_name": contact.name,
-            "place_of_supply": pos
-        })
-        s3_key = f"{tenant.id}/invoices/{invoice.invoice_number}.pdf"
-        upload_document(settings.BUCKET_INVOICES, pdf_bytes, s3_key, "application/pdf")
-        invoice.pdf_s3_key = s3_key
-    except Exception:
-        # Non-fatal during dev if MinIO is not running
-        pass
+    # 6. Preserve original uploaded Invoice PDF if provided; only generate simple PDF for manually typed invoices
+    if getattr(payload, "pdf_s3_key", None):
+        invoice.pdf_s3_key = payload.pdf_s3_key
+    else:
+        try:
+            pdf_bytes = PDFService.generate_simple_invoice_pdf({
+                "invoice_number": invoice.invoice_number,
+                "grand_total": str(invoice.grand_total),
+                "subtotal": str(invoice.subtotal),
+                "cgst_total": str(invoice.cgst_total),
+                "sgst_total": str(invoice.sgst_total),
+                "igst_total": str(invoice.igst_total),
+                "issue_date": str(invoice.issue_date),
+                "contact_name": contact.name,
+                "place_of_supply": pos
+            })
+            s3_key = f"{tenant.id}/invoices/{invoice.invoice_number}.pdf"
+            upload_document(settings.BUCKET_INVOICES, pdf_bytes, s3_key, "application/pdf")
+            invoice.pdf_s3_key = s3_key
+        except Exception:
+            pass
 
     # 7. Auto-reconcile any open bank statements so newly added invoice matches existing statement lines
     try:
@@ -249,6 +251,7 @@ async def scan_customer_invoice(
     """
     Ingests and OCR-extracts outward customer invoices (PDF/image):
     - Extracts invoice number, issue date, customer details, line items, taxes, totals
+    - Saves original uploaded document to MinIO so Auditor Dossier exports the original invoice
     - Prevents duplicates by verifying invoice_number against tenant's registered invoices
     - Automatically links or prepares contact
     """
@@ -273,6 +276,21 @@ async def scan_customer_invoice(
             }
         )
 
+    # Save original uploaded invoice file to MinIO
+    from app.core.s3 import storage_manager
+    raw_fname = file.filename or "invoice.pdf"
+    safe_fname = "".join(c for c in raw_fname if c.isalnum() or c in (" ", "_", "-", ".")).strip() or "invoice.pdf"
+    s3_key = f"{tenant.id}/invoices/{uuid.uuid4().hex[:8]}_{safe_fname}"
+    try:
+        storage_manager.save_document(
+            bucket_name=getattr(settings, "BUCKET_INVOICES", settings.BUCKET_RECEIPTS),
+            object_name=s3_key,
+            file_bytes=file_bytes,
+            content_type=file.content_type or "application/pdf"
+        )
+    except Exception:
+        pass
+
     # Deduplication check
     inv_num = parsed["invoice_number"]
     dup_stmt = select(Invoice).where(
@@ -286,6 +304,10 @@ async def scan_customer_invoice(
     if existing_inv:
         is_duplicate = True
         duplicate_reason = f"Duplicate invoice detected: Invoice '{inv_num}' already exists in your ledger."
+        # Attach original uploaded PDF if existing invoice had no original PDF
+        if not existing_inv.pdf_s3_key or existing_inv.pdf_s3_key.endswith(f"/{existing_inv.invoice_number}.pdf"):
+            existing_inv.pdf_s3_key = s3_key
+            await db.commit()
 
     # Find or auto-provision contact
     contact_stmt = select(Contact).where(
@@ -304,10 +326,11 @@ async def scan_customer_invoice(
             shipping_address="Commercial Registered Address"
         )
         db.add(contact)
-        await db.flush()
+        await db.commit()
 
     return {
         **parsed,
+        "pdf_s3_key": s3_key,
         "is_duplicate": is_duplicate,
         "duplicate_reason": duplicate_reason,
         "contact_id": str(contact.id)
@@ -343,6 +366,7 @@ class RazorpaySingleInvoiceImport(BaseModel):
     place_of_supply: str = "29"
     payment_status: str = "paid"  # "paid" or "sent"
     gateway_fee: Decimal = Decimal("0.00")
+    pdf_s3_key: Optional[str] = None
     items: List[RazorpayItemImport]
 
 
@@ -574,8 +598,27 @@ async def parse_razorpay_invoice_file(
     )
     pay_status = "paid" if is_paid else "sent"
 
+    # Save original uploaded invoice file to MinIO so Auditor Dossier exports the exact original invoice
+    from app.core.s3 import storage_manager
+    raw_fname = file.filename or "razorpay_invoice.pdf"
+    safe_fname = "".join(c for c in raw_fname if c.isalnum() or c in (" ", "_", "-", ".")).strip() or "razorpay_invoice.pdf"
+    s3_key = f"{tenant.id}/invoices/{uuid.uuid4().hex[:8]}_{safe_fname}"
+    try:
+        storage_manager.save_document(
+            bucket_name=getattr(settings, "BUCKET_INVOICES", settings.BUCKET_RECEIPTS),
+            object_name=s3_key,
+            file_bytes=file_bytes,
+            content_type=file.content_type or "application/pdf"
+        )
+    except Exception:
+        pass
+
     dup_q = await db.execute(select(Invoice).where(Invoice.tenant_id == tenant.id, Invoice.invoice_number == inv_num))
-    is_dup = dup_q.scalars().first() is not None
+    existing_inv_obj = dup_q.scalars().first()
+    is_dup = existing_inv_obj is not None
+    if existing_inv_obj:
+        existing_inv_obj.pdf_s3_key = s3_key
+        await db.commit()
 
     extracted_tax_sum = (
         float(parsed.get("cgst_amount") or 0)
@@ -595,6 +638,7 @@ async def parse_razorpay_invoice_file(
         "customer_gstin": parsed.get("customer_gstin"),
         "place_of_supply": parsed.get("place_of_supply") or operating_state,
         "payment_status": pay_status,
+        "pdf_s3_key": s3_key,
         "is_duplicate": is_dup,
         "subtotal": unit_price_val,
         "cgst_amount": float(parsed.get("cgst_amount") or 0),
@@ -615,6 +659,7 @@ async def parse_razorpay_invoice_file(
     return {
         "success": True,
         "source_format": "pdf",
+        "pdf_s3_key": s3_key,
         "invoices": [single_entry],
         **single_entry
     }
@@ -654,6 +699,8 @@ async def import_razorpay_invoices(
         )
         existing_inv = existing_q.scalars().first()
         if existing_inv:
+            if inv_in.pdf_s3_key:
+                existing_inv.pdf_s3_key = inv_in.pdf_s3_key
             skipped.append({
                 "invoice_number": inv_num,
                 "reason": f"Invoice '{inv_num}' already exists in your ledger.",
@@ -747,6 +794,7 @@ async def import_razorpay_invoices(
             igst_total=igst_total,
             grand_total=grand_total,
             status="paid" if is_paid else "sent",
+            pdf_s3_key=inv_in.pdf_s3_key,
             fiscal_year_id=fy_record.id,
             items=calculated_items
         )

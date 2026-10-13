@@ -85,10 +85,24 @@ async def upload_multiple_statements(
         # 1. Check for immediate file-level duplicate (ignores empty encrypted shells)
         existing = await check_statement_exists(db, tenant.id, file_hash)
         if existing:
+            s3_key_refresh = f"{tenant.id}/statements/{batch_id}/{file.filename}"
+            try:
+                storage_manager.save_document(
+                    bucket_name=settings.BUCKET_STATEMENTS,
+                    object_name=s3_key_refresh,
+                    file_bytes=contents,
+                    content_type=file.content_type or "application/pdf"
+                )
+                existing.s3_key = s3_key_refresh
+                if file.filename:
+                    existing.file_name = file.filename
+                await db.commit()
+            except Exception:
+                pass
             job_manifest.append({
                 "filename": file.filename,
                 "status": "skipped_duplicate",
-                "message": f"Statement file already uploaded on {existing.created_at}",
+                "message": f"Statement file already uploaded on {existing.created_at} (original file refreshed)",
                 "statement_id": str(existing.id)
             })
             continue
@@ -126,10 +140,22 @@ async def upload_multiple_statements(
                 )
                 period_dup = (await db.execute(period_dup_q)).scalars().first()
                 if period_dup:
+                    s3_key = f"{tenant.id}/statements/{batch_id}/{file.filename}"
+                    storage_manager.save_document(
+                        bucket_name=settings.BUCKET_STATEMENTS,
+                        object_name=s3_key,
+                        file_bytes=contents,
+                        content_type=file.content_type or "application/pdf"
+                    )
+                    period_dup.s3_key = s3_key
+                    period_dup.file_sha256 = file_hash
+                    if file.filename:
+                        period_dup.file_name = file.filename
+                    await db.commit()
                     job_manifest.append({
                         "filename": file.filename,
                         "status": "skipped_duplicate",
-                        "message": f"Statement for period {stmt_from} to {stmt_to} already exists",
+                        "message": f"Statement for period {stmt_from} to {stmt_to} already exists (original PDF attached)",
                         "statement_id": str(period_dup.id)
                     })
                     continue
@@ -297,11 +323,23 @@ async def upload_multiple_expenses(
         # Check for immediate file-level duplicate
         existing = await check_expense_hash_exists(db, tenant.id, file_hash)
         if existing:
+            s3_key_refresh = f"{tenant.id}/receipts/{batch_id}/{file.filename}"
+            try:
+                storage_manager.save_document(
+                    bucket_name=settings.BUCKET_RECEIPTS,
+                    object_name=s3_key_refresh,
+                    file_bytes=contents,
+                    content_type=file.content_type or "application/pdf"
+                )
+                existing.receipt_s3_key = s3_key_refresh
+                await db.commit()
+            except Exception:
+                pass
             job_manifest.append({
                 "filename": file.filename,
                 "status": "skipped_duplicate",
                 "expense_id": str(existing.id),
-                "message": f"Receipt already registered (Merchant: {existing.merchant_name})"
+                "message": f"Receipt already registered (Merchant: {existing.merchant_name}) — original file refreshed"
             })
             continue
 
@@ -346,11 +384,14 @@ async def upload_multiple_expenses(
             )
             dup_id = (await db.execute(dup_id_q)).scalars().first()
             if dup_id:
+                dup_id.receipt_s3_key = s3_key
+                dup_id.receipt_sha256 = file_hash
+                await db.commit()
                 job_manifest.append({
                     "filename": file.filename,
                     "status": "skipped_duplicate",
                     "expense_id": str(dup_id.id),
-                    "message": f"Identical bill for {merchant} (₹{total_amt}) on {bill_date} already exists"
+                    "message": f"Identical bill for {merchant} (₹{total_amt}) on {bill_date} already exists (original receipt attached)"
                 })
                 continue
 

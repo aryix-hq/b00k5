@@ -51,6 +51,7 @@ export default function InvoicesPage() {
   const [rzpGstRate, setRzpGstRate] = useState('0.00');
   const [rzpPaymentStatus, setRzpPaymentStatus] = useState<'paid' | 'sent'>('paid');
   const [rzpGatewayFee, setRzpGatewayFee] = useState('0');
+  const [rzpPdfS3Key, setRzpPdfS3Key] = useState<string | null>(null);
   const [rzpBanner, setRzpBanner] = useState<string | null>(null);
 
   const operatingState = '29'; // Default Karnataka
@@ -170,9 +171,11 @@ export default function InvoicesPage() {
 
       const parsedList = Array.isArray(data.invoices) ? data.invoices : [];
       setRzpBatchItems(parsedList);
+      if (data.pdf_s3_key) setRzpPdfS3Key(data.pdf_s3_key);
 
       if (parsedList.length > 0) {
         const first = parsedList[0];
+        if (first.pdf_s3_key) setRzpPdfS3Key(first.pdf_s3_key);
         setRzpInvoiceNum(first.invoice_number || '');
         setRzpInvoiceId(first.razorpay_invoice_id || '');
         setRzpPaymentId(first.razorpay_payment_id || '');
@@ -221,6 +224,7 @@ export default function InvoicesPage() {
               place_of_supply: rzpPos.trim() || '29',
               payment_status: rzpPaymentStatus,
               gateway_fee: parseFloat(rzpGatewayFee || '0') || 0,
+              pdf_s3_key: rzpPdfS3Key || null,
               items: [
                 {
                   item_description: rzpItemDesc.trim() || `Razorpay Invoice ${rzpInvoiceNum}`,
@@ -252,8 +256,13 @@ export default function InvoicesPage() {
         setShowRazorpayModal(false);
         setRzpBatchItems([]);
         setRzpUploadedFile(null);
+        setRzpPdfS3Key(null);
       } else if (skipCount > 0) {
-        alert(`Skipped ${skipCount} duplicate invoice(s): ${res.skipped?.[0]?.reason || 'Already in ledger'}`);
+        setShowRazorpayModal(false);
+        setRzpBatchItems([]);
+        setRzpUploadedFile(null);
+        setRzpPdfS3Key(null);
+        setRzpBanner(`Original invoice PDF attached to existing ledger Invoice ${rzpInvoiceNum}.`);
       }
     } catch (err: any) {
       alert(err.message || 'Failed to import Razorpay invoice');

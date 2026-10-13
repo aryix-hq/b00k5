@@ -55,6 +55,7 @@ class InvoiceCreate(BaseModel):
     issue_date: date = Field(default_factory=date.today)
     due_date: date
     place_of_supply: str # 2-digit Indian State code
+    pdf_s3_key: Optional[str] = None
     items: List[InvoiceItemCreate]
 
 class InvoiceResponse(BaseModel):

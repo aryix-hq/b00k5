@@ -119,10 +119,14 @@ async def upload_bank_statement(
             BankStatement.file_sha256 == file_sha256
         )
     )
-    if (await db.execute(hash_dup_stmt)).scalars().first():
+    existing_hash_stmt = (await db.execute(hash_dup_stmt)).scalars().first()
+    if existing_hash_stmt:
+        existing_hash_stmt.s3_key = s3_key
+        existing_hash_stmt.file_name = safe_filename
+        await db.commit()
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Duplicate statement file detected: File '{file.filename}' with identical hash has already been uploaded."
+            detail=f"Duplicate statement file detected: File '{file.filename}' with identical hash has already been uploaded (original PDF file refreshed)."
         )
 
     stmt_from = parsed.get("statement_from") or (parsed["lines"][0]["transaction_date"] if parsed.get("lines") else None)
@@ -143,9 +147,13 @@ async def upload_bank_statement(
     dup_stmt = select(BankStatement).where(and_(*dup_stmt_conds))
     existing_stmt = (await db.execute(dup_stmt)).scalars().first()
     if existing_stmt:
+        existing_stmt.s3_key = s3_key
+        existing_stmt.file_name = safe_filename
+        existing_stmt.file_sha256 = file_sha256
+        await db.commit()
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Duplicate statement detected: A bank statement for account '{acc_num}' covering period {stmt_from or 'N/A'} to {stmt_to or 'N/A'} has already been uploaded."
+            detail=f"Duplicate statement detected: A bank statement for account '{acc_num}' covering period {stmt_from or 'N/A'} to {stmt_to or 'N/A'} has already been uploaded (original PDF file refreshed)."
         )
 
     # Resolve Dynamic Fiscal Year record

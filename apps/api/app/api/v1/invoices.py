@@ -185,9 +185,27 @@ async def create_invoice(
         # Non-fatal during dev if MinIO is not running
         pass
 
+    # 7. Auto-reconcile any open bank statements so newly added invoice matches existing statement lines
+    try:
+        from app.models.bank import BankStatement
+        from app.services.reconciliation_engine import ReconciliationEngine
+        stmts = (await db.execute(
+            select(BankStatement).where(BankStatement.tenant_id == tenant.id)
+        )).scalars().all()
+        for s in stmts:
+            await ReconciliationEngine.reconcile_statement(
+                session=db, tenant_id=tenant.id, statement_id=s.id, user_id=current_user.id
+            )
+    except Exception:
+        pass
+
     await db.commit()
-    await db.refresh(invoice)
-    return invoice
+    stmt_ref = (
+        select(Invoice)
+        .options(selectinload(Invoice.items), selectinload(Invoice.contact))
+        .where(Invoice.id == invoice.id)
+    )
+    return (await db.execute(stmt_ref)).scalar_one()
 
 @router.get("/", response_model=List[InvoiceResponse])
 async def list_invoices(
@@ -196,7 +214,7 @@ async def list_invoices(
 ):
     stmt = (
         select(Invoice)
-        .options(selectinload(Invoice.items))
+        .options(selectinload(Invoice.items), selectinload(Invoice.contact))
         .where(Invoice.tenant_id == tenant.id)
         .order_by(Invoice.created_at.desc())
     )
@@ -211,7 +229,7 @@ async def get_invoice(
 ):
     stmt = (
         select(Invoice)
-        .options(selectinload(Invoice.items))
+        .options(selectinload(Invoice.items), selectinload(Invoice.contact))
         .where(Invoice.id == invoice_id, Invoice.tenant_id == tenant.id)
     )
     res = await db.execute(stmt)
@@ -309,7 +327,7 @@ class RazorpayItemImport(BaseModel):
     hsn_sac_code: str = "998314"
     quantity: Decimal = Decimal("1.00")
     unit_price: Decimal
-    gst_rate_percent: Decimal = Decimal("18.00")
+    gst_rate_percent: Decimal = Decimal("0.00")
 
 
 class RazorpaySingleInvoiceImport(BaseModel):
@@ -411,18 +429,14 @@ async def parse_razorpay_invoice_file(
 
             raw_total = Decimal(str((norm.get("amount") or norm.get("grand_total") or norm.get("total") or "0").replace(",", "") or "0"))
             raw_tax = Decimal(str((norm.get("tax_amount") or norm.get("gst_amount") or "0").replace(",", "") or "0"))
-            # Note: Razorpay API exports sometimes store amounts in paise if integer > 100000 and no decimal point, but Dashboard CSV exports INR
-            if raw_total > Decimal("0") and raw_tax == Decimal("0"):
-                taxable_val = round(raw_total / Decimal("1.18"), 2)
-                gst_rate = Decimal("18.00")
-            elif raw_total > raw_tax and raw_tax > Decimal("0"):
+            if raw_total > raw_tax and raw_tax > Decimal("0"):
                 taxable_val = raw_total - raw_tax
                 gst_rate = round((raw_tax / taxable_val) * Decimal("100"), 2) if taxable_val > 0 else Decimal("18.00")
                 if abs(gst_rate - Decimal("18")) < Decimal("1.5"):
                     gst_rate = Decimal("18.00")
             else:
                 taxable_val = raw_total
-                gst_rate = Decimal("18.00")
+                gst_rate = Decimal("0.00")
 
             status_raw = (norm.get("status") or "paid").lower()
             pay_status = "paid" if status_raw in ("paid", "captured", "settled") or bool(pay_id) else "sent"
@@ -481,10 +495,18 @@ async def parse_razorpay_invoice_file(
             # Razorpay JSON amounts are in paise if integer and 'entity' == 'invoice'
             is_paise = item.get("entity") == "invoice" or (isinstance(item.get("amount"), int) and item.get("amount", 0) >= 10000)
             divisor = Decimal("100") if is_paise else Decimal("1")
-            taxable_val = round(Decimal(str(item.get("taxable_amount") or item.get("amount") or 0)) / divisor, 2)
+            raw_amt = round(Decimal(str(item.get("amount") or 0)) / divisor, 2)
             tax_val = round(Decimal(str(item.get("tax_amount") or 0)) / divisor, 2)
-            if item.get("taxable_amount") is None and taxable_val > 0 and tax_val == 0:
-                taxable_val = round(taxable_val / Decimal("1.18"), 2)
+            if item.get("taxable_amount") is not None:
+                taxable_val = round(Decimal(str(item.get("taxable_amount") or 0)) / divisor, 2)
+            elif tax_val > 0 and raw_amt > tax_val:
+                taxable_val = raw_amt - tax_val
+            else:
+                taxable_val = raw_amt
+
+            gst_rate_val = float(round((tax_val / taxable_val) * Decimal("100"), 2)) if (tax_val > 0 and taxable_val > 0) else 0.0
+            if abs(gst_rate_val - 18.0) < 1.5 and tax_val > 0:
+                gst_rate_val = 18.0
 
             status_raw = str(item.get("status") or "paid").lower()
             pay_status = "paid" if status_raw in ("paid", "captured", "settled") or bool(pay_id) else "sent"
@@ -510,7 +532,7 @@ async def parse_razorpay_invoice_file(
                         "hsn_sac_code": "998314",
                         "quantity": 1,
                         "unit_price": float(taxable_val),
-                        "gst_rate_percent": 18.0,
+                        "gst_rate_percent": gst_rate_val,
                     }
                 ]
             })
@@ -555,6 +577,15 @@ async def parse_razorpay_invoice_file(
     dup_q = await db.execute(select(Invoice).where(Invoice.tenant_id == tenant.id, Invoice.invoice_number == inv_num))
     is_dup = dup_q.scalars().first() is not None
 
+    extracted_tax_sum = (
+        float(parsed.get("cgst_amount") or 0)
+        + float(parsed.get("sgst_amount") or 0)
+        + float(parsed.get("igst_amount") or 0)
+    )
+    raw_gst_rate = parsed.get("gst_rate") if parsed.get("gst_rate") is not None else parsed.get("inferred_gst_rate")
+    detected_gst_rate = float(raw_gst_rate) if (raw_gst_rate is not None and extracted_tax_sum > 0) else 0.0
+    unit_price_val = float(parsed.get("taxable_amount") or parsed.get("total_amount") or 0)
+
     single_entry = {
         "invoice_number": inv_num,
         "razorpay_invoice_id": rzp_inv_id,
@@ -565,18 +596,18 @@ async def parse_razorpay_invoice_file(
         "place_of_supply": parsed.get("place_of_supply") or operating_state,
         "payment_status": pay_status,
         "is_duplicate": is_dup,
-        "subtotal": float(parsed.get("taxable_amount") or 0),
+        "subtotal": unit_price_val,
         "cgst_amount": float(parsed.get("cgst_amount") or 0),
         "sgst_amount": float(parsed.get("sgst_amount") or 0),
         "igst_amount": float(parsed.get("igst_amount") or 0),
-        "grand_total": float(parsed.get("total_amount") or 0),
+        "grand_total": float(parsed.get("total_amount") or unit_price_val),
         "items": parsed.get("items") or [
             {
                 "item_description": f"Razorpay Invoice {inv_num}",
                 "hsn_sac_code": "998314",
                 "quantity": 1,
-                "unit_price": float(parsed.get("taxable_amount") or 0),
-                "gst_rate_percent": float(parsed.get("inferred_gst_rate") or 18),
+                "unit_price": unit_price_val,
+                "gst_rate_percent": detected_gst_rate,
             }
         ]
     }
@@ -749,6 +780,20 @@ async def import_razorpay_invoices(
             "invoice_journal_number": inv_je.entry_number,
             "settlement_journal_number": settle_je.entry_number if settle_je else None
         })
+
+    # Auto-reconcile any open bank statements so newly imported invoices match existing statement lines
+    try:
+        from app.models.bank import BankStatement
+        from app.services.reconciliation_engine import ReconciliationEngine
+        stmts = (await db.execute(
+            select(BankStatement).where(BankStatement.tenant_id == tenant.id)
+        )).scalars().all()
+        for s in stmts:
+            await ReconciliationEngine.reconcile_statement(
+                session=db, tenant_id=tenant.id, statement_id=s.id, user_id=current_user.id
+            )
+    except Exception:
+        pass
 
     await db.commit()
     return {

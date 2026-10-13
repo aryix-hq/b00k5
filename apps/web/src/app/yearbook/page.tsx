@@ -362,7 +362,7 @@ export default function YearBookPage() {
   // KPI metrics correctly scoped to selected financial year and period
   const totalBillsAmount = displayedExpenses.reduce((acc, e) => acc + e.amount, 0);
   const totalITCClaimable = displayedExpenses.reduce((acc, e) => acc + (e.itc_eligible ? e.gst_amount : 0), 0);
-  const totalInvoiceAmount = displayedInvoices.reduce((acc, i) => acc + parseFloat(i.grand_total || i.total_amount || '0'), 0);
+  const totalInvoiceAmount = displayedInvoices.reduce((acc, i) => acc + parseFloat(i.subtotal ?? i.subtotal_amount ?? i.grand_total ?? i.total_amount ?? '0'), 0);
 
   return (
     <div className="flex h-screen bg-slate-950 text-slate-100 overflow-hidden">
@@ -809,27 +809,38 @@ export default function YearBookPage() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-800/60 font-mono">
-                      {displayedInvoices.map((inv) => (
-                        <tr key={inv.id} className="hover:bg-slate-800/40">
-                          <td className="p-4 font-semibold text-sky-400">{inv.invoice_number}</td>
-                          <td className="p-4 font-sans text-white">{inv.contact?.name || 'Customer'}</td>
-                          <td className="p-4 font-sans text-slate-400">{inv.issue_date}</td>
-                          <td className="p-4 text-right text-slate-300">
-                            ₹{parseFloat(inv.subtotal_amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                          </td>
-                          <td className="p-4 text-right text-slate-400">
-                            ₹{parseFloat(inv.tax_amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                          </td>
-                          <td className="p-4 text-right font-bold text-emerald-400">
-                            ₹{parseFloat(inv.total_amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                          </td>
-                          <td className="p-4 text-center">
-                            <span className="px-2 py-0.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded font-sans text-[10px] capitalize">
-                              {inv.payment_status || 'Unpaid'}
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
+                      {displayedInvoices.map((inv) => {
+                        const subAmt = parseFloat(inv.subtotal ?? inv.subtotal_amount ?? '0');
+                        const taxAmt = (parseFloat(inv.cgst_total || '0') + parseFloat(inv.sgst_total || '0') + parseFloat(inv.igst_total || '0')) || parseFloat(inv.tax_amount || '0');
+                        const totalAmt = parseFloat(inv.grand_total ?? inv.total_amount ?? '0');
+                        const rawStatus = String(inv.status || inv.payment_status || 'unpaid').toLowerCase();
+                        const isPaid = rawStatus === 'paid';
+                        return (
+                          <tr key={inv.id} className="hover:bg-slate-800/40">
+                            <td className="p-4 font-semibold text-sky-400">{inv.invoice_number}</td>
+                            <td className="p-4 font-sans text-white">{inv.contact?.name || inv.customer_name || 'Customer'}</td>
+                            <td className="p-4 font-sans text-slate-400">{inv.issue_date}</td>
+                            <td className="p-4 text-right text-slate-300">
+                              ₹{subAmt.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                            </td>
+                            <td className="p-4 text-right text-slate-400">
+                              ₹{taxAmt.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                            </td>
+                            <td className="p-4 text-right font-bold text-emerald-400">
+                              ₹{totalAmt.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                            </td>
+                            <td className="p-4 text-center">
+                              <span className={`px-2 py-0.5 rounded font-sans text-[10px] capitalize border ${
+                                isPaid
+                                  ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
+                                  : 'bg-amber-500/10 text-amber-400 border-amber-500/20'
+                              }`}>
+                                {isPaid ? 'Paid' : rawStatus === 'partially_paid' ? 'Partially Paid' : 'Unpaid'}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>

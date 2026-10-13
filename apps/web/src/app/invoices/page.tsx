@@ -48,7 +48,7 @@ export default function InvoicesPage() {
   const [rzpHsn, setRzpHsn] = useState('998314');
   const [rzpQty, setRzpQty] = useState('1');
   const [rzpUnitPrice, setRzpUnitPrice] = useState('');
-  const [rzpGstRate, setRzpGstRate] = useState('18.00');
+  const [rzpGstRate, setRzpGstRate] = useState('0.00');
   const [rzpPaymentStatus, setRzpPaymentStatus] = useState<'paid' | 'sent'>('paid');
   const [rzpGatewayFee, setRzpGatewayFee] = useState('0');
   const [rzpBanner, setRzpBanner] = useState<string | null>(null);
@@ -189,7 +189,7 @@ export default function InvoicesPage() {
           setRzpHsn(firstItem.hsn_sac_code || '998314');
           setRzpQty(String(firstItem.quantity || 1));
           setRzpUnitPrice(String(firstItem.unit_price || 0));
-          setRzpGstRate(String(Number(firstItem.gst_rate_percent ?? 18).toFixed(2)));
+          setRzpGstRate(String(Number(firstItem.gst_rate_percent ?? 0).toFixed(2)));
         }
       }
     } catch (err: any) {
@@ -205,6 +205,7 @@ export default function InvoicesPage() {
     setRzpBanner(null);
 
     try {
+      const parsedGstRate = parseFloat(rzpGstRate);
       // If a multi-invoice CSV/JSON batch was uploaded (>1 row), import the batch; otherwise import the form fields
       const invoicesPayload = rzpBatchItems.length > 1
         ? rzpBatchItems.filter(it => !it.is_duplicate)
@@ -226,7 +227,7 @@ export default function InvoicesPage() {
                   hsn_sac_code: rzpHsn.trim() || '998314',
                   quantity: parseFloat(rzpQty || '1') || 1,
                   unit_price: parseFloat(rzpUnitPrice || '0') || 0,
-                  gst_rate_percent: parseFloat(rzpGstRate || '18') || 18,
+                  gst_rate_percent: Number.isNaN(parsedGstRate) ? 0 : parsedGstRate,
                 },
               ],
             },
@@ -343,7 +344,11 @@ export default function InvoicesPage() {
                       <td className="py-3.5 px-4 text-slate-400">{inv.issue_date}</td>
                       <td className="py-3.5 px-4 font-mono">State {inv.place_of_supply}</td>
                       <td className="py-3.5 px-4">
-                        {inv.is_interstate ? (
+                        {(parseFloat(inv.cgst_total || '0') + parseFloat(inv.sgst_total || '0') + parseFloat(inv.igst_total || '0')) === 0 ? (
+                          <span className="px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700 text-[10px] font-mono">
+                            0% GST (Non-GST)
+                          </span>
+                        ) : inv.is_interstate ? (
                           <span className="px-2 py-0.5 rounded bg-purple-500/10 text-purple-400 border border-purple-500/20 text-[10px] font-mono">
                             Interstate (IGST)
                           </span>

@@ -15,6 +15,26 @@ except ImportError:
     AsyncSession = Any
     HAVE_SQLALCHEMY = False
 
+PAYMENT_AGGREGATORS = (
+    "RAZORPAY",
+    "PAYMENT AGGREGATOR",
+    "STRIPE",
+    "PAYU",
+    "CASHFREE",
+    "PHONEPE",
+    "CCAVENUE",
+    "BILLDESK",
+    "INSTAMOJO",
+)
+
+
+def is_payment_aggregator(text: Optional[str]) -> bool:
+    if not text:
+        return False
+    upper = text.upper()
+    return any(agg in upper for agg in PAYMENT_AGGREGATORS)
+
+
 def calculate_name_similarity(name1: Optional[str], name2: Optional[str]) -> float:
     if not name1 or not name2:
         return 0.0
@@ -27,7 +47,7 @@ class ReconciliationEngine:
     """
     3-Tier Indian Bank Reconciliation State Engine:
     - Tier 1: Deterministic Match (Exact Reference / UTR + Exact Amount -> 100% confidence).
-    - Tier 2: Window Heuristic (Exact Amount within [-2, +5] days + Fuzzy Name Match >= 70%).
+    - Tier 2: Window Heuristic (Exact Amount within [-2, +15] days + Fuzzy Name Match >= 70% OR Payment Aggregator Settlement).
     - Tier 3: Suspense Auto-Posting (Unmatched records auto-post to Code 2099 Suspense Account).
     """
 
@@ -70,7 +90,9 @@ class ReconciliationEngine:
         open_invoices: List[Dict[str, Any]]
     ) -> Optional[Tuple[Dict[str, Any], float]]:
         """
-        Window heuristic: Exact amount within [-2, +15] days + fuzzy counterparty match >= 70%.
+        Window heuristic: Exact amount within [-2, +15] days + fuzzy counterparty match >= 70%
+        OR Payment Aggregator (Razorpay/Stripe/PayU/Cashfree) settlement matching an open invoice
+        in the [-2, +15] day window (exact amount or net of ~2-3% gateway fee).
         UAT-07: If two or more open invoices match with similar scores and identical amounts,
         flags the result with `is_ambiguous = True` and `reconciliation_status = 'probable_match'`
         so it is never silently auto-reconciled.
@@ -81,6 +103,8 @@ class ReconciliationEngine:
 
         txn_date = line.get("transaction_date")
         counterparty = line.get("counterparty_name")
+        description = line.get("description")
+        aggregator_deposit = is_payment_aggregator(counterparty) or is_payment_aggregator(description)
 
         best_match = None
         highest_score = 0.0
@@ -88,7 +112,12 @@ class ReconciliationEngine:
 
         for inv in open_invoices:
             inv_total = Decimal(str(inv.get("grand_total", "0.00")))
-            if inv_total != amount:
+            if inv_total <= Decimal("0.00"):
+                continue
+
+            exact_amount = (inv_total == amount)
+            net_of_fee_amount = aggregator_deposit and (Decimal("0.96") * inv_total <= amount < inv_total)
+            if not (exact_amount or net_of_fee_amount):
                 continue
 
             inv_date = inv.get("issue_date")
@@ -100,6 +129,8 @@ class ReconciliationEngine:
 
                 contact_name = inv.get("contact_name")
                 sim_score = calculate_name_similarity(counterparty, contact_name)
+                if aggregator_deposit and sim_score < 60.0:
+                    sim_score = 85.0 if exact_amount else 75.0
 
                 # Bonus points for date closeness
                 date_closeness_bonus = max(0, 10 - abs(days_diff))
@@ -219,13 +250,18 @@ class ReconciliationEngine:
             ).where(
                 JournalLine.tenant_id == tenant_id,
                 JournalLine.account_id == bank_acc.id,
-                JournalEntry.reference_type != "suspense_posting"
+                JournalEntry.reference_type.notin_(["suspense_posting", "bank_reconciliation", "bank_charge", "bank_interest", "fd_liquidation"])
             )
             existing_bank_gl = (await session.execute(bank_lines_stmt)).all()
 
         matched_gl_ids = set()
 
         for line in lines:
+            if line.reconciliation_status == "reconciled" and line.matched_journal_entry_id:
+                matched_gl_ids.add(line.matched_journal_entry_id)
+                tier1_count += 1
+                continue
+
             line_dict = {
                 "transaction_date": line.transaction_date,
                 "description": line.description,
@@ -239,6 +275,14 @@ class ReconciliationEngine:
             line_short = str(line.id)[:6].upper() if line.id else uuid.uuid4().hex[:6].upper()
             desc_upper = (line.description or "").upper()
             ref_upper = (line.reference_number or "").upper()
+
+            existing_suspense_je = (await session.execute(
+                select(JournalEntry).where(
+                    JournalEntry.tenant_id == tenant_id,
+                    JournalEntry.reference_type == "suspense_posting",
+                    JournalEntry.reference_id == line.id
+                )
+            )).scalar_one_or_none()
 
             # --- A. WITHDRAWAL HANDLING ---
             if line.withdrawal_amount > Decimal("0.00"):
@@ -263,6 +307,7 @@ class ReconciliationEngine:
 
                 # 2. Pattern Match: Bank Charges / Debit Card Fee / Maintenance
                 if ("DEBIT CARD" in desc_upper or "CHARGES" in desc_upper or "FEE" in desc_upper or "ISSUANCE" in desc_upper) and bank_charges_acc and bank_acc:
+                    credit_acc_id = suspense_acc.id if (existing_suspense_je and suspense_acc) else bank_acc.id
                     entry = JournalEntry(
                         tenant_id=tenant_id,
                         entry_number=f"JV-CHG-{stmt_short}-{line.line_number}-{line_short}",
@@ -278,7 +323,7 @@ class ReconciliationEngine:
                     await session.flush()
                     session.add_all([
                         JournalLine(journal_entry_id=entry.id, tenant_id=tenant_id, account_id=bank_charges_acc.id, debit_amount=line.withdrawal_amount, credit_amount=Decimal("0.00"), description=f"Bank charge: {line.description[:64]}"),
-                        JournalLine(journal_entry_id=entry.id, tenant_id=tenant_id, account_id=bank_acc.id, debit_amount=Decimal("0.00"), credit_amount=line.withdrawal_amount, description="Bank auto-debit charge")
+                        JournalLine(journal_entry_id=entry.id, tenant_id=tenant_id, account_id=credit_acc_id, debit_amount=Decimal("0.00"), credit_amount=line.withdrawal_amount, description="Bank auto-debit charge")
                     ])
                     line.matched_journal_entry_id = entry.id
                     line.reconciliation_tier = "tier1_exact"
@@ -319,6 +364,8 @@ class ReconciliationEngine:
                     line.notes = f"Tier 1 Exact Match with Invoice #{matched_inv['invoice_number']}"
 
                     if bank_acc and ar_acc:
+                        debit_acc_id = suspense_acc.id if (existing_suspense_je and suspense_acc) else bank_acc.id
+                        debit_desc = "Clear Suspense 2099 on invoice settlement" if (existing_suspense_je and suspense_acc) else f"Deposit via {line.reference_number or 'Bank'}"
                         entry = JournalEntry(
                             tenant_id=tenant_id,
                             entry_number=f"JV-RECON-T1-{stmt_short}-{line.line_number}-{line_short}",
@@ -333,10 +380,14 @@ class ReconciliationEngine:
                         session.add(entry)
                         await session.flush()
                         session.add_all([
-                            JournalLine(journal_entry_id=entry.id, tenant_id=tenant_id, account_id=bank_acc.id, debit_amount=line.deposit_amount, credit_amount=Decimal("0.00"), description=f"Deposit via {line.reference_number or 'Bank'}"),
+                            JournalLine(journal_entry_id=entry.id, tenant_id=tenant_id, account_id=debit_acc_id, debit_amount=line.deposit_amount, credit_amount=Decimal("0.00"), description=debit_desc),
                             JournalLine(journal_entry_id=entry.id, tenant_id=tenant_id, account_id=ar_acc.id, debit_amount=Decimal("0.00"), credit_amount=line.deposit_amount, description=f"Settlement of Inv #{matched_inv['invoice_number']}")
                         ])
                         line.matched_journal_entry_id = entry.id
+
+                    inv_obj = await session.get(Invoice, matched_inv["id"])
+                    if inv_obj:
+                        inv_obj.status = "paid"
 
                     open_invoices = [i for i in open_invoices if i["id"] != matched_inv["id"]]
                     tier1_count += 1
@@ -344,6 +395,7 @@ class ReconciliationEngine:
 
                 # 3. Pattern Match: FD Redeem Interest / Bank Interest
                 if ("INTEREST" in desc_upper or "REDEEM INTEREST" in desc_upper) and interest_income_acc and bank_acc:
+                    debit_acc_id = suspense_acc.id if (existing_suspense_je and suspense_acc) else bank_acc.id
                     entry = JournalEntry(
                         tenant_id=tenant_id,
                         entry_number=f"JV-INT-{stmt_short}-{line.line_number}-{line_short}",
@@ -358,7 +410,7 @@ class ReconciliationEngine:
                     session.add(entry)
                     await session.flush()
                     session.add_all([
-                        JournalLine(journal_entry_id=entry.id, tenant_id=tenant_id, account_id=bank_acc.id, debit_amount=line.deposit_amount, credit_amount=Decimal("0.00"), description="Bank interest credited"),
+                        JournalLine(journal_entry_id=entry.id, tenant_id=tenant_id, account_id=debit_acc_id, debit_amount=line.deposit_amount, credit_amount=Decimal("0.00"), description="Bank interest credited"),
                         JournalLine(journal_entry_id=entry.id, tenant_id=tenant_id, account_id=interest_income_acc.id, debit_amount=Decimal("0.00"), credit_amount=line.deposit_amount, description=f"Interest earned: {line.description[:64]}")
                     ])
                     line.matched_journal_entry_id = entry.id
@@ -371,6 +423,7 @@ class ReconciliationEngine:
 
                 # 4. Pattern Match: FD Redeem Principal / Term Deposit Liquidation
                 if ("REDEEM PRINCIPAL" in desc_upper or "PRINCIPAL" in desc_upper or "FD REDEEM" in desc_upper) and advances_acc and bank_acc:
+                    debit_acc_id = suspense_acc.id if (existing_suspense_je and suspense_acc) else bank_acc.id
                     entry = JournalEntry(
                         tenant_id=tenant_id,
                         entry_number=f"JV-FD-{stmt_short}-{line.line_number}-{line_short}",
@@ -385,7 +438,7 @@ class ReconciliationEngine:
                     session.add(entry)
                     await session.flush()
                     session.add_all([
-                        JournalLine(journal_entry_id=entry.id, tenant_id=tenant_id, account_id=bank_acc.id, debit_amount=line.deposit_amount, credit_amount=Decimal("0.00"), description="FD principal proceeds deposited"),
+                        JournalLine(journal_entry_id=entry.id, tenant_id=tenant_id, account_id=debit_acc_id, debit_amount=line.deposit_amount, credit_amount=Decimal("0.00"), description="FD principal proceeds deposited"),
                         JournalLine(journal_entry_id=entry.id, tenant_id=tenant_id, account_id=advances_acc.id, debit_amount=Decimal("0.00"), credit_amount=line.deposit_amount, description=f"FD redemption: {line.description[:64]}")
                     ])
                     line.matched_journal_entry_id = entry.id
@@ -396,14 +449,17 @@ class ReconciliationEngine:
                     tier1_count += 1
                     continue
 
-                # 5. Tier 2 Window Heuristic + Fuzzy Match
+                # 5. Tier 2 Window Heuristic + Fuzzy / Payment Aggregator Match
                 t2_match = ReconciliationEngine.match_tier2(line_dict, open_invoices)
                 if t2_match:
                     matched_inv, score = t2_match
                     line.reconciliation_tier = "tier2_heuristic"
                     line.reconciliation_status = "probable_match"
                     line.confidence_score = Decimal(str(score))
-                    line.notes = f"Tier 2 Probable Match: {matched_inv['contact_name']} (Inv #{matched_inv['invoice_number']})"
+                    is_agg = is_payment_aggregator(line.counterparty_name) or is_payment_aggregator(line.description)
+                    via_suffix = " [via Payment Aggregator Settlement]" if is_agg else ""
+                    line.notes = f"Tier 2 Probable Match: {matched_inv['contact_name']} (Inv #{matched_inv['invoice_number']}){via_suffix}"
+                    open_invoices = [i for i in open_invoices if i["id"] != matched_inv["id"]]
                     tier2_count += 1
                     continue
 

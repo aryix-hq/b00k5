@@ -132,10 +132,10 @@ export default function BankReconciliationPage() {
           const mapped: OpenInvoice[] = invs.map((inv: any) => ({
             id: inv.id,
             invoice_number: inv.invoice_number,
-            customer_name: inv.contact?.name || 'Customer',
+            customer_name: inv.contact?.name || inv.customer_name || 'Customer',
             date: inv.issue_date,
-            amount: parseFloat(inv.total_amount || '0'),
-            status: 'unpaid'
+            amount: parseFloat(inv.grand_total || inv.total_amount || '0'),
+            status: inv.status === 'paid' ? 'partially_paid' : 'unpaid'
           }));
           setOpenInvoices(mapped);
         }
@@ -811,56 +811,79 @@ export default function BankReconciliationPage() {
                       </div>
 
                       {/* Matched Open Invoice Candidate */}
-                      {selectedLine.matched_invoice_id || (selectedLine.confidence_score && selectedLine.confidence_score >= 60) ? (
-                        <div className="p-3.5 rounded-lg bg-sky-950/20 border border-sky-800/50 space-y-2.5">
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs font-semibold text-sky-400 flex items-center gap-1.5">
-                              <CheckCircle2 className="w-4 h-4" /> Candidate Ledger Invoice Match
-                            </span>
-                            <span className="text-xs font-mono px-2 py-0.5 rounded bg-sky-500/20 text-sky-300 border border-sky-500/30">
-                              Score: {selectedLine.confidence_score || 100}%
-                            </span>
-                          </div>
+                      {(() => {
+                        const matchedOpenInv = selectedLine.deposit > 0
+                          ? openInvoices.find(inv =>
+                              (selectedLine.notes && selectedLine.notes.includes(inv.invoice_number)) ||
+                              Math.abs(inv.amount - selectedLine.deposit) < 0.01
+                            )
+                          : undefined;
+                        const hasCandidate = Boolean(
+                          selectedLine.matched_invoice_id ||
+                          (selectedLine.confidence_score && selectedLine.confidence_score >= 60) ||
+                          matchedOpenInv
+                        );
+                        const displayScore = selectedLine.confidence_score && selectedLine.confidence_score >= 60
+                          ? selectedLine.confidence_score
+                          : (matchedOpenInv ? 92 : 100);
+                        const displayTitle = matchedOpenInv
+                          ? `Invoice #${matchedOpenInv.invoice_number}`
+                          : (selectedLine.matched_invoice_number || 'Matching Open Invoice');
+                        const displayCustomer = matchedOpenInv
+                          ? `${matchedOpenInv.customer_name}${selectedLine.counterparty && selectedLine.counterparty !== matchedOpenInv.customer_name ? ` (via ${selectedLine.counterparty})` : ''}`
+                          : selectedLine.counterparty;
 
-                          <div className="space-y-1 font-mono text-slate-300">
-                            <p className="text-white font-bold">{selectedLine.matched_invoice_number || 'Matching Open Invoice'}</p>
-                            <p className="text-slate-400">Customer: {selectedLine.counterparty}</p>
-                            <p className="text-emerald-400 font-bold">Grand Total: ₹{selectedLine.deposit.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</p>
-                          </div>
-
-                          {selectedLine.status !== 'reconciled' && (
-                            <div className="pt-2 flex gap-2">
-                              {selectedLine.tier === 'tier1_exact' ? (
-                                <button
-                                  onClick={() => handleAcceptTier1(selectedLine.id)}
-                                  disabled={processingLineId === selectedLine.id}
-                                  className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold rounded-lg shadow-sm transition-colors text-xs flex items-center justify-center gap-1.5"
-                                >
-                                  {processingLineId === selectedLine.id ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-4 h-4" />}
-                                  <span>Accept Tier 1 Exact Match (1-Click)</span>
-                                </button>
-                              ) : (
-                                <button
-                                  onClick={() => handleApproveTier2(selectedLine.id)}
-                                  disabled={processingLineId === selectedLine.id}
-                                  className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-semibold rounded-lg shadow-sm transition-colors text-xs flex items-center justify-center gap-1.5"
-                                >
-                                  {processingLineId === selectedLine.id ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-4 h-4" />}
-                                  <span>Approve Tier 2 Match ({selectedLine.confidence_score}%)</span>
-                                </button>
-                              )}
+                        return hasCandidate ? (
+                          <div className="p-3.5 rounded-lg bg-sky-950/20 border border-sky-800/50 space-y-2.5">
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs font-semibold text-sky-400 flex items-center gap-1.5">
+                                <CheckCircle2 className="w-4 h-4" /> Candidate Ledger Invoice Match
+                              </span>
+                              <span className="text-xs font-mono px-2 py-0.5 rounded bg-sky-500/20 text-sky-300 border border-sky-500/30">
+                                Score: {displayScore}%
+                              </span>
                             </div>
-                          )}
-                        </div>
-                      ) : (
-                        <div className="p-3.5 rounded-lg bg-slate-800/40 border border-slate-700/60 space-y-2 text-center py-6">
-                          <HelpCircle className="w-8 h-8 text-amber-400 mx-auto opacity-70" />
-                          <p className="text-sm font-semibold text-slate-200">No Direct Invoice Match Found</p>
-                          <p className="text-xs text-slate-400 max-w-xs mx-auto">
-                            This transaction does not correspond to an open AR invoice. You can route it to Suspense Account 2099 for manual allocation.
-                          </p>
-                        </div>
-                      )}
+
+                            <div className="space-y-1 font-mono text-slate-300">
+                              <p className="text-white font-bold">{displayTitle}</p>
+                              <p className="text-slate-400">Customer: {displayCustomer}</p>
+                              <p className="text-emerald-400 font-bold">Grand Total: ₹{(matchedOpenInv?.amount || selectedLine.deposit).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</p>
+                            </div>
+
+                            {selectedLine.status !== 'reconciled' && (
+                              <div className="pt-2 flex gap-2">
+                                {selectedLine.tier === 'tier1_exact' ? (
+                                  <button
+                                    onClick={() => handleAcceptTier1(selectedLine.id)}
+                                    disabled={processingLineId === selectedLine.id}
+                                    className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold rounded-lg shadow-sm transition-colors text-xs flex items-center justify-center gap-1.5"
+                                  >
+                                    {processingLineId === selectedLine.id ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-4 h-4" />}
+                                    <span>Accept Tier 1 Exact Match (1-Click)</span>
+                                  </button>
+                                ) : (
+                                  <button
+                                    onClick={() => handleApproveTier2(selectedLine.id)}
+                                    disabled={processingLineId === selectedLine.id}
+                                    className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-semibold rounded-lg shadow-sm transition-colors text-xs flex items-center justify-center gap-1.5"
+                                  >
+                                    {processingLineId === selectedLine.id ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-4 h-4" />}
+                                    <span>Approve Invoice Settlement Match ({displayScore}%)</span>
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="p-3.5 rounded-lg bg-slate-800/40 border border-slate-700/60 space-y-2 text-center py-6">
+                            <HelpCircle className="w-8 h-8 text-amber-400 mx-auto opacity-70" />
+                            <p className="text-sm font-semibold text-slate-200">No Direct Invoice Match Found</p>
+                            <p className="text-xs text-slate-400 max-w-xs mx-auto">
+                              This transaction does not correspond to an open AR invoice. You can route it to Suspense Account 2099 for manual allocation.
+                            </p>
+                          </div>
+                        );
+                      })()}
 
                       {/* Action Buttons */}
                       <div className="pt-2 space-y-2">

@@ -414,6 +414,7 @@ class StatutoryBillAnalyzer:
             "sgst_amount": float(sgst_amount),
             "igst_amount": float(igst_amount),
             "gst_rate": gst_rate,
+            "inferred_gst_rate": gst_rate,
             "category": category_display,
             "category_code": category_code,
             "category_name": category_name,
@@ -615,15 +616,27 @@ class StatutoryBillAnalyzer:
             except Exception: pass
 
         tax_sum = cgst_amount + sgst_amount + igst_amount
-        inferred_rate = 18
+        inferred_rate = 0
 
         # Arithmetic balancing
         if total_amount > Decimal("0.00"):
             if taxable_amount > Decimal("0.00"):
                 diff = total_amount - taxable_amount
-                if tax_sum == Decimal("0.00") and diff > Decimal("0.00"):
-                    # Calculate rate and allocate
-                    ratio = (diff / taxable_amount) * 100
+                if tax_sum > Decimal("0.00"):
+                    ratio = float((tax_sum / taxable_amount) * 100)
+                    if 17.0 <= ratio <= 19.0:
+                        inferred_rate = 18
+                    elif 11.0 <= ratio <= 13.0:
+                        inferred_rate = 12
+                    elif 4.0 <= ratio <= 6.0:
+                        inferred_rate = 5
+                    elif 27.0 <= ratio <= 29.0:
+                        inferred_rate = 28
+                    else:
+                        inferred_rate = int(round(ratio))
+                elif diff > Decimal("0.00"):
+                    # Calculate rate and allocate only if difference matches a standard GST slab
+                    ratio = float((diff / taxable_amount) * 100)
                     if 17.0 <= ratio <= 19.0:
                         inferred_rate = 18
                         igst_amount = diff
@@ -636,13 +649,23 @@ class StatutoryBillAnalyzer:
                     elif 27.0 <= ratio <= 29.0:
                         inferred_rate = 28
                         igst_amount = diff
+                else:
+                    # taxable_amount == total_amount and tax_sum == 0 -> Non-GST / 0% GST invoice
+                    inferred_rate = 0
             else:
                 if tax_sum > Decimal("0.00") and total_amount > tax_sum:
                     taxable_amount = total_amount - tax_sum
-                else:
-                    # Reverse calculate standard 18% GST
+                    ratio = float((tax_sum / taxable_amount) * 100) if taxable_amount > 0 else 18.0
+                    inferred_rate = 18 if 17.0 <= ratio <= 19.0 else (12 if 11.0 <= ratio <= 13.0 else (5 if 4.0 <= ratio <= 6.0 else (28 if 27.0 <= ratio <= 29.0 else int(round(ratio)))))
+                elif GSTIN_REGEX.search(text.upper()) and re.search(r'\b(?:CGST|SGST|IGST|18\s*%)\b', text, re.I):
+                    # Reverse calculate standard 18% GST only when explicit GSTIN + GST markers exist
                     taxable_amount = (total_amount / Decimal("1.18")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
                     igst_amount = total_amount - taxable_amount
+                    inferred_rate = 18
+                else:
+                    # Non-GST / 0% GST invoice or bill
+                    taxable_amount = total_amount
+                    inferred_rate = 0
 
         return {
             "total_amount": total_amount,
@@ -666,6 +689,14 @@ class StatutoryBillAnalyzer:
                 bill_to_m = re.search(pat, text, re.I)
                 if bill_to_m:
                     cand = bill_to_m.group(1).strip()
+                    # In 2-column PDF layouts (e.g. Seller on left, Billed To on right), split on 2+ spaces
+                    cols = [c.strip() for c in re.split(r'\s{2,}', cand) if c.strip()]
+                    if len(cols) > 1:
+                        non_seller = [
+                            c for c in cols
+                            if not any(corp in c.upper() for corp in ("PRIVATE LIMITED", "PVT LTD", "OPC", "ARYIX"))
+                        ]
+                        cand = non_seller[-1] if non_seller else cols[-1]
                     if len(cand) > 2 and not any(w in cand.upper() for w in ["GSTIN", "STATE", "DATE", "ADDRESS", "INVOICE", "RAZORPAY"]):
                         return cand
 

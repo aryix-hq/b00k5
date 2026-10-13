@@ -61,6 +61,7 @@ class InvoiceResponse(BaseModel):
     id: uuid.UUID
     tenant_id: uuid.UUID
     contact_id: uuid.UUID
+    contact: Optional[ContactResponse] = None
     invoice_number: str
     type: str
     issue_date: date

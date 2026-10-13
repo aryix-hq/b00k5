@@ -472,6 +472,7 @@ async def confirm_line_match(
     bank_acc = await LedgerService.get_account_by_code(db, tenant.id, "1010")
     ar_acc = await LedgerService.get_account_by_code(db, tenant.id, "1020")
     exp_acc = await LedgerService.get_account_by_code(db, tenant.id, "4010")
+    suspense_acc = await LedgerService.get_account_by_code(db, tenant.id, "2099")
 
     if not bank_acc:
         raise HTTPException(status_code=400, detail="Bank account (Code 1010) not configured in Chart of Accounts")
@@ -479,7 +480,16 @@ async def confirm_line_match(
     is_deposit = line.deposit_amount > Decimal("0.00")
     amount = line.deposit_amount if is_deposit else line.withdrawal_amount
 
-    # Post double-entry settlement journal
+    # Check if this line already has an active suspense_posting journal entry
+    existing_suspense = (await db.execute(
+        select(JournalEntry).where(
+            JournalEntry.tenant_id == tenant.id,
+            JournalEntry.reference_type == "suspense_posting",
+            JournalEntry.reference_id == line.id
+        )
+    )).scalar_one_or_none()
+
+    # Post double-entry settlement journal (clear 2099 Suspense if previously routed to Suspense)
     jv_number = f"JV-RECON-CONFIRM-{line.line_number}-{uuid.uuid4().hex[:6].upper()}"
     entry = JournalEntry(
         tenant_id=tenant.id,
@@ -496,25 +506,52 @@ async def confirm_line_match(
     await db.flush()
 
     if is_deposit:
+        debit_acc_id = suspense_acc.id if (existing_suspense and suspense_acc) else bank_acc.id
+        debit_desc = "Clear Suspense 2099 on confirmed invoice settlement" if (existing_suspense and suspense_acc) else f"Deposit via {line.reference_number or line.payment_channel}"
         credit_acc_id = ar_acc.id if ar_acc else bank_acc.id
         db.add_all([
-            JournalLine(journal_entry_id=entry.id, tenant_id=tenant.id, account_id=bank_acc.id, debit_amount=amount, credit_amount=Decimal("0.00"), description=f"Deposit via {line.reference_number or line.payment_channel}"),
+            JournalLine(journal_entry_id=entry.id, tenant_id=tenant.id, account_id=debit_acc_id, debit_amount=amount, credit_amount=Decimal("0.00"), description=debit_desc),
             JournalLine(journal_entry_id=entry.id, tenant_id=tenant.id, account_id=credit_acc_id, debit_amount=Decimal("0.00"), credit_amount=amount, description=f"Settlement: {line.counterparty_name or 'Customer'}")
         ])
+        # Mark matched invoice as paid if found
+        import re as _re
+        from app.models.invoice import Invoice
+        matched_inv_obj = None
+        if payload.matched_invoice_id:
+            matched_inv_obj = await db.get(Invoice, payload.matched_invoice_id)
+        if not matched_inv_obj and line.notes:
+            m = _re.search(r"Inv\s*#([A-Za-z0-9\-_/]+)", line.notes)
+            if m:
+                inv_num = m.group(1)
+                matched_inv_obj = (await db.execute(
+                    select(Invoice).where(Invoice.tenant_id == tenant.id, Invoice.invoice_number == inv_num)
+                )).scalar_one_or_none()
+        if not matched_inv_obj:
+            matched_inv_obj = (await db.execute(
+                select(Invoice).where(
+                    Invoice.tenant_id == tenant.id,
+                    Invoice.grand_total == amount,
+                    Invoice.status.in_(["sent", "draft", "partially_paid"])
+                )
+            )).scalars().first()
+        if matched_inv_obj and matched_inv_obj.tenant_id == tenant.id:
+            matched_inv_obj.status = "paid"
     else:
         debit_acc_id = exp_acc.id if exp_acc else bank_acc.id
+        credit_acc_id = suspense_acc.id if (existing_suspense and suspense_acc) else bank_acc.id
+        credit_desc = "Clear Suspense 2099 on confirmed withdrawal" if (existing_suspense and suspense_acc) else f"Withdrawal via {line.reference_number or line.payment_channel}"
         db.add_all([
             JournalLine(journal_entry_id=entry.id, tenant_id=tenant.id, account_id=debit_acc_id, debit_amount=amount, credit_amount=Decimal("0.00"), description=f"Expense discharge: {line.counterparty_name or line.description[:50]}"),
-            JournalLine(journal_entry_id=entry.id, tenant_id=tenant.id, account_id=bank_acc.id, debit_amount=Decimal("0.00"), credit_amount=amount, description=f"Withdrawal via {line.reference_number or line.payment_channel}")
+            JournalLine(journal_entry_id=entry.id, tenant_id=tenant.id, account_id=credit_acc_id, debit_amount=Decimal("0.00"), credit_amount=amount, description=credit_desc)
         ])
 
     line.reconciliation_status = "reconciled"
     line.matched_journal_entry_id = entry.id
     line.confidence_score = Decimal("100.00")
-    if payload.notes:
-        line.notes = payload.notes
-    elif line.notes:
+    if line.notes and "Inv #" in line.notes:
         line.notes = f"{line.notes} [Confirmed]"
+    elif payload.notes:
+        line.notes = payload.notes
     else:
         line.notes = f"Match confirmed manually for line #{line.line_number}"
 

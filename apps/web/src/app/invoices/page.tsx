@@ -91,6 +91,40 @@ export default function InvoicesPage() {
     }
   }
 
+  const [downloadingInvId, setDownloadingInvId] = useState<string | null>(null);
+
+  const handleDownloadInvoicePdf = async (invId: string, invNum: string) => {
+    try {
+      setDownloadingInvId(invId);
+      const token = typeof window !== 'undefined' ? localStorage.getItem('b00k5_token') : null;
+      const tenantId = typeof window !== 'undefined' ? localStorage.getItem('b00k5_tenant_id') : null;
+      const headers: Record<string, string> = {};
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      if (tenantId) headers['X-Tenant-ID'] = tenantId;
+
+      const url = `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/invoices/${invId}/download${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+      const res = await fetch(url, { headers });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to download invoice PDF');
+      }
+
+      const blob = await res.blob();
+      const blobUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = `${invNum || 'Tax_Invoice'}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(blobUrl);
+    } catch (err: any) {
+      alert(err.message || 'Error downloading invoice PDF');
+    } finally {
+      setDownloadingInvId(null);
+    }
+  };
+
   const handleStrikeOffInvoice = async (invId: string, invNum: string) => {
     if (!window.confirm(`Are you sure you want to strike off Invoice ${invNum}?\n\nThis will reverse the Double-Entry journal entries (Sales & Receivables) in your General Ledger and void the invoice.`)) {
       return;
@@ -437,15 +471,19 @@ export default function InvoicesPage() {
                       </td>
                       <td className="py-3.5 px-4 text-right">
                         <div className="flex items-center justify-end gap-1.5 flex-wrap">
-                          <a
-                            href={`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/invoices/${inv.id}/download`}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="px-2 py-1 rounded bg-sky-950/70 hover:bg-sky-900 border border-sky-700/60 text-sky-300 hover:text-white text-[10px] font-semibold inline-flex items-center gap-1 transition"
+                          <button
+                            onClick={() => handleDownloadInvoicePdf(inv.id, inv.invoice_number)}
+                            disabled={downloadingInvId === inv.id}
+                            className="px-2 py-1 rounded bg-sky-950/70 hover:bg-sky-900 border border-sky-700/60 text-sky-300 hover:text-white text-[10px] font-semibold inline-flex items-center gap-1 transition disabled:opacity-50"
                             title="Download GST Tax Invoice PDF"
                           >
-                            <Download className="w-3 h-3" /> PDF
-                          </a>
+                            {downloadingInvId === inv.id ? (
+                              <Loader2 className="w-3 h-3 animate-spin" />
+                            ) : (
+                              <Download className="w-3 h-3" />
+                            )}
+                            <span>PDF</span>
+                          </button>
                           {!inv.pdf_s3_key && (
                             <label className="cursor-pointer px-2 py-1 rounded bg-indigo-950 text-indigo-300 border border-indigo-700 hover:bg-indigo-900 text-[10px] font-semibold inline-flex items-center gap-1 transition">
                               <UploadCloud className="w-3 h-3" /> Attach

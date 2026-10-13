@@ -22,7 +22,8 @@ import {
   FileText,
   Building2,
   Coins,
-  Users
+  Users,
+  Loader2
 } from 'lucide-react';
 import { fetchApi } from '@/lib/api';
 
@@ -130,6 +131,63 @@ export default function DocumentLockerPage() {
   };
 
   const [downloadingPack, setDownloadingPack] = useState(false);
+
+  const [downloadingDocId, setDownloadingDocId] = useState<string | null>(null);
+
+  const handleDownloadDoc = async (docId: string, docName: string) => {
+    try {
+      setDownloadingDocId(docId);
+      const token = typeof window !== 'undefined' ? localStorage.getItem('b00k5_token') : null;
+      const tenantId = typeof window !== 'undefined' ? localStorage.getItem('b00k5_tenant_id') : null;
+      const headers: Record<string, string> = {};
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      if (tenantId) headers['X-Tenant-ID'] = tenantId;
+
+      const url = `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/vault/${docId}/download${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+      const res = await fetch(url, { headers });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to download document');
+      }
+
+      const blob = await res.blob();
+      const blobUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = docName || 'Document.pdf';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(blobUrl);
+    } catch (err: any) {
+      alert(err.message || 'Error downloading document');
+    } finally {
+      setDownloadingDocId(null);
+    }
+  };
+
+  const handleOpenDocInTab = async (docId: string) => {
+    try {
+      const token = typeof window !== 'undefined' ? localStorage.getItem('b00k5_token') : null;
+      const tenantId = typeof window !== 'undefined' ? localStorage.getItem('b00k5_tenant_id') : null;
+      const headers: Record<string, string> = {};
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      if (tenantId) headers['X-Tenant-ID'] = tenantId;
+
+      const url = `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/vault/${docId}/download${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+      const res = await fetch(url, { headers });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to open document');
+      }
+
+      const blob = await res.blob();
+      const blobUrl = window.URL.createObjectURL(blob);
+      window.open(blobUrl, '_blank');
+    } catch (err: any) {
+      alert(err.message || 'Error opening document in tab');
+    }
+  };
 
   const handleExportAuditorPack = async () => {
     setDownloadingPack(true);
@@ -319,17 +377,21 @@ export default function DocumentLockerPage() {
                       )}
                     </div>
                     <div className="flex items-center gap-1.5">
-                      <a
-                        href={`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/vault/${doc.id}/download`}
-                        target="_blank"
-                        rel="noreferrer"
-                        download
-                        onClick={(e) => e.stopPropagation()}
-                        className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition"
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDownloadDoc(doc.id, doc.document_name);
+                        }}
+                        disabled={downloadingDocId === doc.id}
+                        className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition disabled:opacity-50"
                         title="Download Document"
                       >
-                        <Download className="w-4 h-4" />
-                      </a>
+                        {downloadingDocId === doc.id ? (
+                          <Loader2 className="w-4 h-4 animate-spin text-emerald-400" />
+                        ) : (
+                          <Download className="w-4 h-4" />
+                        )}
+                      </button>
                       <div className="p-2 rounded-lg bg-emerald-500/10 text-emerald-400">
                         <ShieldCheck className="w-5 h-5" />
                       </div>
@@ -556,26 +618,26 @@ export default function DocumentLockerPage() {
             </div>
 
             <div className="flex items-center justify-between pt-3 border-t border-slate-800">
-              <a
-                href={`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/vault/${viewDoc.id}/download`}
-                target="_blank"
-                rel="noreferrer"
-                download
-                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-lg flex items-center gap-2 transition shadow-md shadow-emerald-600/20"
+              <button
+                onClick={() => handleDownloadDoc(viewDoc.id, viewDoc.document_name)}
+                disabled={downloadingDocId === viewDoc.id}
+                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-lg flex items-center gap-2 transition shadow-md shadow-emerald-600/20 disabled:opacity-50"
               >
-                <Download className="w-4 h-4" />
+                {downloadingDocId === viewDoc.id ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Download className="w-4 h-4" />
+                )}
                 <span>Download Document</span>
-              </a>
+              </button>
               <div className="flex items-center gap-2">
-                <a
-                  href={`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/vault/${viewDoc.id}/download`}
-                  target="_blank"
-                  rel="noreferrer"
+                <button
+                  onClick={() => handleOpenDocInTab(viewDoc.id)}
                   className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-lg flex items-center gap-1.5 transition border border-slate-700"
                 >
                   <ExternalLink className="w-3.5 h-3.5" />
                   <span>Open in Tab</span>
-                </a>
+                </button>
                 <button
                   onClick={() => setViewDoc(null)}
                   className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold rounded-lg"

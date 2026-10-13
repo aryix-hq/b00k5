@@ -1,6 +1,6 @@
 import uuid
 from typing import AsyncGenerator, Optional
-from fastapi import Depends, HTTPException, status, Header
+from fastapi import Depends, HTTPException, status, Header, Request
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -18,10 +18,14 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             await session.close()
 
 async def get_current_user(
+    request: Request = None,
     token: Optional[str] = Depends(oauth2_scheme),
     db: AsyncSession = Depends(get_db)
 ) -> User:
-    if not token:
+    effective_token = token
+    if not effective_token and request:
+        effective_token = request.query_params.get("token") or request.cookies.get("b00k5_token")
+    if not effective_token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication credentials not provided",
@@ -29,14 +33,14 @@ async def get_current_user(
         )
 
     # DEF-03: Server-side JWT revocation check (Redis blocklist)
-    if is_token_revoked(token):
+    if is_token_revoked(effective_token):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token has been revoked. Please log in again.",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    payload = decode_access_token(token)
+    payload = decode_access_token(effective_token)
     if not payload:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -121,14 +125,19 @@ async def get_current_tenant(
     Validates tenant access, enforces RBAC permissions, and applies PostgreSQL Row-Level Security (RLS) context.
     """
     tenant_uuid: Optional[uuid.UUID] = None
+    effective_token = token
+    if not effective_token and request:
+        effective_token = request.query_params.get("token") or request.cookies.get("b00k5_token")
 
-    if x_tenant_id:
+    effective_tenant_id = x_tenant_id or (request.query_params.get("tenant_id") if request else None)
+
+    if effective_tenant_id:
         try:
-            tenant_uuid = uuid.UUID(x_tenant_id)
+            tenant_uuid = uuid.UUID(effective_tenant_id)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid X-Tenant-ID header format")
-    elif token:
-        payload = decode_access_token(token)
+    elif effective_token:
+        payload = decode_access_token(effective_token)
         if payload and payload.get("tenant_id"):
             try:
                 tenant_uuid = uuid.UUID(payload.get("tenant_id"))
@@ -155,8 +164,8 @@ async def get_current_tenant(
         raise HTTPException(status_code=403, detail="Access denied to requested tenant")
 
     role_val = membership.role.value if hasattr(membership.role, "value") else str(membership.role)
-    if token:
-        tok_payload = decode_access_token(token)
+    if effective_token:
+        tok_payload = decode_access_token(effective_token)
         tok_role = str((tok_payload or {}).get("role") or "").lower()
         role_rank = {"auditor_ca": 1, "employee": 2, "finance_manager": 3, "owner": 4}
         if tok_role in role_rank and role_rank[tok_role] < role_rank.get(role_val.lower(), 4):

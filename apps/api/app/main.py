@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings, validate_production_security
 from app.core.s3 import ensure_buckets_exist
-from app.api.v1 import auth, setup, invoices, ledger, vault, compliance, dsc, reconciliation, storage, iam, expenses, pricing, system, batch_ingest
+from app.api.v1 import auth, setup, invoices, ledger, vault, compliance, dsc, reconciliation, storage, iam, expenses, pricing, system, batch_ingest, reports, tenant_iam, tds, assets, registers
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("b00k5_api")
@@ -19,6 +19,11 @@ async def lifespan(app: FastAPI):
         logger.warning(f"Could not initialize S3 buckets at startup: {e}")
     yield
     logger.info("Shutting down b00k5 API...")
+    try:
+        from app.core.database import engine
+        await engine.dispose()
+    except Exception as e:
+        logger.warning(f"Error disposing engine pool: {e}")
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -69,6 +74,12 @@ app.include_router(expenses.router, prefix=f"{settings.API_V1_STR}/expenses", ta
 app.include_router(pricing.router, prefix=f"{settings.API_V1_STR}/pricing", tags=["Pricing & GST Calculator"])
 app.include_router(system.router, prefix=f"{settings.API_V1_STR}/system", tags=["System & Administration"])
 app.include_router(batch_ingest.router, prefix=f"{settings.API_V1_STR}/batch", tags=["Batch Ingestion"])
+app.include_router(reports.router, prefix=f"{settings.API_V1_STR}/reports", tags=["Financial Statements & Schedule III Reports"])
+app.include_router(reconciliation.router, prefix=f"{settings.API_V1_STR}/banking", tags=["Banking & Reconciliation (Alias)"])
+app.include_router(tenant_iam.router, prefix=f"{settings.API_V1_STR}/tenants", tags=["Multi-Company Tenant Context & IAM"])
+app.include_router(tds.router, prefix=f"{settings.API_V1_STR}/tds", tags=["Indian TDS/TCS Withholding (FEAT-08)"])
+app.include_router(assets.router, prefix=f"{settings.API_V1_STR}/assets", tags=["Schedule II Fixed Assets & Depreciation (FEAT-09)"])
+app.include_router(registers.router, prefix=f"{settings.API_V1_STR}/registers", tags=["MCA Statutory Registers & Disclosures (FEAT-12)"])
 
 @app.get("/")
 @app.get("/health")

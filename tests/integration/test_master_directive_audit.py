@@ -292,7 +292,9 @@ async def test_journey_04_out_of_pocket_and_statutory_guardrails(db_session: Asy
         paid_personally=True,
         director_name="Vikram"
     )
-    result = await create_expense(payload=req, current_user=user, tenant=tenant, db=db_session)
+    from app.core.iam import IAMContext
+    ctx = IAMContext(user=user, tenant=tenant, role="owner")
+    result = await create_expense(payload=req, ctx=ctx, db=db_session)
 
     assert result["success"] is True
     assert result["paid_personally"] is True
@@ -307,7 +309,7 @@ async def test_journey_04_out_of_pocket_and_statutory_guardrails(db_session: Asy
         payment_mode="cash",
         paid_personally=False
     )
-    cash_res = await create_expense(payload=cash_req, current_user=user, tenant=tenant, db=db_session)
+    cash_res = await create_expense(payload=cash_req, ctx=ctx, db=db_session)
     assert cash_res["sec_40a3_violation"] is True
     assert any("40A(3)" in w["statutory_act"] for w in cash_res["warnings"])
 
@@ -365,7 +367,9 @@ async def test_journey_05_reconciliation_and_founder_settlement(db_session: Asyn
         reference_number="NEFT-FOUNDER-SETTLE",
         settlement_date=date(2025, 5, 20)
     )
-    settle_res = await settle_director_reimbursement(payload=settle_req, current_user=user, tenant=tenant, db=db_session)
+    from app.core.iam import IAMContext
+    ctx = IAMContext(user=user, tenant=tenant, role="owner")
+    settle_res = await settle_director_reimbursement(payload=settle_req, ctx=ctx, db=db_session)
 
     assert settle_res["success"] is True
     assert settle_res["settled_amount"] == 25000.0
@@ -418,8 +422,10 @@ async def test_journey_06_multi_year_rollover(db_session: AsyncSession):
     await db_session.commit()
 
     # Trigger Year-End Close Run
+    from app.core.iam import IAMContext
+    ctx = IAMContext(user=user, tenant=tenant, role="owner")
     req = YearEndCloseRequest(fiscal_year="2025-26", closing_date=date(2026, 3, 31))
-    close_res = await run_year_end_close(payload=req, current_user=user, tenant=tenant, db=db_session)
+    close_res = await run_year_end_close(payload=req, ctx=ctx, db=db_session)
 
     assert close_res["success"] is True
     assert close_res["is_closed"] is True

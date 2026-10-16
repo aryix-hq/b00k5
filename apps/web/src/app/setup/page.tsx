@@ -45,11 +45,11 @@ export default function SetupWizard() {
   const [error, setError] = useState<string | null>(null);
 
   // SuperAdmin User Form
-  const [adminEmail, setAdminEmail] = useState('admin@yourstartup.com');
-  const [adminPassword, setAdminPassword] = useState('SuperSecretPass123!');
-  const [firstName, setFirstName] = useState('Vikram');
-  const [lastName, setLastName] = useState('Founder');
-  const [adminDin, setAdminDin] = useState('09876543');
+  const [adminEmail, setAdminEmail] = useState('');
+  const [adminPassword, setAdminPassword] = useState('');
+  const [firstName, setFirstName] = useState('');
+  const [lastName, setLastName] = useState('');
+  const [adminDin, setAdminDin] = useState('');
 
   // Verified Entity Details
   const [cin, setCin] = useState('');
@@ -136,6 +136,20 @@ export default function SetupWizard() {
       if (ext.directors && ext.directors.length > 0 && ext.directors[0].din) {
         setAdminDin(ext.directors[0].din);
       }
+      if (ext.din) {
+        setAdminDin(ext.din);
+      }
+      const dirName = ext.director_name || ext.name || (ext.directors && ext.directors[0]?.name);
+      if (dirName) {
+        const parts = dirName.trim().split(/\s+/);
+        if (parts.length > 1) {
+          setFirstName(parts[0]);
+          setLastName(parts.slice(1).join(' '));
+        } else if (parts.length === 1) {
+          setFirstName(parts[0]);
+          setLastName('');
+        }
+      }
     } catch (err: any) {
       setError(err.message || 'Failed to verify statutory document.');
     } finally {
@@ -183,6 +197,23 @@ export default function SetupWizard() {
     }
   };
 
+  const handleProceedToVerification = () => {
+    if (!firstName.trim()) {
+      setError('Please provide the Founder / SuperAdmin First Name, or upload your official MCA SPICe+ Part B / DIR-3 letter to extract it.');
+      return;
+    }
+    if (!adminEmail.trim() || !adminEmail.includes('@')) {
+      setError('Please provide a valid Founder / SuperAdmin Master Email address.');
+      return;
+    }
+    if (!adminPassword || adminPassword.length < 8) {
+      setError('Master Password must be at least 8 characters for platform security.');
+      return;
+    }
+    setError(null);
+    setStep(2);
+  };
+
   const handleCompleteSetup = async () => {
     setLoading(true);
     setError(null);
@@ -214,6 +245,9 @@ export default function SetupWizard() {
         localStorage.setItem('b00k5_legal_name', res.legal_name);
         localStorage.setItem('b00k5_cin', cin);
         localStorage.setItem('b00k5_role', 'owner');
+        localStorage.setItem('b00k5_user_role', 'owner');
+        localStorage.setItem('b00k5_is_super_admin', 'true');
+        localStorage.setItem('b00k5_user_email', adminEmail);
         localStorage.setItem('b00k5_admin_din', adminDin || '');
         localStorage.setItem('b00k5_signer_name', `${firstName} ${lastName}`.trim() || 'Director');
         localStorage.setItem('b00k5_venue', registeredOffice || 'Registered Office');
@@ -317,64 +351,107 @@ export default function SetupWizard() {
         {step === 1 && (
           <div className="space-y-4">
             <div className="flex justify-between items-center">
-              <h2 className="text-base font-semibold text-slate-200">Step 1: SuperAdmin Master Account</h2>
-              <span className="text-xs text-slate-400">Signing Authority &amp; System Owner</span>
-            </div>
-            <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1">First Name</label>
+                <h2 className="text-base font-semibold text-slate-200">Step 1: SuperAdmin Master Account Setup</h2>
+                <p className="text-xs text-slate-400 mt-0.5">Configure your Organization Founder and Root Super Administrator account with statutory signing authority.</p>
+              </div>
+              <span className="text-xs px-2.5 py-1 rounded bg-rose-500/10 text-rose-400 border border-rose-500/20 font-medium shrink-0">
+                Root SuperAdmin
+              </span>
+            </div>
+
+            <div className="bg-slate-950/40 border border-slate-800/80 rounded-xl p-4 space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-slate-300 mb-1">
+                    First Name <span className="text-rose-400">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={firstName}
+                    onChange={(e) => setFirstName(e.target.value)}
+                    placeholder="e.g. Adithya"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-sky-500 placeholder:text-slate-600"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-300 mb-1">Last Name</label>
+                  <input
+                    type="text"
+                    value={lastName}
+                    onChange={(e) => setLastName(e.target.value)}
+                    placeholder="e.g. Khamithkar"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-sky-500 placeholder:text-slate-600"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1">
+                  Founder / SuperAdmin Master Email <span className="text-rose-400">*</span>
+                </label>
                 <input
-                  type="text"
-                  value={firstName}
-                  onChange={(e) => setFirstName(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-sky-500"
+                  type="email"
+                  value={adminEmail}
+                  onChange={(e) => setAdminEmail(e.target.value)}
+                  placeholder="e.g. founder@yourcompany.com"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-sky-500 placeholder:text-slate-600"
                 />
               </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1">Last Name</label>
-                <input
-                  type="text"
-                  value={lastName}
-                  onChange={(e) => setLastName(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-sky-500"
-                />
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-slate-300 mb-1">
+                    Master Password <span className="text-rose-400">*</span>
+                  </label>
+                  <input
+                    type="password"
+                    value={adminPassword}
+                    onChange={(e) => setAdminPassword(e.target.value)}
+                    placeholder="Min. 8 characters"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-sky-500 placeholder:text-slate-600"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-300 mb-1 flex items-center justify-between">
+                    <span>Director Identification Number (DIN)</span>
+                    <span className={`text-[10px] font-mono ${adminDin ? 'text-emerald-400 font-semibold' : 'text-sky-400'}`}>
+                      {adminDin ? '✓ Verified from MCA Document' : '🔒 Mandatory MCA Approval Letter'}
+                    </span>
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={adminDin}
+                      readOnly
+                      placeholder="Upload SPICe+ Part B / DIR-3 to auto-extract"
+                      title="Per statutory rules, DIN must be verified via SPICe+ Part B or DIR-3 DIN Approval Letter."
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none font-mono cursor-not-allowed opacity-90 placeholder:text-slate-600"
+                    />
+                    <label className="cursor-pointer px-3.5 py-2 bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 shrink-0 transition">
+                      <UploadCloud className="w-3.5 h-3.5" />
+                      <span>{verifyingDocType === 'din' ? 'Extracting...' : (adminDin ? 'Re-upload' : 'Upload SPICe+ / DIR-3')}</span>
+                      <input
+                        type="file"
+                        accept=".pdf,.png,.jpg,.jpeg"
+                        className="hidden"
+                        onChange={(e) => handleDocumentUpload('din', e)}
+                        disabled={verifyingDocType === 'din'}
+                      />
+                    </label>
+                  </div>
+                  <p className="text-[11px] text-slate-500 mt-1">
+                    Manual DIN entry is restricted to prevent statutory mismatch. Upload your MCA SPICe+ Part B or DIR-3 Allotment Letter to auto-extract DIN and director name.
+                  </p>
+                </div>
               </div>
             </div>
-            <div>
-              <label className="block text-xs font-medium text-slate-400 mb-1">Founder / Master Email</label>
-              <input
-                type="email"
-                value={adminEmail}
-                onChange={(e) => setAdminEmail(e.target.value)}
-                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-sky-500"
-              />
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1">Master Password</label>
-                <input
-                  type="password"
-                  value={adminPassword}
-                  onChange={(e) => setAdminPassword(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-sky-500"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1">Director Identification Number (DIN)</label>
-                <input
-                  type="text"
-                  value={adminDin}
-                  onChange={(e) => setAdminDin(e.target.value)}
-                  placeholder="8-digit MCA DIN (optional)"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-sky-500 font-mono"
-                />
-              </div>
-            </div>
-            <div className="pt-4 flex justify-end">
+
+            <div className="pt-2 flex justify-end">
               <button
                 type="button"
-                onClick={() => setStep(2)}
-                className="px-4 py-2 bg-sky-500 hover:bg-sky-600 text-white text-sm font-semibold rounded-lg flex items-center gap-2"
+                onClick={handleProceedToVerification}
+                className="px-5 py-2.5 bg-sky-500 hover:bg-sky-600 text-white text-sm font-semibold rounded-lg flex items-center gap-2 shadow-lg shadow-sky-500/20 transition-all"
               >
                 Proceed to Document Verification <ArrowRight className="w-4 h-4" />
               </button>
@@ -594,6 +671,47 @@ export default function SetupWizard() {
                       className="hidden"
                       onChange={(e) => handleDocumentUpload('tan', e)}
                       disabled={verifyingDocType === 'tan'}
+                    />
+                  </label>
+                </div>
+              </div>
+
+              {/* Document 5b: MCA DIN Approval Letter */}
+              <div className="bg-slate-950/60 border border-slate-800 rounded-xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div className="flex items-start gap-3">
+                  <div className="w-9 h-9 rounded-lg bg-sky-500/10 border border-sky-500/30 flex items-center justify-center text-sky-400 shrink-0">
+                    <FileCheck className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium text-slate-200">DIN Approval Letter (Form DIR-3 Allotment)</span>
+                      <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded bg-sky-950 text-sky-400 border border-sky-800/60">
+                        Mandatory
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      Ministry of Corporate Affairs Intimation of Allotment of Director Identification Number (DIN).
+                    </p>
+
+                    {verifiedDocs.din && (
+                      <div className="mt-2 text-xs flex items-center gap-2 text-emerald-400 font-mono">
+                        <CheckCircle className="w-3.5 h-3.5" />
+                        <span>Verified Authentic • DIN: {adminDin || 'Extracted'} {firstName ? `• Director: ${firstName} ${lastName}`.trim() : ''}</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="shrink-0 flex items-center gap-2">
+                  <label className="cursor-pointer px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium rounded-lg flex items-center gap-1.5 transition-colors">
+                    <UploadCloud className="w-3.5 h-3.5 text-sky-400" />
+                    <span>{verifiedDocs.din ? 'Re-upload DIR-3' : 'Upload DIR-3'}</span>
+                    <input
+                      type="file"
+                      accept=".pdf,.png,.jpg,.jpeg"
+                      className="hidden"
+                      onChange={(e) => handleDocumentUpload('din', e)}
+                      disabled={verifyingDocType === 'din'}
                     />
                   </label>
                 </div>

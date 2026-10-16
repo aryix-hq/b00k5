@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, date
 from sqlalchemy import Column, String, Boolean, DateTime, Date, Numeric, Text, ForeignKey, Enum as SQLEnum
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from app.core.database import Base
 
@@ -45,6 +45,7 @@ class Invoice(Base):
     sgst_total = Column(Numeric(15, 2), default=0.00)
     igst_total = Column(Numeric(15, 2), default=0.00)
     grand_total = Column(Numeric(15, 2), nullable=False)
+    tds_amount = Column(Numeric(15, 2), default=0.00)
     status = Column(
         SQLEnum('draft', 'sent', 'paid', 'partially_paid', 'cancelled', name="invoice_status_enum"),
         default='draft',
@@ -52,6 +53,12 @@ class Invoice(Base):
     )
     pdf_s3_key = Column(Text, nullable=True)
     fiscal_year_id = Column(UUID(as_uuid=True), ForeignKey("fiscal_years.id", ondelete="SET NULL"), nullable=True)
+    irn = Column(String(64), nullable=True)
+    ack_no = Column(String(32), nullable=True)
+    ack_date = Column(DateTime(timezone=True), nullable=True)
+    signed_qr_code = Column(Text, nullable=True)
+    irn_status = Column(String(32), default='PENDING')
+    einvoice_payload = Column(JSONB, nullable=True)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
     updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
 

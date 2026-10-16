@@ -420,6 +420,47 @@ class OnboardingInspectorService:
             elif not q_val:
                 extracted["board_meeting_quorum"] = 2
 
+        elif exp_lower in ("din", "din_approval", "dir_3", "dir_3_allotment", "din_letter", "form_dir_3", "spice", "spice+", "spice_plus", "spice_b", "spice_part_b", "spice_plus_part_b", "inc-32", "inc32") or "ALLOTMENT OF DIRECTOR IDENTIFICATION NUMBER" in text_upper or "ALLOTMENT OF DIN" in text_upper or "INTIMATION OF DIN ALLOTMENT" in text_upper or ("SPICE" in text_upper and "PART B" in text_upper):
+            detected_type = "SPICe+ Part B / Form DIR-3 DIN Approval Letter"
+            has_mca = "MINISTRY OF CORPORATE AFFAIRS" in text_upper or "DIRECTOR IDENTIFICATION NUMBER" in text_upper or "DIR-3" in text_upper or "GOVERNMENT OF INDIA" in text_upper or "DIN CELL" in text_upper or "ALLOTMENT OF DIN" in text_upper or "SPICE" in text_upper
+            din_m = re.search(r'(?:Director\s+Identification\s+Number\s*(?:\(DIN\))?|DIN)\s*[:\-]?\s*([01][0-9]{7})', text, re.I) or re.search(r'\b([01][0-9]{7})\b', text)
+            has_din = din_m is not None
+            din_val = din_m.group(1).strip() if din_m else ""
+
+            name_m = re.search(r'(?:Name\s+of\s+(?:the\s+)?Director|Name\s+of\s+Applicant|Director\s+Name|Name)\s*[:\-]?\s*([A-Za-z\s\.]+?)(?=\n|Father|Date|DIN|Nationality|Address|$)', text, re.I)
+            raw_name = name_m.group(1).strip() if name_m else ""
+            if not raw_name or len(raw_name) < 3:
+                sal_m = re.search(r'(?:Shri|Smt\.|Ms\.|Mr\.)\s+([A-Za-z\s\.]+?)(?=\n|Father|Date|DIN|Nationality|Address|$)', text, re.I)
+                if sal_m:
+                    raw_name = sal_m.group(1).strip()
+
+            has_name = bool(raw_name and len(raw_name) >= 3)
+
+            checks.append({
+                "name": "MCA / Government Authority Header",
+                "passed": has_mca,
+                "detail": "Ministry of Corporate Affairs SPICe+ Part B / DIR-3 Allotment Header verified" if has_mca else "MCA statutory header not found"
+            })
+            checks.append({
+                "name": "8-Digit Director Identification Number",
+                "passed": has_din,
+                "detail": f"Allotted DIN: {din_val}" if has_din else "Valid 8-digit DIN not found"
+            })
+            checks.append({
+                "name": "Director Legal Identity",
+                "passed": has_name,
+                "detail": f"Verified Director: {raw_name.title()}" if has_name else "Director name not found in letter"
+            })
+
+            is_authentic = has_mca and has_din and has_name
+            if din_val:
+                extracted["din"] = din_val
+                extracted["admin_din"] = din_val
+            if raw_name:
+                extracted["director_name"] = raw_name.title()
+                extracted["name"] = raw_name.title()
+                extracted["directors"] = [{"name": raw_name.title(), "din": din_val or "N/A", "designation": "Director"}]
+
         elif exp_lower == "tan" or "TAN" in fname_upper or ("TAX DEDUCTION" in text_upper and "ACCOUNT NUMBER" in text_upper):
             detected_type = "Tax Deduction and Collection Account Number (TAN Letter)"
             tan_m = re.search(r'\b([A-Z]{4}[0-9]{5}[A-Z])\b', text)

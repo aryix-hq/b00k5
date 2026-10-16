@@ -1,9 +1,11 @@
 from typing import Optional, Dict, Any
 from datetime import date, datetime
 import uuid
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 class DocumentVaultResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     tenant_id: uuid.UUID
     category: str
@@ -17,9 +19,6 @@ class DocumentVaultResponse(BaseModel):
     is_confidential: bool
     metadata_json: Dict[str, Any] = {}
     created_at: datetime
-
-    class Config:
-        from_attributes = True
 
 class DocumentUploadMetadata(BaseModel):
     category: str # corporate_legal, tax_registration, operational_license, equity_governance, statutory_filing

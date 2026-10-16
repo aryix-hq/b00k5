@@ -63,6 +63,30 @@ def decode_access_token(token: str, expected_issuer: Optional[str] = None) -> Op
     except jwt.PyJWTError:
         return None
 
+_REDIS_POOL: Optional[redis.ConnectionPool] = None
+_REDIS_CLIENT: Optional[redis.Redis] = None
+
+def get_redis_client() -> Optional[redis.Redis]:
+    """
+    Returns a persistent, thread-safe Redis client using a singleton ConnectionPool.
+    Eliminates TCP socket churn and port exhaustion under high concurrency (DEF-32).
+    """
+    global _REDIS_POOL, _REDIS_CLIENT
+    if _REDIS_CLIENT is None:
+        try:
+            _REDIS_POOL = redis.ConnectionPool.from_url(
+                settings.REDIS_URL,
+                decode_responses=True,
+                max_connections=20,
+                socket_timeout=3,
+                socket_connect_timeout=3
+            )
+            _REDIS_CLIENT = redis.Redis(connection_pool=_REDIS_POOL)
+        except Exception as e:
+            logger.warning(f"Could not initialize shared Redis connection pool: {e}")
+            return None
+    return _REDIS_CLIENT
+
 def revoke_token(token: str) -> bool:
     """
     Server-side JWT revocation via Redis blocklist with TTL matching remaining token lifespan.
@@ -82,13 +106,14 @@ def revoke_token(token: str) -> bool:
         # Always record in memory cache
         _REVOKED_TOKENS_MEM.add(jti)
 
-        # Store in Redis
-        try:
-            r = redis.from_url(settings.REDIS_URL, decode_responses=True)
-            r.set(f"revoked_token:{jti}", "revoked", ex=ttl)
-            logger.info(f"JWT revoked in Redis: jti={jti}, ttl={ttl}s")
-        except Exception as e:
-            logger.warning(f"Could not connect to Redis for token revocation: {e}. In-memory fallback used.")
+        # Store in Redis via shared pool
+        r = get_redis_client()
+        if r:
+            try:
+                r.set(f"revoked_token:{jti}", "revoked", ex=ttl)
+                logger.info(f"JWT revoked in Redis: jti={jti}, ttl={ttl}s")
+            except Exception as e:
+                logger.warning(f"Could not record token revocation in Redis: {e}. In-memory fallback used.")
 
         return True
     except Exception as e:
@@ -111,14 +136,15 @@ def is_token_revoked(token: str) -> bool:
         if jti in _REVOKED_TOKENS_MEM:
             return True
 
-        try:
-            r = redis.from_url(settings.REDIS_URL, decode_responses=True)
-            is_rev = r.get(f"revoked_token:{jti}")
-            if is_rev:
-                _REVOKED_TOKENS_MEM.add(jti)
-                return True
-        except Exception:
-            pass
+        r = get_redis_client()
+        if r:
+            try:
+                is_rev = r.get(f"revoked_token:{jti}")
+                if is_rev:
+                    _REVOKED_TOKENS_MEM.add(jti)
+                    return True
+            except Exception:
+                pass
 
         return False
     except Exception:

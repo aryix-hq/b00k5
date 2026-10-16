@@ -5,6 +5,7 @@ import { FileSpreadsheet, CheckCircle2, ArrowRight, ShieldCheck, RefreshCw, Aler
 import Link from 'next/link';
 import { Sidebar } from '@/components/Sidebar';
 import { Navbar } from '@/components/Navbar';
+import { fetchApi } from '@/lib/api';
 
 export default function BankingReconciliationPage() {
   const [selectedLine, setSelectedLine] = useState<boolean>(false);
@@ -18,25 +19,14 @@ export default function BankingReconciliationPage() {
   useEffect(() => {
     const loadDirectorPayables = async () => {
       try {
-        const token = typeof window !== 'undefined' ? localStorage.getItem('b00k5_token') : null;
-        const tenantId = typeof window !== 'undefined' ? localStorage.getItem('b00k5_tenant_id') : null;
-        const headers: Record<string, string> = {};
-        if (token) headers['Authorization'] = `Bearer ${token}`;
-        if (tenantId) headers['X-Tenant-ID'] = tenantId;
-
-        const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/expenses`, {
-          headers
-        });
-        if (res.ok) {
-          const data = await res.json();
-          const list = Array.isArray(data) ? data : (data.expenses || []);
-          const directorPending = list.filter((e: any) => e.paid_by_director_name && !e.is_settled);
-          if (directorPending.length > 0) {
-            const total = directorPending.reduce((acc: number, e: any) => acc + Number(e.total_amount || 0), 0);
-            setPendingAmount(total);
-            setDirectorName(directorPending[0].paid_by_director_name);
-            setDirectorBalance(`₹${total.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
-          }
+        const data = await fetchApi('/api/v1/expenses');
+        const list = Array.isArray(data) ? data : (data.expenses || []);
+        const directorPending = list.filter((e: any) => e.paid_by_director_name && !e.is_settled);
+        if (directorPending.length > 0) {
+          const total = directorPending.reduce((acc: number, e: any) => acc + Number(e.total_amount || 0), 0);
+          setPendingAmount(total);
+          setDirectorName(directorPending[0].paid_by_director_name);
+          setDirectorBalance(`₹${total.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
         }
       } catch (e) {
         // Keep clean ₹0.00 default
@@ -49,16 +39,8 @@ export default function BankingReconciliationPage() {
     if (pendingAmount <= 0) return;
     setReconciling(true);
     try {
-      const token = typeof window !== 'undefined' ? localStorage.getItem('b00k5_token') : null;
-      const tenantId = typeof window !== 'undefined' ? localStorage.getItem('b00k5_tenant_id') : null;
-
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (token) headers['Authorization'] = `Bearer ${token}`;
-      if (tenantId) headers['X-Tenant-ID'] = tenantId;
-
-      await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/expenses/settle-reimbursement`, {
+      await fetchApi('/api/v1/expenses/settle-reimbursement', {
         method: 'POST',
-        headers,
         body: JSON.stringify({
           director_name: directorName,
           settlement_amount: pendingAmount,
@@ -66,13 +48,13 @@ export default function BankingReconciliationPage() {
           reference_number: 'NEFT-DIRECTOR-SETTLE'
         })
       });
-    } catch (e) {
-      console.warn('API settlement error:', e);
-    } finally {
       setReconciled(true);
       setPendingAmount(0);
       setDirectorBalance('₹0.00');
-      setSuccessBanner('Bank Statement Line reconciled against Director Reimbursement Payable (Account 2105). Liability cleared to ₹0.00.');
+      setSuccessBanner(`Successfully reconciled ₹${pendingAmount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} against Bank Account 1010.`);
+    } catch (e) {
+      console.warn('API settlement error:', e);
+    } finally {
       setReconciling(false);
     }
   };

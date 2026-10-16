@@ -2,7 +2,7 @@ from typing import Optional, List
 from datetime import date, datetime
 import uuid
 from decimal import Decimal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 class ContactBase(BaseModel):
     name: str
@@ -20,12 +20,11 @@ class ContactCreate(ContactBase):
     pass
 
 class ContactResponse(ContactBase):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     tenant_id: uuid.UUID
     created_at: datetime
-
-    class Config:
-        from_attributes = True
 
 class InvoiceItemBase(BaseModel):
     item_description: str
@@ -38,15 +37,14 @@ class InvoiceItemCreate(InvoiceItemBase):
     pass
 
 class InvoiceItemResponse(InvoiceItemBase):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     taxable_value: Decimal
     cgst_amount: Decimal
     sgst_amount: Decimal
     igst_amount: Decimal
     total_amount: Decimal
-
-    class Config:
-        from_attributes = True
 
 class InvoiceCreate(BaseModel):
     contact_id: uuid.UUID
@@ -57,6 +55,15 @@ class InvoiceCreate(BaseModel):
     place_of_supply: str # 2-digit Indian State code
     pdf_s3_key: Optional[str] = None
     items: List[InvoiceItemCreate]
+
+class InvoiceUpdate(BaseModel):
+    contact_id: Optional[uuid.UUID] = None
+    invoice_number: Optional[str] = None
+    issue_date: Optional[date] = None
+    due_date: Optional[date] = None
+    place_of_supply: Optional[str] = None
+    items: Optional[List[InvoiceItemCreate]] = None
+    status: Optional[str] = None
 
 class InvoiceResponse(BaseModel):
     id: uuid.UUID
@@ -79,5 +86,4 @@ class InvoiceResponse(BaseModel):
     items: List[InvoiceItemResponse] = []
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)

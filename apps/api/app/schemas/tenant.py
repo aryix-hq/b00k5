@@ -1,6 +1,6 @@
 from typing import Optional, List
 import uuid
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, ConfigDict
 
 class Token(BaseModel):
     access_token: str
@@ -23,15 +23,14 @@ class UserCreate(BaseModel):
     phone: Optional[str] = None
 
 class UserResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     email: str
     first_name: str
     last_name: str
     phone: Optional[str] = None
     is_active: bool
-
-    class Config:
-        from_attributes = True
 
 class TenantCreate(BaseModel):
     legal_name: str
@@ -44,6 +43,8 @@ class TenantCreate(BaseModel):
     currency: str = "INR"
 
 class TenantResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     legal_name: str
     trade_name: Optional[str]
@@ -53,9 +54,6 @@ class TenantResponse(BaseModel):
     state_code: str
     registered_office: str
     currency: str
-
-    class Config:
-        from_attributes = True
 
 class FirstRunSetupRequest(BaseModel):
     # Admin User

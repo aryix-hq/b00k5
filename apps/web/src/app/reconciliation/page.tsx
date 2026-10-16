@@ -54,6 +54,18 @@ interface OpenInvoice {
   status: 'unpaid' | 'partially_paid';
 }
 
+function getDynamicFYList(): string[] {
+  const now = new Date();
+  const currentStartYear = now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1;
+  const list: string[] = ['all'];
+  for (let i = 0; i <= 5; i++) {
+    const startYr = currentStartYear - i;
+    const endYrShort = String((startYr + 1) % 100).padStart(2, '0');
+    list.push(`${startYr}-${endYrShort}`);
+  }
+  return list;
+}
+
 export default function BankReconciliationPage() {
   const [bankLines, setBankLines] = useState<BankLine[]>([]);
   const [openInvoices, setOpenInvoices] = useState<OpenInvoice[]>([]);
@@ -69,6 +81,7 @@ export default function BankReconciliationPage() {
   const [statementBank, setStatementBank] = useState<string>('HDFC Bank');
   const [statementAccount, setStatementAccount] = useState<string>('');
   const [availableStatements, setAvailableStatements] = useState<any[]>([]);
+  const [selectedFY, setSelectedFY] = useState<string>('all');
   const [runningGlobalSweep, setRunningGlobalSweep] = useState(false);
 
   // Suspense Reallocation State
@@ -123,11 +136,29 @@ export default function BankReconciliationPage() {
     if (typeof window !== 'undefined') {
       const stored = localStorage.getItem('b00k5_legal_name');
       if (stored) setCompanyName(stored);
-    }
 
+      const storedFY = localStorage.getItem('b00k5_selected_fy');
+      if (storedFY) setSelectedFY(storedFY);
+
+      const onFYChanged = (e: any) => {
+        const val = typeof e.detail === 'string' ? e.detail : (e.detail?.full || e.detail?.short || '');
+        if (val) setSelectedFY(val);
+      };
+      window.addEventListener('b00k5_fy_changed', onFYChanged);
+      window.addEventListener('b00k5_fy_obj_changed', onFYChanged);
+      return () => {
+        window.removeEventListener('b00k5_fy_changed', onFYChanged);
+        window.removeEventListener('b00k5_fy_obj_changed', onFYChanged);
+      };
+    }
+  }, []);
+
+  useEffect(() => {
     async function loadInvoices() {
       try {
-        const invs = await fetchApi('/api/v1/invoices/');
+        const fyParam = selectedFY && selectedFY !== 'all' ? selectedFY.replace('FY', '').trim() : '';
+        const url = fyParam ? `/api/v1/invoices/?fy=${encodeURIComponent(fyParam)}` : '/api/v1/invoices/';
+        const invs = await fetchApi(url);
         if (Array.isArray(invs) && invs.length > 0) {
           const mapped: OpenInvoice[] = invs.map((inv: any) => ({
             id: inv.id,
@@ -159,18 +190,25 @@ export default function BankReconciliationPage() {
 
     loadInvoices();
     loadAccounts();
-    loadStatements();
-  }, []);
+    loadStatements(selectedFY);
+  }, [selectedFY]);
 
-  async function loadStatements() {
+  async function loadStatements(targetFY?: string) {
     try {
-      const stmts = await fetchApi('/api/v1/reconciliation/statements');
+      const activeFY = targetFY !== undefined ? targetFY : selectedFY;
+      const fyParam = activeFY && activeFY !== 'all' ? activeFY.replace('FY', '').trim() : '';
+      const url = fyParam ? `/api/v1/reconciliation/statements?fy=${encodeURIComponent(fyParam)}` : '/api/v1/reconciliation/statements';
+      const stmts = await fetchApi(url);
       if (Array.isArray(stmts) && stmts.length > 0) {
         const sorted = [...stmts].sort((a: any, b: any) => (a.statement_from || '').localeCompare(b.statement_from || ''));
         setAvailableStatements(sorted);
         // Prefer active statement with transactions
         const withLines = sorted.find((s: any) => s.lines && s.lines.length > 0) || sorted[0];
         switchStatement(withLines);
+      } else {
+        setAvailableStatements([]);
+        setBankLines([]);
+        setSelectedLine(null);
       }
     } catch (e) {
       console.error('Failed to load existing statements:', e);
@@ -531,39 +569,73 @@ export default function BankReconciliationPage() {
           </div>
 
           {/* Statement Selector & Switcher */}
-          {availableStatements.length > 0 && (
-            <div className="flex flex-wrap items-center justify-between gap-4 p-4 rounded-xl bg-slate-900/90 border border-slate-800 text-xs">
-              <div className="flex items-center gap-3">
-                <span className="text-slate-400 font-medium">Select Statement Period:</span>
-                <select
-                  value={currentStatementId || ''}
-                  onChange={(e) => {
-                    const sel = availableStatements.find((s) => s.id === e.target.value);
-                    if (sel) switchStatement(sel);
-                  }}
-                  className="bg-slate-800 border border-slate-700 text-sky-300 font-mono font-bold rounded-lg px-3 py-1.5 focus:outline-none focus:border-sky-500 cursor-pointer"
-                >
-                  {availableStatements.map((s) => {
-                    const label = s.statement_from && s.statement_to
-                      ? `${s.statement_from} to ${s.statement_to}`
-                      : s.file_name;
-                    const txCount = s.lines?.length ?? 0;
-                    return (
-                      <option key={s.id} value={s.id} className="bg-slate-900 text-white">
-                        {label} — {s.status.toUpperCase()} ({txCount} txns)
-                      </option>
-                    );
-                  })}
-                </select>
+          <div className="flex flex-wrap items-center justify-between gap-4 p-4 rounded-xl bg-slate-900/90 border border-slate-800 text-xs">
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="text-slate-400 font-medium">Financial Year:</span>
+              <div className="flex items-center gap-1.5 bg-slate-800/80 p-1 rounded-lg border border-slate-700">
+                {getDynamicFYList().map((fy) => {
+                  const label = fy === 'all' ? 'All Statements' : `FY ${fy}`;
+                  const isActive = selectedFY === fy || (fy !== 'all' && selectedFY.includes(fy));
+                  return (
+                    <button
+                      key={fy}
+                      type="button"
+                      onClick={() => {
+                        const newFY = fy === 'all' ? 'all' : `FY ${fy}`;
+                        setSelectedFY(newFY);
+                        if (typeof window !== 'undefined') {
+                          localStorage.setItem('b00k5_selected_fy', newFY);
+                          window.dispatchEvent(new CustomEvent('b00k5_fy_changed', { detail: newFY }));
+                        }
+                      }}
+                      className={`px-2.5 py-1 rounded text-xs font-semibold transition ${
+                        isActive
+                          ? 'bg-sky-600 text-white shadow-sm'
+                          : 'text-slate-400 hover:text-slate-200 hover:bg-slate-700/50'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
               </div>
 
-              <div className="flex items-center gap-2">
-                <span className="text-slate-500 font-mono text-[11px]">
-                  Showing: <span className="text-slate-300 font-semibold">{bankLines.length}</span> transactions in active statement
-                </span>
-              </div>
+              {availableStatements.length > 0 ? (
+                <>
+                  <span className="text-slate-600">|</span>
+                  <span className="text-slate-400 font-medium">Statement Period:</span>
+                  <select
+                    value={currentStatementId || ''}
+                    onChange={(e) => {
+                      const sel = availableStatements.find((s) => s.id === e.target.value);
+                      if (sel) switchStatement(sel);
+                    }}
+                    className="bg-slate-800 border border-slate-700 text-sky-300 font-mono font-bold rounded-lg px-3 py-1.5 focus:outline-none focus:border-sky-500 cursor-pointer"
+                  >
+                    {availableStatements.map((s) => {
+                      const label = s.statement_from && s.statement_to
+                        ? `${s.statement_from} to ${s.statement_to}`
+                        : s.file_name;
+                      const txCount = s.lines?.length ?? 0;
+                      return (
+                        <option key={s.id} value={s.id} className="bg-slate-900 text-white">
+                          {label} — {s.status.toUpperCase()} ({txCount} txns)
+                        </option>
+                      );
+                    })}
+                  </select>
+                </>
+              ) : (
+                <span className="text-amber-400 text-xs italic">No statements uploaded for this Financial Year.</span>
+              )}
             </div>
-          )}
+
+            <div className="flex items-center gap-2">
+              <span className="text-slate-500 font-mono text-[11px]">
+                Showing: <span className="text-slate-300 font-semibold">{bankLines.length}</span> transactions in active statement
+              </span>
+            </div>
+          </div>
 
           {uploadMessage && (
             <div className={`p-3 rounded-lg border text-xs flex items-center justify-between ${

@@ -76,15 +76,15 @@ def enforce_rbac_policy(role: str, method: str, path: str) -> None:
     norm_method = (method or "GET").upper()
     norm_path = (path or "").lower()
 
-    if norm_role == "owner":
+    if norm_role in ("owner", "company_owner", "super_admin", "admin"):
         return
 
-    if norm_role == "auditor_ca":
-        if norm_method in ("GET", "HEAD", "OPTIONS"):
+    if norm_role in ("auditor_ca", "ca_auditor"):
+        if norm_method in ("GET", "HEAD", "OPTIONS") or (norm_method == "POST" and norm_path.endswith("/audit-adjustment")):
             return
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="RBAC Violation: External Auditor (CA) role is strictly read-only and cannot execute mutating requests (POST, PUT, PATCH, DELETE)."
+            detail="RBAC Violation: External Auditor (CA) role is strictly read-only and cannot execute mutating requests (POST, PUT, PATCH, DELETE), except for statutory audit adjustment entries."
         )
 
     if norm_role == "employee":
@@ -154,16 +154,20 @@ async def get_current_tenant(
         tenant_uuid = tu.tenant_id
 
     # Verify user has access to this tenant
+    is_super = bool(getattr(current_user, "is_super_admin", False))
     stmt = select(TenantUser).where(
         TenantUser.user_id == current_user.id,
         TenantUser.tenant_id == tenant_uuid
     )
     res = await db.execute(stmt)
     membership = res.scalars().first()
-    if not membership:
+    if not membership and not is_super:
         raise HTTPException(status_code=403, detail="Access denied to requested tenant")
 
-    role_val = membership.role.value if hasattr(membership.role, "value") else str(membership.role)
+    if membership:
+        role_val = membership.role.value if hasattr(membership.role, "value") else str(membership.role)
+    else:
+        role_val = "owner"
     if effective_token:
         tok_payload = decode_access_token(effective_token)
         tok_role = str((tok_payload or {}).get("role") or "").lower()
@@ -171,15 +175,15 @@ async def get_current_tenant(
         if tok_role in role_rank and role_rank[tok_role] < role_rank.get(role_val.lower(), 4):
             role_val = tok_role
 
-    # Enforce centralized RBAC policy if called within an HTTP request context
-    if request is not None:
+    # Enforce centralized RBAC policy if called within an HTTP request context (bypassed for root super_admin)
+    if not is_super and request is not None:
         enforce_rbac_policy(role_val, request.method, request.url.path)
 
-    # Set PostgreSQL RLS context (switches to b00k5_app role + sets app.current_tenant)
-    await set_tenant_context(db, tenant_uuid)
+    # Set PostgreSQL RLS context (switches to b00k5_app role + sets app.current_tenant, app.current_user_id, app.current_user_role)
+    await set_tenant_context(db, tenant_uuid, user_id=current_user.id, role=role_val)
 
     # Database-enforced read-only transaction guard for Statutory Auditor (CA)
-    if role_val.lower() == "auditor_ca":
+    if role_val.lower() in ("auditor_ca", "ca_auditor"):
         await db.execute(text("SET LOCAL transaction_read_only = on;"))
 
     tenant_res = await db.execute(select(Tenant).where(Tenant.id == tenant_uuid))
@@ -187,4 +191,31 @@ async def get_current_tenant(
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant organization not found")
     return tenant
+
+
+async def check_mandatory_company_documents(
+    tenant: Tenant = Depends(get_current_tenant)
+) -> Tenant:
+    """
+    Blocks operational transactions (invoices, expenses, journal postings, DSC signing)
+    until mandatory company documents (Certificate of Incorporation 'COI' and PAN)
+    have been uploaded and verified in Statutory Document Vault.
+    Companies Act 2013 & Rule 9 Companies (Incorporation) Rules.
+    """
+    profile = tenant.statutory_profile or {}
+    status_val = profile.get("onboarding_status")
+    coi_ok = bool(profile.get("coi_verified", False))
+    pan_ok = bool(profile.get("pan_verified", False))
+
+    if status_val == "PENDING_DOCUMENTS" and not (coi_ok and pan_ok):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"Statutory Onboarding Incomplete: Mandatory statutory documents "
+                f"(Certificate of Incorporation 'COI' and PAN Card) for '{tenant.legal_name}' "
+                f"must be deposited to Document Vault before commercial transactions can commence."
+            )
+        )
+    return tenant
+
 

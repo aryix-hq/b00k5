@@ -17,13 +17,15 @@ from app.models.tenant import Tenant
 from app.models.backup import DatabaseBackupLog
 from app.core.fiscal_year import resolve_fiscal_calendar
 from app.services.db_backup import DatabaseBackupManager
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from datetime import datetime
 
 router = APIRouter()
 
 
 class BackupLogResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: str
     tenant_id: Optional[str] = None
     filename: str
@@ -36,9 +38,6 @@ class BackupLogResponse(BaseModel):
     duration_seconds: float
     error_message: Optional[str] = None
     created_at: str
-
-    class Config:
-        from_attributes = True
 
 
 from fastapi import APIRouter, Depends, Query, HTTPException, status, Header, Request
@@ -121,8 +120,12 @@ async def get_fiscal_calendar(
     return cal
 
 
+from app.core.iam import require_super_admin, require_super_admin_or_owner
+from app.models.tenant import User
+
 @router.post("/backup-database", response_model=BackupLogResponse)
 async def trigger_database_backup(
+    current_admin: User = Depends(require_super_admin),
     tenant: Optional[Tenant] = Depends(get_optional_tenant),
     db: AsyncSession = Depends(get_db)
 ):
@@ -191,3 +194,143 @@ async def list_database_backup_logs(
         )
         for l in logs
     ]
+
+
+class RestoreCheckpointRequest(BaseModel):
+    object_key: str
+    decryption_secret: Optional[str] = None
+
+
+@router.get("/backup/snapshots")
+async def list_backup_snapshots(
+    current_admin: User = Depends(require_super_admin_or_owner)
+):
+    """
+    Lists all encrypted database backup snapshots stored in the MinIO checkpoint bucket.
+    """
+    return DatabaseBackupManager.list_minio_checkpoints()
+
+
+@router.post("/backup/checkpoint")
+async def create_minio_checkpoint(
+    tenant: Optional[Tenant] = Depends(get_optional_tenant),
+    current_admin: User = Depends(require_super_admin_or_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Creates an immediate encrypted PostgreSQL checkpoint and uploads directly to MinIO.
+    """
+    tenant_id = tenant.id if tenant else None
+    log_record = await DatabaseBackupManager.run_backup_and_record(db=db, tenant_id=tenant_id)
+    return {
+        "status": log_record.status,
+        "filename": log_record.filename,
+        "sha256": log_record.sha256_checksum,
+        "storage_uri": log_record.gdrive_file_id,
+        "created_at": log_record.created_at.isoformat() if log_record.created_at else datetime.utcnow().isoformat()
+    }
+
+
+@router.post("/backup/restore")
+async def restore_minio_checkpoint(
+    payload: RestoreCheckpointRequest,
+    current_admin: User = Depends(require_super_admin_or_owner)
+):
+    """
+    Restores database from an encrypted MinIO checkpoint after passing the 7-Point Staging Gate.
+    """
+    try:
+        result = DatabaseBackupManager.restore_from_minio_checkpoint(
+            object_key=payload.object_key,
+            decryption_secret=payload.decryption_secret
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Restore operation failed: {str(e)}"
+        )
+
+
+@router.get("/telemetry")
+async def get_system_telemetry(
+    current_admin: User = Depends(require_super_admin_or_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Returns platform-wide operational health metrics, database row statistics,
+    Redis status, MinIO connectivity, and ledger mathematical drift validation.
+    """
+    from sqlalchemy import func
+    from app.models.tenant import Tenant, User as UserModel
+    from app.models.ledger import JournalEntry, JournalLine
+    import redis.asyncio as aioredis
+    from app.core.config import settings
+
+    # 1. Database Metrics
+    t_count = (await db.execute(select(func.count(Tenant.id)))).scalar() or 0
+    u_count = (await db.execute(select(func.count(UserModel.id)))).scalar() or 0
+    jv_count = (await db.execute(select(func.count(JournalEntry.id)))).scalar() or 0
+
+    drift_res = (await db.execute(select(
+        func.coalesce(func.sum(JournalLine.debit_amount), 0),
+        func.coalesce(func.sum(JournalLine.credit_amount), 0)
+    ))).first()
+    tot_dr = float(drift_res[0]) if drift_res else 0.0
+    tot_cr = float(drift_res[1]) if drift_res else 0.0
+    drift_amt = abs(tot_dr - tot_cr)
+
+    # 2. Redis Health
+    redis_status = "operational"
+    try:
+        r = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+        await r.ping()
+        await r.aclose()
+    except Exception as e:
+        redis_status = f"unreachable: {str(e)}"
+
+    # 3. MinIO Health
+    minio_status = "operational"
+    try:
+        from app.core.s3 import storage_manager
+        client = storage_manager.client
+        if client:
+            client.list_buckets()
+            minio_status = "operational"
+        else:
+            minio_status = "initialized"
+    except Exception as e:
+        minio_status = f"error: {str(e)}"
+
+    # 4. Fiscal Calendar
+    cal = resolve_fiscal_calendar()
+
+    return {
+        "status": "healthy",
+        "service": "b00k5 System Engine",
+        "version": settings.VERSION,
+        "timestamp": datetime.utcnow().isoformat(),
+        "database": {
+            "status": "healthy",
+            "engine": "PostgreSQL 16 Alpine",
+            "rls_enabled": True,
+            "total_tenants": t_count,
+            "total_users": u_count,
+            "total_journal_entries": jv_count,
+            "total_debits": tot_dr,
+            "total_credits": tot_cr,
+            "ledger_drift": drift_amt,
+            "balance_invariant_holds": drift_amt < 0.005
+        },
+        "redis": {
+            "status": redis_status,
+            "url": settings.REDIS_URL.split("@")[-1] if "@" in settings.REDIS_URL else settings.REDIS_URL
+        },
+        "minio": {
+            "status": minio_status,
+            "endpoint": settings.MINIO_ENDPOINT,
+            "buckets": [settings.BUCKET_STATEMENTS, settings.BUCKET_RECEIPTS, settings.BUCKET_STATUTORY]
+        },
+        "fiscal_calendar": cal
+    }
+

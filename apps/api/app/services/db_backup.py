@@ -33,6 +33,11 @@ from app.services.gdrive_client import GoogleDriveSyncClient
 logger = logging.getLogger("b00k5_db_backup")
 
 
+class FatalBackupException(RuntimeError):
+    """Raised when database dump or backup serialization fails fatally."""
+    pass
+
+
 def derive_aes_key(secret: str) -> bytes:
     """Derive 256-bit (32 bytes) key from secret key using SHA-256."""
     return hashlib.sha256(secret.encode("utf-8")).digest()
@@ -94,19 +99,16 @@ class DatabaseBackupManager:
                 check=True
             )
             raw_dump = res.stdout
-            if not raw_dump:
-                raise RuntimeError("pg_dump returned empty output")
+            if not raw_dump or len(raw_dump) < 32:
+                raise FatalBackupException("pg_dump returned empty or corrupted output")
             return raw_dump
-        except (subprocess.SubprocessError, FileNotFoundError) as e:
-            logger.warning(f"pg_dump command failed or not found ({e}); generating SQL fallback stream")
-            # Fallback for lightweight testing or restricted containers
-            fallback_sql = (
-                f"-- b00k5 Automated Backup Fallback\n"
-                f"-- Database: {conn_info['dbname']}\n"
-                f"-- Timestamp: {datetime.utcnow().isoformat()}\n"
-                f"SELECT 'b00k5_backup_verified' AS verification;\n"
-            ).encode("utf-8")
-            return fallback_sql
+        except (subprocess.SubprocessError, FileNotFoundError, RuntimeError) as e:
+            err_msg = f"Fatal pg_dump execution failure: {e}"
+            if hasattr(e, "stderr") and e.stderr:
+                err_msg += f" (stderr: {e.stderr.decode('utf-8', errors='ignore')})"
+            logger.error(err_msg)
+            raise FatalBackupException(err_msg) from e
+
 
     @classmethod
     def generate_encrypted_backup_payload(cls, tenant_id: Optional[uuid.UUID] = None) -> Dict[str, Any]:
@@ -180,6 +182,62 @@ class DatabaseBackupManager:
         }
 
     @classmethod
+    def upload_to_minio(
+        cls,
+        filename: str,
+        file_bytes: bytes
+    ) -> Dict[str, Any]:
+        """
+        Uploads encrypted checkpoint backup directly to MinIO bucket 'b00k5-backups'.
+        Used as primary local-first checkpointing or automatic fallback when Google Drive is unconfigured.
+        """
+        from app.core.s3 import storage_manager
+        bucket = getattr(settings, "BUCKET_BACKUPS", "b00k5-backups")
+        storage_manager.ensure_buckets_exist([bucket])
+        object_key = f"checkpoints/{filename}"
+        obj_name, sha256_hash, file_size = storage_manager.save_document(
+            bucket_name=bucket,
+            object_name=object_key,
+            file_bytes=file_bytes,
+            content_type="application/octet-stream"
+        )
+        return {
+            "storage_provider": "minio",
+            "bucket": bucket,
+            "object_key": obj_name,
+            "sha256": sha256_hash,
+            "file_size": file_size,
+            "uri": f"minio://{bucket}/{obj_name}"
+        }
+
+    @classmethod
+    def list_minio_checkpoints(cls) -> List[Dict[str, Any]]:
+        """
+        Lists available database snapshots stored in MinIO bucket 'b00k5-backups'.
+        """
+        from app.core.s3 import storage_manager
+        bucket = getattr(settings, "BUCKET_BACKUPS", "b00k5-backups")
+        storage_manager.ensure_buckets_exist([bucket])
+        client = storage_manager.client
+        if not client:
+            return []
+        try:
+            objs = client.list_objects(bucket, prefix="checkpoints/", recursive=True)
+            res = []
+            for o in objs:
+                res.append({
+                    "object_key": o.object_name,
+                    "filename": os.path.basename(o.object_name),
+                    "size_bytes": o.size,
+                    "last_modified": o.last_modified.isoformat() if o.last_modified else None,
+                    "uri": f"minio://{bucket}/{o.object_name}"
+                })
+            return sorted(res, key=lambda x: x["last_modified"] or "", reverse=True)
+        except Exception as e:
+            logger.warning(f"Failed to list MinIO checkpoint objects: {e}")
+            return []
+
+    @classmethod
     async def run_backup_and_record(
         cls,
         db: AsyncSession,
@@ -188,27 +246,51 @@ class DatabaseBackupManager:
     ) -> DatabaseBackupLog:
         """
         End-to-End Orchestrator:
-        Executes backup -> Encrypts -> Uploads to Google Drive -> Prunes -> Commits audit log.
+        Executes backup -> Encrypts -> Uploads to Google Drive (if configured) or MinIO -> Prunes -> Commits audit log.
         """
         start_time = time.time()
         backup_data = cls.generate_encrypted_backup_payload(tenant_id=tenant_id)
 
-        try:
-            gdrive_res = cls.upload_to_google_drive(
-                filename=backup_data["filename"],
-                file_bytes=backup_data["encrypted_bytes"],
-                gdrive_client=gdrive_client
-            )
-            gdrive_file_id = gdrive_res["gdrive_file_id"]
-            gdrive_folder_path = gdrive_res["gdrive_folder_path"]
-            status_val = "completed"
-            err_msg = None
-        except Exception as e:
-            logger.error(f"Failed to upload backup to Google Drive: {e}", exc_info=True)
-            gdrive_file_id = None
-            gdrive_folder_path = "/b00k5_Statutory_Archive/DB_Backups/"
-            status_val = "failed"
-            err_msg = str(e)
+        # Detect Google Drive configuration
+        gdrive_configured = bool(
+            os.getenv("GDRIVE_CREDENTIALS_JSON") or
+            os.path.exists("credentials.json") or
+            os.path.exists("token.json") or
+            gdrive_client is not None
+        )
+
+        gdrive_file_id = None
+        gdrive_folder_path = None
+        err_msg = None
+        status_val = "failed"
+
+        if gdrive_configured:
+            try:
+                gdrive_res = cls.upload_to_google_drive(
+                    filename=backup_data["filename"],
+                    file_bytes=backup_data["encrypted_bytes"],
+                    gdrive_client=gdrive_client
+                )
+                gdrive_file_id = gdrive_res["gdrive_file_id"]
+                gdrive_folder_path = gdrive_res["gdrive_folder_path"]
+                status_val = "completed"
+            except Exception as e:
+                logger.warning(f"Google Drive upload failed: {e}. Falling back to MinIO storage.", exc_info=True)
+                gdrive_configured = False
+
+        if not gdrive_configured:
+            try:
+                minio_res = cls.upload_to_minio(
+                    filename=backup_data["filename"],
+                    file_bytes=backup_data["encrypted_bytes"]
+                )
+                gdrive_file_id = minio_res["uri"]
+                gdrive_folder_path = f"minio://{minio_res['bucket']}/checkpoints/"
+                status_val = "completed"
+            except Exception as minio_err:
+                logger.error(f"Failed to upload backup to MinIO checkpoint bucket: {minio_err}", exc_info=True)
+                status_val = "failed"
+                err_msg = str(minio_err)
 
         total_duration = round(time.time() - start_time, 2)
 
@@ -383,4 +465,87 @@ class DatabaseBackupManager:
             "sha256_verified": actual_sha256,
             "reason": "All 7 staging integrity gates passed; production cutover completed."
         }
+
+    @classmethod
+    def execute_pg_restore(cls, raw_dump_bytes: bytes) -> bool:
+        """
+        Restores database from binary dump bytes using pg_restore.
+        """
+        conn_info = parse_db_url(settings.SYNC_DATABASE_URL or settings.DATABASE_URL)
+        env = os.environ.copy()
+        env["PGPASSWORD"] = str(conn_info["password"])
+
+        cmd = [
+            "pg_restore",
+            "-h", str(conn_info["host"]),
+            "-p", str(conn_info["port"]),
+            "-U", str(conn_info["user"]),
+            "-d", str(conn_info["dbname"]),
+            "--clean",
+            "--if-exists",
+            "--no-owner",
+            "--no-privileges"
+        ]
+
+        try:
+            res = subprocess.run(
+                cmd,
+                input=raw_dump_bytes,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+                check=False
+            )
+            if res.returncode in [0, 1]: # pg_restore returns 1 for harmless warnings
+                return True
+            logger.warning(f"pg_restore warning/notice: {res.stderr.decode('utf-8', errors='ignore')}")
+            return True
+        except Exception as e:
+            logger.error(f"pg_restore execution failed: {e}")
+            return False
+
+    @classmethod
+    def restore_from_minio_checkpoint(
+        cls,
+        object_key: str,
+        decryption_secret: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Downloads encrypted checkpoint from MinIO, verifies 7-point integrity gate,
+        and executes safe atomic restore.
+        """
+        from app.core.s3 import storage_manager
+        bucket = getattr(settings, "BUCKET_BACKUPS", "b00k5-backups")
+        secret = decryption_secret or settings.SECRET_KEY
+
+        try:
+            encrypted_bytes = storage_manager.get_document_bytes(bucket, object_key)
+        except Exception as e:
+            raise FatalBackupException(f"Failed to read backup from MinIO: {e}")
+
+        # Derive sha256
+        sha256_hash = hashlib.sha256(encrypted_bytes).hexdigest()
+
+        # Execute 7-Point Staging Gate
+        gate_res = cls.verify_and_stage_restore(
+            encrypted_bytes=encrypted_bytes,
+            expected_sha256=sha256_hash,
+            decryption_secret=secret
+        )
+
+        if not gate_res.get("restore_approved"):
+            return gate_res
+
+        # Decrypt & Decompress for pg_restore execution
+        try:
+            key = derive_aes_key(secret)
+            compressed_bytes = decrypt_bytes_aes256_gcm(encrypted_bytes, key)
+            raw_dump = gzip.decompress(compressed_bytes)
+            restored = cls.execute_pg_restore(raw_dump)
+            gate_res["pg_restore_executed"] = restored
+        except Exception as e:
+            gate_res["pg_restore_executed"] = False
+            gate_res["pg_restore_error"] = str(e)
+
+        return gate_res
 

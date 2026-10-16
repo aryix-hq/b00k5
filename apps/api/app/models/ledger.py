@@ -75,6 +75,12 @@ class FiscalYear(Base):
     start_date = Column(Date, nullable=False)
     end_date = Column(Date, nullable=False)
     is_closed = Column(Boolean, default=False)
+    is_statutory_sealed = Column(Boolean, default=False)
+    closing_stage = Column(String(32), default="active", nullable=False) # 'active', 'audit_closing_window', 'statutory_sealed'
+    audit_closing_deadline = Column(Date, nullable=True) # e.g. Oct 31 of Assessment Year
+    statutory_seal_hash = Column(String(64), nullable=True)
+    sealed_at = Column(DateTime(timezone=True), nullable=True)
+    sealed_by_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
 
     tenant = relationship("Tenant")

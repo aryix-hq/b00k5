@@ -44,18 +44,30 @@ export default function CompanyProfileSettingsPage() {
   const [gstin, setGstin] = useState('');
   const [stateCode, setStateCode] = useState('29');
   const [registeredOffice, setRegisteredOffice] = useState('');
+  const [directorName, setDirectorName] = useState('');
+  const [directorDin, setDirectorDin] = useState('');
   const [logoPreview, setLogoPreview] = useState<string | null>(null);
 
+  const [logoUploading, setLogoUploading] = useState(false);
   const [statutoryDocs, setStatutoryDocs] = useState<StatutoryDoc[]>([]);
   const [loadingDocs, setLoadingDocs] = useState(true);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [uploadingDoc, setUploadingDoc] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
+  const getEffectiveTenantId = () => {
+    if (typeof window === 'undefined') return null;
+    return (
+      localStorage.getItem('b00k5_active_tenant_id') ||
+      localStorage.getItem('b00k5_tenant_id') ||
+      localStorage.getItem('tenant_id')
+    );
+  };
+
   async function loadStatutoryStatus() {
     try {
       const token = typeof window !== 'undefined' ? localStorage.getItem('b00k5_token') : null;
-      const tenantId = typeof window !== 'undefined' ? localStorage.getItem('b00k5_tenant_id') : null;
+      const tenantId = getEffectiveTenantId();
       const headers: Record<string, string> = {};
       if (token) headers['Authorization'] = `Bearer ${token}`;
       if (tenantId) headers['X-Tenant-ID'] = tenantId;
@@ -69,7 +81,19 @@ export default function CompanyProfileSettingsPage() {
         if (data.pan) setPan(data.pan);
         setGstin(data.gstin || '');
         setTan(data.tan || '');
-        if (data.registered_office) setRegisteredOffice(data.registered_office);
+        if (data.logo_url) {
+          setLogoPreview(data.logo_url);
+          if (typeof window !== 'undefined') {
+            try { localStorage.setItem('b00k5_logo_url', data.logo_url); } catch (e) {}
+          }
+        }
+        const dinDoc = (data.documents || []).find((d: any) => d.code === 'DIN_APPROVAL');
+        if (dinDoc?.extracted_entities?.din && !String(dinDoc.extracted_entities.din).startsWith('Pending')) {
+          setDirectorDin(dinDoc.extracted_entities.din);
+        }
+        if (dinDoc?.extracted_entities?.director_name) {
+          setDirectorName(dinDoc.extracted_entities.director_name);
+        }
       }
     } catch (e) {
       console.error('Failed to load statutory documents status:', e);
@@ -81,36 +105,45 @@ export default function CompanyProfileSettingsPage() {
   useEffect(() => {
     if (typeof window !== 'undefined') {
       const token = localStorage.getItem('b00k5_token');
+      const tenantId = getEffectiveTenantId();
       if (token) {
-        fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/auth/me`, {
-          headers: { Authorization: `Bearer ${token}` }
+        const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
+        if (tenantId) headers['X-Tenant-ID'] = tenantId;
+
+        fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/setup/company-profile`, {
+          headers
         })
           .then(res => res.ok ? res.json() : null)
           .then(data => {
-            if (data?.tenants?.[0]) {
-              const t = data.tenants[0];
-              setGstin(t.gstin && !t.gstin.startsWith('29AABCA') ? t.gstin : '');
-              setStateCode(t.state_code || '29');
-              setLegalName(t.legal_name || '');
-              setTradeName(t.trade_name || '');
-              setCin(t.cin || '');
-              setPan(t.pan || '');
-              setTan(t.statutory_profile?.tan && !t.statutory_profile.tan.startsWith('BLRA12345') ? t.statutory_profile.tan : '');
-              setRegisteredOffice(t.registered_office || '');
+            if (data) {
+              setGstin(data.gstin && !data.gstin.startsWith('29AABCA') ? data.gstin : '');
+              setStateCode(data.state_code || '29');
+              setLegalName(data.legal_name || '');
+              setTradeName(data.trade_name || '');
+              setCin(data.cin || '');
+              setPan(data.pan || '');
+              setTan(data.statutory_profile?.tan && !data.statutory_profile.tan.startsWith('BLRA12345') ? data.statutory_profile.tan : '');
+              setRegisteredOffice(data.registered_office || '');
 
-              const dbLogo = t.logo_url || t.statutory_profile?.logo_url || null;
+              const prof = data.statutory_profile || {};
+              const pDin = prof.primary_director_din || prof.director_din || (prof.directors?.[0]?.din !== 'N/A' ? prof.directors?.[0]?.din : '');
+              const pName = prof.primary_director_name || prof.director_name || prof.directors?.[0]?.name || '';
+              if (pDin) setDirectorDin(pDin);
+              if (pName) setDirectorName(pName);
+
+              const dbLogo = data.logo_url || data.statutory_profile?.logo_url || null;
               if (dbLogo) {
                 setLogoPreview(dbLogo);
-                localStorage.setItem('b00k5_logo_url', dbLogo);
+                try { localStorage.setItem('b00k5_logo_url', dbLogo); } catch (e) {}
               } else {
                 setLogoPreview(null);
                 localStorage.removeItem('b00k5_logo_url');
               }
 
-              if (t.legal_name) localStorage.setItem('b00k5_legal_name', t.legal_name);
-              if (t.cin) localStorage.setItem('b00k5_cin', t.cin);
-              if (t.pan) localStorage.setItem('b00k5_pan', t.pan);
-              if (t.registered_office) localStorage.setItem('b00k5_registered_office', t.registered_office);
+              if (data.legal_name) localStorage.setItem('b00k5_legal_name', data.legal_name);
+              if (data.cin) localStorage.setItem('b00k5_cin', data.cin);
+              if (data.pan) localStorage.setItem('b00k5_pan', data.pan);
+              if (data.registered_office) localStorage.setItem('b00k5_registered_office', data.registered_office);
             }
           })
           .catch(() => {});
@@ -120,29 +153,74 @@ export default function CompanyProfileSettingsPage() {
     loadStatutoryStatus();
   }, []);
 
-  const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      if (file.size > 2 * 1024 * 1024) {
-        alert('Logo file size must be less than 2MB');
-        return;
-      }
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const base64 = event.target?.result as string;
-        setLogoPreview(base64);
+    if (!file) return;
+
+    if (file.size > 2 * 1024 * 1024) {
+      alert('Logo file size must be less than 2MB');
+      return;
+    }
+
+    setLogoUploading(true);
+    setStatusMsg(null);
+    const fd = new FormData();
+    fd.append('file', file);
+
+    try {
+      const token = typeof window !== 'undefined' ? (localStorage.getItem('b00k5_token') || localStorage.getItem('token')) : null;
+      const tenantId = getEffectiveTenantId();
+      const headers: Record<string, string> = {};
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      if (tenantId) headers['X-Tenant-ID'] = tenantId;
+
+      const url = `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/setup/upload-logo${token ? `?token=${encodeURIComponent(token)}` : ''}${tenantId ? `&tenant_id=${encodeURIComponent(tenantId)}` : ''}`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: fd
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setLogoPreview(data.logo_url);
         if (typeof window !== 'undefined') {
-          localStorage.setItem('b00k5_logo_url', base64);
+          try { localStorage.setItem('b00k5_logo_url', data.logo_url); } catch (e) {}
         }
-      };
-      reader.readAsDataURL(file);
+        setStatusMsg('Company logo uploaded and updated across all letterheads and invoices!');
+      } else {
+        const errJson = await res.json().catch(() => null);
+        alert(errJson?.detail || 'Failed to upload company logo');
+      }
+    } catch (err: any) {
+      alert(err.message || 'Logo upload error');
+    } finally {
+      setLogoUploading(false);
     }
   };
 
-  const handleRemoveLogo = () => {
-    setLogoPreview(null);
-    if (typeof window !== 'undefined') {
-      localStorage.removeItem('b00k5_logo_url');
+  const handleRemoveLogo = async () => {
+    if (!confirm('Are you sure you want to remove the company logo?')) return;
+    try {
+      const token = typeof window !== 'undefined' ? (localStorage.getItem('b00k5_token') || localStorage.getItem('token')) : null;
+      const tenantId = getEffectiveTenantId();
+      const headers: Record<string, string> = {};
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      if (tenantId) headers['X-Tenant-ID'] = tenantId;
+
+      const url = `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/setup/remove-logo${token ? `?token=${encodeURIComponent(token)}` : ''}${tenantId ? `&tenant_id=${encodeURIComponent(tenantId)}` : ''}`;
+      await fetch(url, {
+        method: 'DELETE',
+        headers
+      });
+
+      setLogoPreview(null);
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('b00k5_logo_url');
+      }
+      setStatusMsg('Company logo removed successfully.');
+    } catch (err: any) {
+      console.error('Error removing logo:', err);
     }
   };
 
@@ -152,26 +230,30 @@ export default function CompanyProfileSettingsPage() {
     setStatusMsg(null);
 
     try {
-      const token = typeof window !== 'undefined' ? localStorage.getItem('b00k5_token') : null;
-      const tenantId = typeof window !== 'undefined' ? localStorage.getItem('b00k5_tenant_id') : null;
+      const token = typeof window !== 'undefined' ? (localStorage.getItem('b00k5_token') || localStorage.getItem('token')) : null;
+      const tenantId = getEffectiveTenantId();
 
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (token) headers['Authorization'] = `Bearer ${token}`;
       if (tenantId) headers['X-Tenant-ID'] = tenantId;
 
+      const bodyPayload: Record<string, any> = {
+        legal_name: legalName,
+        trade_name: tradeName,
+        cin,
+        pan,
+        gstin,
+        state_code: stateCode,
+        registered_office: registeredOffice,
+      };
+      if (logoPreview) {
+        bodyPayload.logo_url = logoPreview;
+      }
+
       await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/compliance/update-company-profile`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({
-          legal_name: legalName,
-          trade_name: tradeName,
-          cin,
-          pan,
-          gstin,
-          state_code: stateCode,
-          registered_office: registeredOffice,
-          logo_url: logoPreview
-        })
+        body: JSON.stringify(bodyPayload)
       });
 
       if (typeof window !== 'undefined') {
@@ -212,13 +294,15 @@ export default function CompanyProfileSettingsPage() {
       'AUDITOR_REPORT': 'statutory_filing',
       'BOARD_REPORT': 'equity_governance',
       'DIR_12': 'equity_governance',
+      'DIN_APPROVAL': 'equity_governance',
+      'DIR_3': 'equity_governance',
     };
     const cat = categoryMap[docType.toUpperCase()] || 'corporate_legal';
     fd.append('category', cat);
 
     try {
       const token = typeof window !== 'undefined' ? localStorage.getItem('b00k5_token') : null;
-      const tenantId = typeof window !== 'undefined' ? localStorage.getItem('b00k5_tenant_id') : null;
+      const tenantId = getEffectiveTenantId();
       const headers: Record<string, string> = {};
       if (token) headers['Authorization'] = `Bearer ${token}`;
       if (tenantId) headers['X-Tenant-ID'] = tenantId;
@@ -246,7 +330,7 @@ export default function CompanyProfileSettingsPage() {
   const handleDownloadLetterhead = async () => {
     try {
       const token = typeof window !== 'undefined' ? localStorage.getItem('b00k5_token') : null;
-      const tenantId = typeof window !== 'undefined' ? localStorage.getItem('b00k5_tenant_id') : null;
+      const tenantId = getEffectiveTenantId();
       const headers: Record<string, string> = {};
       if (token) headers['Authorization'] = `Bearer ${token}`;
       if (tenantId) headers['X-Tenant-ID'] = tenantId;
@@ -271,30 +355,40 @@ export default function CompanyProfileSettingsPage() {
     }
   };
 
-  const handleDownloadDoc = async (code: string) => {
+  const handleDownloadDoc = async (code: string, isExtract: boolean = false) => {
     try {
       const token = typeof window !== 'undefined' ? localStorage.getItem('b00k5_token') : null;
-      const tenantId = typeof window !== 'undefined' ? localStorage.getItem('b00k5_tenant_id') : null;
+      const tenantId = getEffectiveTenantId();
       const headers: Record<string, string> = {};
       if (token) headers['Authorization'] = `Bearer ${token}`;
       if (tenantId) headers['X-Tenant-ID'] = tenantId;
 
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/compliance/download-document/${code}`, {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/compliance/download-document/${code}?allow_extract=${isExtract ? 'true' : 'false'}`, {
         headers
       });
 
       if (res.ok) {
+        const disposition = res.headers.get('content-disposition');
+        let filename = `${legalName.replace(/\s+/g, '_')}_${code}${isExtract ? '_EXTRACT' : ''}.pdf`;
+        if (disposition && disposition.includes('filename=')) {
+          const match = disposition.match(/filename="?([^";]+)"?/);
+          if (match && match[1]) filename = match[1];
+        }
         const blob = await res.blob();
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `${legalName.replace(/\s+/g, '_')}_${code}_EXTRACT.pdf`;
+        a.download = filename;
         document.body.appendChild(a);
         a.click();
         a.remove();
+      } else {
+        const err = await res.json().catch(() => null);
+        alert(err?.detail || 'No authentic original document uploaded yet. Please upload the official certificate.');
       }
-    } catch (e) {
-      console.error('Error downloading document extract:', e);
+    } catch (e: any) {
+      console.error('Error downloading document:', e);
+      alert(e.message || 'Download error');
     }
   };
 
@@ -391,18 +485,19 @@ export default function CompanyProfileSettingsPage() {
                   Accepts PNG, JPG, JPEG, SVG or WebP formats up to 2MB. Automatically rendered on letterhead and document templates.
                 </p>
                 <div className="pt-1 flex items-center justify-center sm:justify-start gap-2">
-                  <label className="cursor-pointer px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-xs font-medium flex items-center gap-1.5 transition">
+                  <label className={`cursor-pointer px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-xs font-medium flex items-center gap-1.5 transition ${logoUploading ? 'opacity-50 pointer-events-none' : ''}`}>
                     <UploadCloud className="w-3.5 h-3.5" />
-                    <span>{logoPreview ? 'Change Logo' : 'Upload Company Logo'}</span>
+                    <span>{logoUploading ? 'Uploading...' : (logoPreview ? 'Change Logo' : 'Upload Company Logo')}</span>
                     <input
                       type="file"
                       id="logo-upload-input"
                       accept="image/*"
                       className="hidden"
+                      disabled={logoUploading}
                       onChange={handleLogoUpload}
                     />
                   </label>
-                  {logoPreview && (
+                  {logoPreview && !logoUploading && (
                     <button
                       type="button"
                       onClick={handleRemoveLogo}
@@ -509,6 +604,40 @@ export default function CompanyProfileSettingsPage() {
                 />
               </div>
 
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1 flex items-center justify-between">
+                  <span>Authorized Director Name</span>
+                  <span className="text-[10px] text-sky-400 font-mono">🔒 Upload SPICe+ Part B / DIR-3 to verify</span>
+                </label>
+                <input
+                  type="text"
+                  id="director-name-input"
+                  value={directorName}
+                  readOnly
+                  placeholder="Upload SPICe+ Part B / DIR-3 DIN Approval Letter"
+                  title="Director Name is bound to official MCA SPICe+ Part B (INC-32) or Form DIR-3 DIN Approval Letter."
+                  className="w-full bg-slate-950/80 border border-slate-800 rounded-lg px-3 py-2 text-white text-xs font-medium focus:outline-none cursor-not-allowed opacity-90"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1 flex items-center justify-between">
+                  <span>Director Identification Number (DIN)</span>
+                  <span className={`text-[10px] font-mono ${directorDin ? 'text-emerald-400 font-semibold' : 'text-slate-500'}`}>
+                    {directorDin ? '✓ Verified via SPICe+ Part B / DIR-3' : '🔒 Upload SPICe+ Part B / DIR-3 to verify'}
+                  </span>
+                </label>
+                <input
+                  type="text"
+                  id="director-din-input"
+                  value={directorDin}
+                  readOnly
+                  placeholder="Upload SPICe+ Part B / DIR-3 DIN Approval Letter"
+                  title="DIN is verified from official MCA SPICe+ Part B (INC-32) or Form DIR-3 DIN Approval Letter."
+                  className="w-full bg-slate-950/80 border border-slate-800 rounded-lg px-3 py-2 text-white font-mono text-xs font-bold text-sky-400 focus:outline-none cursor-not-allowed opacity-90"
+                />
+              </div>
+
               <div className="sm:col-span-2">
                 <label className="block text-xs font-medium text-slate-400 mb-1 flex items-center justify-between">
                   <span>Registered Office Address</span>
@@ -549,6 +678,17 @@ export default function CompanyProfileSettingsPage() {
                 Update Master Details via Official Statutory Document Extraction:
               </span>
               <div className="flex flex-wrap gap-2.5">
+                <label className="cursor-pointer px-3 py-1.5 rounded-lg bg-sky-950/80 hover:bg-sky-900/80 border border-sky-800/60 text-xs font-medium text-sky-200 flex items-center gap-1.5 transition">
+                  <UploadCloud className="w-3.5 h-3.5 text-sky-400" />
+                  <span>{uploadingDoc === 'DIN_APPROVAL' ? 'Extracting...' : 'Upload SPICe+ Part B / DIR-3 DIN Approval Letter'}</span>
+                  <input
+                    type="file"
+                    accept=".pdf,.png,.jpg,.jpeg"
+                    className="hidden"
+                    onChange={(e) => e.target.files?.[0] && handleReuploadDoc('DIN_APPROVAL', e.target.files[0])}
+                  />
+                </label>
+
                 <label className="cursor-pointer px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-medium text-slate-200 flex items-center gap-1.5 transition">
                   <UploadCloud className="w-3.5 h-3.5 text-sky-400" />
                   <span>{uploadingDoc === 'PAN' ? 'Extracting...' : 'Re-upload PAN Card'}</span>
@@ -687,9 +827,9 @@ export default function CompanyProfileSettingsPage() {
                   {Object.keys(doc.extracted_entities || {}).length > 0 && (
                     <div className="p-2.5 rounded-lg bg-slate-950/80 border border-slate-800/80 font-mono text-[11px] text-slate-300 space-y-1">
                       {Object.entries(doc.extracted_entities).map(([k, v]) => (
-                        <div key={k} className="flex justify-between">
-                          <span className="text-slate-500 capitalize">{k.replace(/_/g, ' ')}:</span>
-                          <span className="text-white font-semibold truncate max-w-[200px]">{String(v)}</span>
+                        <div key={k} className="flex justify-between items-start gap-2">
+                          <span className="text-slate-500 capitalize shrink-0">{k.replace(/_/g, ' ')}:</span>
+                          <span className="text-white font-semibold text-right break-words max-w-[260px]">{String(v)}</span>
                         </div>
                       ))}
                     </div>
@@ -712,14 +852,27 @@ export default function CompanyProfileSettingsPage() {
                         />
                       </label>
 
-                      <button
-                        type="button"
-                        onClick={() => handleDownloadDoc(doc.code)}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium border border-slate-700 transition"
-                      >
-                        <Download className="w-3.5 h-3.5 text-sky-400" />
-                        Download Extract
-                      </button>
+                      {doc.sha256_hash ? (
+                        <button
+                          type="button"
+                          onClick={() => handleDownloadDoc(doc.code, false)}
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold border border-sky-500 shadow-sm transition"
+                          title="Download authentic original uploaded binary file from MinIO"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                          Download Original
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => handleDownloadDoc(doc.code, true)}
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium border border-slate-700 transition"
+                          title="Original not uploaded. Click to generate certified statutory extract."
+                        >
+                          <Download className="w-3.5 h-3.5 text-slate-400" />
+                          Download Extract
+                        </button>
+                      )}
                     </div>
                   </div>
                 </div>

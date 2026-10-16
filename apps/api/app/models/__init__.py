@@ -8,6 +8,15 @@ from app.models.dsc import DSCSignatureAudit
 from app.models.bank import BankStatement, BankStatementLine
 from app.models.cloud_sync import CloudSyncLedger
 from app.models.backup import DatabaseBackupLog
+from app.models.tds import TDSChallan, TDSDeduction
+from app.models.asset import FixedAsset, FixedAssetDepreciationRun
+from app.models.mca_registers import (
+    StatutoryMember,
+    StatutoryLoanGuarantee,
+    StatutoryContractInterestedDirector,
+    DirectorAnnualDisclosure,
+    ShareCertificate
+)
 
 __all__ = [
     "Tenant",
@@ -29,4 +38,13 @@ __all__ = [
     "BankStatementLine",
     "CloudSyncLedger",
     "DatabaseBackupLog",
+    "TDSChallan",
+    "TDSDeduction",
+    "FixedAsset",
+    "FixedAssetDepreciationRun",
+    "StatutoryMember",
+    "StatutoryLoanGuarantee",
+    "StatutoryContractInterestedDirector",
+    "DirectorAnnualDisclosure",
+    "ShareCertificate",
 ]

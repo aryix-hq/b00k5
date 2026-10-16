@@ -1,10 +1,11 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { Cloud, Shield, Database, CheckCircle2, RefreshCw, AlertCircle, ArrowLeft, Lock, HardDrive } from 'lucide-react';
+import { Cloud, Shield, Database, CheckCircle2, RefreshCw, AlertCircle, ArrowLeft, Lock, HardDrive, Server, Archive, RotateCcw, X, ShieldAlert } from 'lucide-react';
 import Link from 'next/link';
 import { Sidebar } from '@/components/Sidebar';
 import { Navbar } from '@/components/Navbar';
+import { fetchApi } from '@/lib/api';
 
 interface BackupLog {
   id: string;
@@ -18,6 +19,14 @@ interface BackupLog {
   created_at: string;
 }
 
+interface MinioSnapshot {
+  object_key: string;
+  filename: string;
+  size_bytes: number;
+  last_modified: string | null;
+  uri: string;
+}
+
 export default function IntegrationsSettingsPage() {
   const [backingUp, setBackingUp] = useState<boolean>(false);
   const [backupStatus, setBackupStatus] = useState<string | null>(null);
@@ -25,23 +34,25 @@ export default function IntegrationsSettingsPage() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [gdriveConfigured, setGdriveConfigured] = useState<boolean>(false);
 
+  // MinIO S3 Checkpoints State
+  const [minioSnapshots, setMinioSnapshots] = useState<MinioSnapshot[]>([]);
+  const [creatingCheckpoint, setCreatingCheckpoint] = useState<boolean>(false);
+  const [checkpointStatus, setCheckpointStatus] = useState<string | null>(null);
+  const [restoringKey, setRestoringKey] = useState<string | null>(null);
+  const [restoreModalOpen, setRestoreModalOpen] = useState<boolean>(false);
+  const [targetSnapshot, setTargetSnapshot] = useState<MinioSnapshot | null>(null);
+  const [restoreSecret, setRestoreSecret] = useState<string>('');
+  const [restoreResult, setRestoreResult] = useState<any | null>(null);
+
   const fetchLogs = async () => {
     try {
-      const token = typeof window !== 'undefined' ? localStorage.getItem('b00k5_token') : null;
-      const tenantId = typeof window !== 'undefined' ? localStorage.getItem('b00k5_tenant_id') : null;
-      const headers: Record<string, string> = {};
-      if (token) headers['Authorization'] = `Bearer ${token}`;
-      if (tenantId) headers['X-Tenant-ID'] = tenantId;
-
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/system/backup-logs`, { headers });
-      if (res.ok) {
-        const data = await res.json();
+      const data = await fetchApi('/api/v1/system/backup-logs');
+      if (Array.isArray(data)) {
         setLogs(data);
       }
 
-      const cfgRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/storage/gdrive-config`, { headers });
-      if (cfgRes.ok) {
-        const cfg = await cfgRes.json();
+      const cfg = await fetchApi('/api/v1/storage/gdrive-config');
+      if (cfg) {
         setGdriveConfigured(Boolean(cfg?.configured));
       }
     } catch (e) {
@@ -49,8 +60,20 @@ export default function IntegrationsSettingsPage() {
     }
   };
 
+  const fetchMinioSnapshots = async () => {
+    try {
+      const data = await fetchApi('/api/v1/system/backup/snapshots');
+      if (Array.isArray(data)) {
+        setMinioSnapshots(data);
+      }
+    } catch (e) {
+      console.warn('Failed to fetch MinIO snapshots:', e);
+    }
+  };
+
   useEffect(() => {
     fetchLogs();
+    fetchMinioSnapshots();
   }, []);
 
   const handleRunBackup = async () => {
@@ -59,29 +82,66 @@ export default function IntegrationsSettingsPage() {
     setErrorMsg(null);
 
     try {
-      const token = typeof window !== 'undefined' ? localStorage.getItem('b00k5_token') : null;
-      const tenantId = typeof window !== 'undefined' ? localStorage.getItem('b00k5_tenant_id') : null;
-      const headers: Record<string, string> = {};
-      if (token) headers['Authorization'] = `Bearer ${token}`;
-      if (tenantId) headers['X-Tenant-ID'] = tenantId;
-
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/system/backup-database`, {
+      const newLog = await fetchApi('/api/v1/system/backup-database', {
         method: 'POST',
-        headers
       });
 
-      if (!res.ok) {
-        throw new Error('Database backup failed');
-      }
-
-      const newLog = await res.json();
       setBackupStatus('Success');
       setLogs(prev => [newLog, ...prev]);
+      await fetchMinioSnapshots();
     } catch (err: any) {
       setErrorMsg(err.message || 'Backup failed');
       setBackupStatus('Failed');
     } finally {
       setBackingUp(false);
+    }
+  };
+
+  const handleCreateMinioCheckpoint = async () => {
+    setCreatingCheckpoint(true);
+    setCheckpointStatus('Creating encrypted pg_dump checkpoint & streaming to MinIO...');
+    setErrorMsg(null);
+
+    try {
+      await fetchApi('/api/v1/system/backup/checkpoint', {
+        method: 'POST'
+      });
+      setCheckpointStatus('Checkpoint Created Successfully');
+      await Promise.all([fetchMinioSnapshots(), fetchLogs()]);
+    } catch (err: any) {
+      setErrorMsg(err.message || 'MinIO checkpoint failed');
+      setCheckpointStatus('Failed');
+    } finally {
+      setCreatingCheckpoint(false);
+    }
+  };
+
+  const handleRestoreCheckpoint = async () => {
+    if (!targetSnapshot) return;
+    setRestoringKey(targetSnapshot.object_key);
+    setErrorMsg(null);
+    setRestoreResult(null);
+
+    try {
+      const res = await fetchApi('/api/v1/system/backup/restore', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          object_key: targetSnapshot.object_key,
+          decryption_secret: restoreSecret.trim() || undefined
+        })
+      });
+
+      setRestoreResult(res);
+      if (res.restore_approved) {
+        setCheckpointStatus('Database restored successfully from MinIO checkpoint!');
+      } else {
+        setErrorMsg(`Restore rejected by 7-Point Staging Gate: ${res.reason || res.stage_status}`);
+      }
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Failed to restore MinIO checkpoint');
+    } finally {
+      setRestoringKey(null);
     }
   };
 
@@ -174,6 +234,125 @@ export default function IntegrationsSettingsPage() {
         </div>
       )}
 
+      {/* MinIO S3 Immutable Checkpoints & Disaster Recovery Card */}
+      <div className="p-6 rounded-2xl bg-gradient-to-r from-slate-900/90 to-slate-950 border border-slate-800 space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/30">
+                Sovereign S3 Storage / MinIO
+              </span>
+              <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+                7-Point Staging Gate Verified
+              </span>
+            </div>
+            <h2 className="text-base font-semibold text-white flex items-center gap-2 mt-1">
+              <Server className="w-4 h-4 text-amber-400" />
+              MinIO S3 Immutable Database Checkpoints
+            </h2>
+            <p className="text-xs text-slate-400">
+              On-premise / private cloud disaster recovery fallback when Google Drive is unconfigured or unreachable.
+            </p>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <button
+              id="run-minio-checkpoint-btn"
+              onClick={handleCreateMinioCheckpoint}
+              disabled={creatingCheckpoint}
+              className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-500 font-semibold text-white text-xs shadow-lg shadow-amber-600/30 transition disabled:opacity-50"
+            >
+              {creatingCheckpoint ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Archive className="w-4 h-4" />}
+              Create MinIO S3 Checkpoint
+            </button>
+          </div>
+        </div>
+
+        {checkpointStatus && (
+          <div
+            id="checkpoint-status-badge"
+            className={`p-3.5 rounded-xl border flex items-center gap-3 text-xs font-medium transition-all ${
+              checkpointStatus.includes('Successfully')
+                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+                : checkpointStatus === 'Failed'
+                ? 'bg-rose-500/10 border-rose-500/30 text-rose-400'
+                : 'bg-amber-500/10 border-amber-500/30 text-amber-300'
+            }`}
+          >
+            {checkpointStatus.includes('Successfully') ? (
+              <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
+            ) : checkpointStatus === 'Failed' ? (
+              <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
+            ) : (
+              <RefreshCw className="w-4 h-4 shrink-0 animate-spin text-amber-400" />
+            )}
+            <span>Status: {checkpointStatus}</span>
+          </div>
+        )}
+
+        {/* MinIO Checkpoints Table */}
+        <div className="pt-2">
+          <div className="flex items-center justify-between mb-2">
+            <h4 className="text-xs font-semibold text-slate-300">Available MinIO Snapshots ({minioSnapshots.length})</h4>
+            <button onClick={fetchMinioSnapshots} className="text-[11px] text-slate-400 hover:text-white flex items-center gap-1">
+              <RefreshCw className="w-3 h-3" /> Refresh Snapshots
+            </button>
+          </div>
+
+          <div className="overflow-x-auto rounded-xl border border-slate-800">
+            <table id="minio-snapshots-table" className="w-full text-left text-xs text-slate-300">
+              <thead className="bg-slate-950 text-slate-400 font-mono uppercase text-[11px] border-b border-slate-800">
+                <tr>
+                  <th className="py-2.5 px-3">Snapshot File</th>
+                  <th className="py-2.5 px-3">Size (KB)</th>
+                  <th className="py-2.5 px-3">MinIO URI</th>
+                  <th className="py-2.5 px-3">Timestamp</th>
+                  <th className="py-2.5 px-3 text-right">Disaster Recovery</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800/60 font-mono">
+                {minioSnapshots.length > 0 ? (
+                  minioSnapshots.map((snap) => (
+                    <tr key={snap.object_key} className="hover:bg-slate-800/30">
+                      <td className="py-2.5 px-3 font-medium text-white max-w-[200px] truncate" title={snap.filename}>
+                        {snap.filename}
+                      </td>
+                      <td className="py-2.5 px-3 text-slate-300">
+                        {(snap.size_bytes / 1024).toFixed(1)} KB
+                      </td>
+                      <td className="py-2.5 px-3 text-amber-300 font-mono text-[11px] max-w-[220px] truncate" title={snap.uri}>
+                        {snap.uri}
+                      </td>
+                      <td className="py-2.5 px-3 text-slate-400">
+                        {snap.last_modified ? new Date(snap.last_modified).toLocaleString('en-IN') : 'N/A'}
+                      </td>
+                      <td className="py-2.5 px-3 text-right">
+                        <button
+                          onClick={() => {
+                            setTargetSnapshot(snap);
+                            setRestoreModalOpen(true);
+                            setRestoreResult(null);
+                          }}
+                          className="px-3 py-1 bg-rose-950/60 hover:bg-rose-900/60 text-rose-300 border border-rose-800/60 rounded text-[11px] font-semibold transition"
+                        >
+                          Restore Snapshot
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={5} className="py-6 text-center text-slate-500 text-xs">
+                      No MinIO checkpoints found. Click &quot;Create MinIO S3 Checkpoint&quot; above to take an instant snapshot.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
       {/* Backup Audit Table */}
       <div className="p-6 rounded-2xl bg-slate-900/60 border border-slate-800 space-y-4">
         <div className="flex items-center justify-between">
@@ -232,6 +411,90 @@ export default function IntegrationsSettingsPage() {
           </table>
         </div>
       </div>
+
+      {/* 7-Point Staging Gate Restore Confirmation Modal */}
+      {restoreModalOpen && targetSnapshot && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-slate-900 border border-rose-500/40 w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden p-6 space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-2 text-rose-400 font-bold text-sm">
+                <ShieldAlert className="w-5 h-5" />
+                <span>Disaster Recovery: 7-Point Staging Gate Restore</span>
+              </div>
+              <button
+                onClick={() => {
+                  setRestoreModalOpen(false);
+                  setTargetSnapshot(null);
+                }}
+                className="text-slate-400 hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-300">
+              You are about to restore database snapshot: <strong className="text-white font-mono">{targetSnapshot.filename}</strong>
+            </p>
+
+            <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 text-[11px] space-y-1.5 text-slate-300 font-sans">
+              <div className="font-semibold text-amber-300">Automated 7-Point Staging Verification:</div>
+              <ul className="list-disc list-inside space-y-1 text-slate-400">
+                <li>Gate 1: SHA-256 binary checksum validation</li>
+                <li>Gate 2: Authenticated AES-256-GCM decryption &amp; gzip integrity</li>
+                <li>Gate 3: RPO stale-snapshot protection (overwrites checked)</li>
+                <li>Gate 4: Document Vault archive completeness</li>
+                <li>Gate 5: Staged multi-point accounting check (zero-sum debits/credits)</li>
+                <li>Gate 6: Cross-tenant foreign key isolation</li>
+                <li>Gate 7: Atomic cutover with automated rollback on failure</li>
+              </ul>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-300 mb-1">
+                Decryption Master Secret (Optional, defaults to system SECRET_KEY)
+              </label>
+              <input
+                type="password"
+                value={restoreSecret}
+                onChange={(e) => setRestoreSecret(e.target.value)}
+                placeholder="Leave blank to use system vault key"
+                className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white font-mono text-xs focus:outline-none focus:border-rose-500"
+              />
+            </div>
+
+            {restoreResult && (
+              <div className={`p-3 rounded-xl border text-xs ${
+                restoreResult.restore_approved ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300' : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
+              }`}>
+                <div className="font-semibold">{restoreResult.restore_approved ? 'Verification Passed!' : 'Restore Verification Failed'}</div>
+                <div className="text-[11px] text-slate-300 mt-0.5">{restoreResult.reason || restoreResult.stage_status}</div>
+              </div>
+            )}
+
+            <div className="flex justify-end gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setRestoreModalOpen(false);
+                  setTargetSnapshot(null);
+                }}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleRestoreCheckpoint}
+                disabled={Boolean(restoringKey)}
+                className="px-5 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-semibold shadow-lg shadow-rose-600/30 transition disabled:opacity-50 flex items-center gap-2"
+              >
+                {restoringKey ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <RotateCcw className="w-3.5 h-3.5" />}
+                {restoringKey ? 'Executing 7-Point Staging Gate...' : 'Confirm Restore & Overwrite'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
         </main>
       </div>
     </div>

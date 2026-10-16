@@ -181,18 +181,43 @@ class FinancialReportingService:
     async def generate_balance_sheet(
         session: AsyncSession,
         tenant_id: uuid.UUID,
-        as_of_date: Optional[date] = None
+        as_of_date: Optional[date] = None,
+        from_date: Optional[date] = None,
+        fy: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Pillar 12.2: Fundamental Accounting Equation:
         Assets == Liabilities + Equity + Current Period Net Profit
         Discrepancy must strictly equal 0.00.
         """
-        target_date = as_of_date or date.today()
+        from datetime import timedelta
+        target_date = as_of_date
+        start_date = from_date
+
+        if fy and fy.lower() != "all":
+            from app.core.fiscal_year import get_fy_date_bounds
+            try:
+                fy_start, fy_end = get_fy_date_bounds(fy)
+                target_date = target_date or fy_end
+                start_date = start_date or fy_start
+            except Exception:
+                pass
+
+        target_date = target_date or date.today()
 
         # 1. Compute P&L for current period up to as_of_date
-        pnl = await FinancialReportingService.generate_profit_and_loss(session, tenant_id, to_date=target_date)
+        pnl = await FinancialReportingService.generate_profit_and_loss(
+            session, tenant_id, from_date=start_date, to_date=target_date
+        )
         current_net_profit = pnl["net_profit"]
+
+        # Prior period net profit (if scoped to a specific FY)
+        prior_net_profit = Decimal("0.00")
+        if start_date:
+            prior_pnl = await FinancialReportingService.generate_profit_and_loss(
+                session, tenant_id, to_date=start_date - timedelta(days=1)
+            )
+            prior_net_profit = prior_pnl["net_profit"]
 
         # 2. Compute Balance Sheet accounts (Asset, Liability, Equity)
         acc_stmt = select(ChartOfAccounts).where(
@@ -244,6 +269,14 @@ class FinancialReportingService:
                     equity_items.append({"code": acc.code, "name": acc.name, "amount": bal})
                     total_equity += bal
 
+        if prior_net_profit != Decimal("0.00"):
+            equity_items.append({
+                "code": "3020-PRIOR",
+                "name": "Reserves & Surplus (Prior Years Retained Earnings)",
+                "amount": prior_net_profit
+            })
+            total_equity += prior_net_profit
+
         total_assets = FinancialReportingService.bankers_round(total_assets)
         total_liabilities = FinancialReportingService.bankers_round(total_liabilities)
         total_equity = FinancialReportingService.bankers_round(total_equity)
@@ -254,12 +287,14 @@ class FinancialReportingService:
         return {
             "tenant_id": tenant_id,
             "as_of_date": target_date,
+            "from_date": start_date,
             "asset_items": asset_items,
             "total_assets": total_assets,
             "liability_items": liability_items,
             "total_liabilities": total_liabilities,
             "equity_items": equity_items,
             "total_equity": total_equity,
+            "prior_period_retained_earnings": prior_net_profit,
             "current_period_net_profit": current_net_profit,
             "total_equity_and_liabilities": total_equity_and_liabilities,
             "drift": drift,

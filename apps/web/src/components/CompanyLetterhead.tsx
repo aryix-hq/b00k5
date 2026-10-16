@@ -22,6 +22,22 @@ interface CompanyDetails {
   logoUrl?: string;
 }
 
+function getCorporateMonogram(name: string): string {
+  if (!name) return 'B5';
+  const clean = name.replace(/\(.*?\)/g, '').trim();
+  const words = clean.split(/\s+/).filter(w => !['PVT', 'LTD', 'PRIVATE', 'LIMITED', 'LLP', 'OPC', 'COMPANY', 'CORP'].includes(w.toUpperCase()));
+  if (words.length >= 2) {
+    return (words[0][0] + words[1][0]).toUpperCase();
+  } else if (words.length === 1 && words[0].length >= 1) {
+    const isPvtLtd = name.toUpperCase().includes('PRIVATE') || name.toUpperCase().includes('PVT');
+    const isLtd = name.toUpperCase().includes('LIMITED') || name.toUpperCase().includes('LTD');
+    if (isPvtLtd) return (words[0][0] + 'PL').toUpperCase();
+    if (isLtd) return (words[0][0] + 'L').toUpperCase();
+    return words[0].substring(0, 2).toUpperCase();
+  }
+  return name.substring(0, 2).toUpperCase();
+}
+
 export function CompanyLetterhead({
   title,
   subtitle,
@@ -32,11 +48,11 @@ export function CompanyLetterhead({
   compact = false
 }: CompanyLetterheadProps) {
   const [company, setCompany] = useState<CompanyDetails>({
-    legalName: 'Acme Labs Pvt Ltd',
-    cin: 'U72900KA2026PTC123456',
-    pan: 'AABCA1234F',
+    legalName: '',
+    cin: '',
+    pan: '',
     gstin: '',
-    registeredOffice: 'Bangalore, Karnataka, India',
+    registeredOffice: '',
     logoUrl: ''
   });
 
@@ -47,15 +63,14 @@ export function CompanyLetterhead({
       const storedPan = localStorage.getItem('b00k5_pan');
       const storedGstin = localStorage.getItem('b00k5_gstin');
       const storedOffice = localStorage.getItem('b00k5_registered_office');
-      const storedLogo = localStorage.getItem('b00k5_logo_url');
 
       setCompany({
-        legalName: storedName || 'Acme Labs Pvt Ltd',
-        cin: storedCin || 'U72900KA2026PTC123456',
-        pan: storedPan || 'AABCA1234F',
+        legalName: storedName || 'Acme Technologies Pvt Ltd',
+        cin: storedCin || '',
+        pan: storedPan || '',
         gstin: storedGstin || '',
-        registeredOffice: storedOffice || 'Karnataka, India',
-        logoUrl: storedLogo || ''
+        registeredOffice: storedOffice || '',
+        logoUrl: ''
       });
 
       const token = localStorage.getItem('b00k5_token');
@@ -108,8 +123,8 @@ export function CompanyLetterhead({
                 className="h-16 w-16 object-contain rounded-lg border border-slate-200 bg-white p-1 shadow-sm shrink-0"
               />
             ) : (
-              <div className="h-14 w-14 rounded-xl bg-slate-900 flex items-center justify-center text-white font-bold text-xl shadow shrink-0">
-                {company.legalName.substring(0, 2).toUpperCase()}
+              <div className="h-14 w-14 rounded-xl bg-slate-900 border border-slate-700 flex items-center justify-center text-white font-mono font-bold text-lg shadow shrink-0 tracking-wider">
+                {getCorporateMonogram(company.legalName)}
               </div>
             )}
             <div>

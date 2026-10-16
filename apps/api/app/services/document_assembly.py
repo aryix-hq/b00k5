@@ -254,6 +254,60 @@ class DocumentAssemblyService:
 
         return cls._create_pdf_document(title, lines)
 
+    @classmethod
+    def assemble_dpt3_loan_declaration(cls, data: Dict[str, Any]) -> bytes:
+        """
+        Assembles statutory Form DPT-3 Director Loan Declaration pursuant to
+        Rule 2(1)(c)(viii) of Companies (Acceptance of Deposits) Rules, 2014 & Section 73:
+        Director furnishes written declaration of non-borrowed own funds for outstanding reimbursements.
+        """
+        company_name = data.get("company_name") or data.get("legal_name") or "Acme Technologies Pvt Ltd"
+        cin = data.get("cin") or ""
+        reg_office = data.get("registered_office") or ""
+        director_name = data.get("director_name") or "Director"
+        director_din = data.get("director_din") or ""
+        amount = str(data.get("amount", "0.00"))
+        financial_year = data.get("financial_year", "2025-26")
+        decl_date = data.get("declaration_date", date.today().strftime("%Y-%m-%d"))
+
+        lines = [
+            f"{company_name}",
+            f"CIN: {cin} | Regd. Office: {reg_office}",
+            "--------------------------------------------------------------------------------",
+            "STATUTORY DECLARATION UNDER RULE 2(1)(c)(viii) OF THE COMPANIES",
+            "(ACCEPTANCE OF DEPOSITS) RULES, 2014 & SECTION 73 OF COMPANIES ACT, 2013",
+            "--------------------------------------------------------------------------------",
+            f"Date: {decl_date}",
+            "To,",
+            f"The Board of Directors, {company_name}",
+            f"{reg_office}",
+            "",
+            "Subject: Declaration of Unsecured Loan / Outstanding Reimbursement for DPT-3 Exemption",
+            "",
+            f"I, {director_name} (DIN: {director_din}), Director of {company_name}, hereby declare",
+            "and confirm in writing that:",
+            "",
+            f"1. The amount of INR {amount} standing as unpaid reimbursement / credit liability",
+            f"   in Account 2105 for Financial Year {financial_year} is being treated / converted as",
+            "   an Unsecured Loan / Advance to the Company.",
+            "",
+            "2. The said amount is being provided exclusively out of my OWN FUNDS and is NOT",
+            "   being given out of funds acquired by borrowing or accepting loans or deposits from others.",
+            "",
+            "3. This declaration is furnished in compliance with the proviso to Rule 2(1)(c)(viii)",
+            "   of the Companies (Acceptance of Deposits) Rules, 2014, to exempt the said amount",
+            "   from the definition of 'Deposit' under Section 73 of the Companies Act, 2013.",
+            "",
+            "4. The Company is requested to disclose these particulars in the Board's Report and file",
+            "   the same in annual Form DPT-3 on or before June 30.",
+            "",
+            "--------------------------------------------------------------------------------",
+            f"Signed by: {director_name} (DIN: {director_din})",
+            "Designation: Director",
+            f"Timestamp: {datetime.utcnow().isoformat()}Z | Hash: SHA-256 Tamper Evident"
+        ]
+        return cls._create_pdf_document("DIRECTOR RULE 2(1)(c)(viii) OWN-FUNDS DECLARATION", lines)
+
 
     @classmethod
     def _create_pdf_document(cls, title: str, text_lines: List[str]) -> bytes:

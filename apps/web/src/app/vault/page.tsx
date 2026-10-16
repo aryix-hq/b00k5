@@ -32,15 +32,54 @@ const categories = [
   { id: 'corporate_legal', label: 'Corporate Legal (COI, MOA, AOA)' },
   { id: 'tax_registration', label: 'Tax Registrations (PAN, GST, PT)' },
   { id: 'operational_license', label: 'Operational (MSME, DPIIT)' },
-  { id: 'equity_governance', label: 'Equity & Governance (MOM, Cap Table)' },
+  { id: 'equity_governance', label: 'Equity & Governance (MOM, DIN Approval, Cap Table)' },
   { id: 'statutory_filing', label: 'Statutory Filings (ADT-1, AOC-4, MGT-7)' },
 ];
 
 export default function DocumentLockerPage() {
+  const [dossierScope, setDossierScope] = useState<'permanent' | 'annual' | 'all'>('permanent');
   const [selectedCat, setSelectedCat] = useState('all');
+  const [selectedFy, setSelectedFy] = useState('all');
   const [documents, setDocuments] = useState<any[]>([]);
   const [statutoryProfile, setStatutoryProfile] = useState<Record<string, any>>({});
   const [loading, setLoading] = useState(true);
+
+  const isPermanentDoc = (doc: any) => {
+    const dname = (doc.document_name || '').toLowerCase();
+    const cat = (doc.category || '').toLowerCase();
+    const meta = doc.metadata || doc.metadata_json || {};
+    const hasYear = Boolean(
+      meta.fiscal_year ||
+      meta.assessment_year ||
+      dname.includes('2025-26') ||
+      dname.includes('25-26') ||
+      dname.includes('2026-27') ||
+      dname.includes('26-27')
+    );
+
+    if (
+      dname.includes('incorporation') ||
+      dname.includes('coi') ||
+      dname.includes('pan card') ||
+      dname.includes('permanent account number') ||
+      dname.includes('tan allotment') ||
+      dname.includes('moa') ||
+      dname.includes('memorandum') ||
+      dname.includes('aoa') ||
+      dname.includes('articles') ||
+      dname.includes('inc-20a') ||
+      dname.includes('inc20a') ||
+      dname.includes('commencement') ||
+      dname.includes('inc-22') ||
+      dname.includes('dir-3') ||
+      dname.includes('udyam') ||
+      dname.includes('msme') ||
+      dname.includes('gst reg')
+    ) {
+      return true;
+    }
+    return !hasYear && (cat === 'corporate_legal' || cat === 'tax_registration' || cat === 'operational_license');
+  };
 
   // Deposit Modal State
   const [depositModalOpen, setDepositModalOpen] = useState(false);
@@ -56,7 +95,11 @@ export default function DocumentLockerPage() {
 
   async function loadData() {
     try {
-      const endpoint = selectedCat === 'all' ? '/api/v1/vault/' : `/api/v1/vault/?category=${selectedCat}`;
+      const params = new URLSearchParams();
+      if (selectedCat !== 'all') params.set('category', selectedCat);
+      if (selectedFy !== 'all') params.set('fy', selectedFy);
+      const queryStr = params.toString();
+      const endpoint = queryStr ? `/api/v1/vault/?${queryStr}` : '/api/v1/vault/';
       const docs = await fetchApi(endpoint);
       if (Array.isArray(docs)) setDocuments(docs);
 
@@ -73,7 +116,7 @@ export default function DocumentLockerPage() {
 
   useEffect(() => {
     loadData();
-  }, [selectedCat]);
+  }, [selectedCat, selectedFy]);
 
   const handleDepositSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -89,10 +132,19 @@ export default function DocumentLockerPage() {
     if (pdfPassword) fd.append('pdf_password', pdfPassword);
 
     try {
-      const token = localStorage.getItem('b00k5_token');
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/vault/smart-ingest`, {
+      const token = localStorage.getItem('b00k5_token') || localStorage.getItem('token');
+      const tenantId =
+        localStorage.getItem('b00k5_active_tenant_id') ||
+        localStorage.getItem('b00k5_tenant_id') ||
+        localStorage.getItem('tenant_id');
+      const headers: Record<string, string> = {};
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      if (tenantId) headers['X-Tenant-ID'] = tenantId;
+
+      const url = `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/vault/smart-ingest${token ? `?token=${encodeURIComponent(token)}` : ''}${tenantId ? `&tenant_id=${encodeURIComponent(tenantId)}` : ''}`;
+      const res = await fetch(url, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
+        headers,
         body: fd
       });
 
@@ -192,19 +244,29 @@ export default function DocumentLockerPage() {
   const handleExportAuditorPack = async () => {
     setDownloadingPack(true);
     try {
-      const token = localStorage.getItem('b00k5_token');
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/vault/export-auditor-pack`, {
-        headers: { Authorization: `Bearer ${token}` }
+      const token = typeof window !== 'undefined' ? localStorage.getItem('b00k5_token') : null;
+      const tenantId = typeof window !== 'undefined' ? (localStorage.getItem('b00k5_active_tenant_id') || localStorage.getItem('b00k5_tenant_id')) : null;
+      const headers: Record<string, string> = {};
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      if (tenantId) headers['X-Tenant-ID'] = tenantId;
+
+      const fy = typeof window !== 'undefined' ? (localStorage.getItem('b00k5_selected_fy') || '2026-27').replace('FY', '').trim() : '2026-27';
+      const legalName = (typeof window !== 'undefined' ? localStorage.getItem('b00k5_legal_name') : 'Company') || 'Company';
+      const cleanCompany = legalName.replace(/\s+/g, '_');
+
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/vault/export-auditor-pack?fy=${encodeURIComponent(fy)}`, {
+        headers
       });
       if (res.ok) {
         const blob = await res.blob();
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `Auditor_Permanent_File_FY2025-26.zip`;
+        a.download = `Auditor_Dossier_${cleanCompany}_FY${fy}.zip`;
         document.body.appendChild(a);
         a.click();
         a.remove();
+        window.URL.revokeObjectURL(url);
       } else {
         alert('Failed to generate auditor pack');
       }
@@ -214,6 +276,30 @@ export default function DocumentLockerPage() {
       setDownloadingPack(false);
     }
   };
+
+  // Filter documents by active dossier scope and statutory year
+  const displayedDocuments = documents.filter((doc) => {
+    if (dossierScope === 'permanent') {
+      return isPermanentDoc(doc);
+    }
+    if (dossierScope === 'annual') {
+      if (isPermanentDoc(doc)) return false;
+      if (selectedFy !== 'all') {
+        const meta = doc.metadata || doc.metadata_json || {};
+        const docFy = meta.fiscal_year || (doc.document_name.includes('25-26') ? '2025-26' : doc.document_name.includes('26-27') ? '2026-27' : '');
+        return docFy.includes(selectedFy.replace('FY', '').trim());
+      }
+      return true;
+    }
+    // dossierScope === 'all'
+    if (selectedFy !== 'all') {
+      if (selectedFy === 'permanent') return isPermanentDoc(doc);
+      const meta = doc.metadata || doc.metadata_json || {};
+      const docFy = meta.fiscal_year || (doc.document_name.includes('25-26') ? '2025-26' : doc.document_name.includes('26-27') ? '2026-27' : '');
+      return docFy.includes(selectedFy.replace('FY', '').trim());
+    }
+    return true;
+  });
 
   return (
     <div className="flex h-screen bg-slate-950 text-slate-100 overflow-hidden">
@@ -258,6 +344,29 @@ export default function DocumentLockerPage() {
               </button>
             </div>
           </div>
+
+          {/* Pending Statutory Onboarding & Mandatory Document Gate Banner */}
+          {statutoryProfile?.onboarding_status === 'PENDING_DOCUMENTS' && (
+            <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs flex items-start gap-3">
+              <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+              <div className="flex-1">
+                <div className="font-semibold text-white">
+                  Pending Statutory Onboarding: Mandatory Documents Required (COI &amp; PAN Card)
+                </div>
+                <div className="text-slate-300 mt-0.5">
+                  Under Companies Act 2013 §10A and MCA corporate governance rules, commercial mutations (tax invoicing, bank disbursements, DSC signings) are locked until the Certificate of Incorporation and Company PAN Card are deposited and verified below.
+                </div>
+                <div className="flex items-center gap-3 mt-2 text-[11px] font-mono">
+                  <span className={`px-2 py-0.5 rounded border ${statutoryProfile?.coi_verified ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-rose-500/20 text-rose-300 border-rose-500/30'}`}>
+                    Certificate of Incorporation: {statutoryProfile?.coi_verified ? 'VERIFIED' : 'PENDING'}
+                  </span>
+                  <span className={`px-2 py-0.5 rounded border ${statutoryProfile?.pan_verified ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-rose-500/20 text-rose-300 border-rose-500/30'}`}>
+                    Company PAN Card: {statutoryProfile?.pan_verified ? 'VERIFIED' : 'PENDING'}
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Statutory Source of Truth Banner */}
           <div className="p-5 bg-slate-900 border border-slate-800 rounded-xl space-y-4">
@@ -324,6 +433,139 @@ export default function DocumentLockerPage() {
             </div>
           </div>
 
+          {/* Primary Dossier Scope Selector */}
+          <div className="flex flex-wrap items-center gap-2 border-b border-slate-800 pb-3">
+            <button
+              id="tab-permanent-dossier"
+              type="button"
+              onClick={() => {
+                setDossierScope('permanent');
+                setSelectedCat('all');
+                setSelectedFy('all');
+              }}
+              className={`px-4 py-2 rounded-xl text-xs font-semibold flex items-center gap-2 transition-all ${
+                dossierScope === 'permanent'
+                  ? 'bg-purple-600 text-white shadow-lg shadow-purple-600/20'
+                  : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+              }`}
+            >
+              <ShieldCheck className="w-4 h-4 text-purple-200" />
+              Permanent Corporate Dossier (One-Time Uploads)
+            </button>
+
+            <button
+              id="tab-annual-filings"
+              type="button"
+              onClick={() => {
+                setDossierScope('annual');
+                setSelectedCat('all');
+              }}
+              className={`px-4 py-2 rounded-xl text-xs font-semibold flex items-center gap-2 transition-all ${
+                dossierScope === 'annual'
+                  ? 'bg-sky-600 text-white shadow-lg shadow-sky-600/20'
+                  : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+              }`}
+            >
+              <Calendar className="w-4 h-4 text-sky-200" />
+              Annual Statutory Filings &amp; Returns (Year-Scoped)
+            </button>
+
+            <button
+              id="tab-all-records"
+              type="button"
+              onClick={() => {
+                setDossierScope('all');
+              }}
+              className={`px-4 py-2 rounded-xl text-xs font-semibold flex items-center gap-2 transition-all ${
+                dossierScope === 'all'
+                  ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/20'
+                  : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+              }`}
+            >
+              <FolderLock className="w-4 h-4 text-emerald-200" />
+              All Vault Archives
+            </button>
+          </div>
+
+          {/* Context-Specific Banner or Year Filter */}
+          {dossierScope === 'permanent' && (
+            <div className="p-3.5 rounded-xl bg-purple-950/30 border border-purple-500/20 text-purple-300 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-purple-400 shrink-0" />
+                <span>
+                  <strong>Permanent Corporate Records:</strong> Uploaded once during corporate setup (Certificate of Incorporation, Company PAN, TAN Allotment, MOA, AOA, Form INC-20A Commencement of Business, Director DINs). Valid across all accounting periods without annual renewals.
+                </span>
+              </div>
+              <span className="text-[10px] font-mono font-semibold bg-purple-500/20 text-purple-300 px-2.5 py-0.5 rounded border border-purple-500/30 shrink-0">
+                Permanent Lifespan
+              </span>
+            </div>
+          )}
+
+          {dossierScope === 'annual' && (
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-900/60 p-3 rounded-xl border border-slate-800">
+              <div className="flex items-center gap-1.5 overflow-x-auto text-xs">
+                <span className="text-[11px] text-slate-400 font-semibold mr-1 flex items-center gap-1">
+                  <Calendar className="w-3.5 h-3.5 text-sky-400" /> Statutory Filing Year:
+                </span>
+                {[
+                  { id: 'all', label: 'All Years' },
+                  { id: '2026-27', label: 'FY 2026-27 (Current)' },
+                  { id: '2025-26', label: 'FY 2025-26 (AY 2026-27)' },
+                  { id: '2024-25', label: 'FY 2024-25' }
+                ].map((f) => (
+                  <button
+                    key={f.id}
+                    onClick={() => setSelectedFy(f.id)}
+                    className={`px-3 py-1 rounded-lg text-xs font-mono transition-all ${
+                      selectedFy === f.id
+                        ? 'bg-sky-500/20 text-sky-300 border border-sky-500/40 font-semibold'
+                        : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40 border border-transparent'
+                    }`}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="text-[11px] font-mono text-slate-400">
+                Filtered: <strong className="text-white font-semibold">{documents.filter(d => !isPermanentDoc(d)).length}</strong> annual filings
+              </div>
+            </div>
+          )}
+
+          {dossierScope === 'all' && (
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-900/60 p-3 rounded-xl border border-slate-800">
+              <div className="flex items-center gap-1.5 overflow-x-auto text-xs">
+                <span className="text-[11px] text-slate-400 font-semibold mr-1 flex items-center gap-1">
+                  <Calendar className="w-3.5 h-3.5 text-sky-400" /> Filter Period:
+                </span>
+                {[
+                  { id: 'all', label: 'All Records' },
+                  { id: '2026-27', label: 'FY 2026-27' },
+                  { id: '2025-26', label: 'FY 2025-26' },
+                  { id: 'permanent', label: 'Permanent Only' }
+                ].map((f) => (
+                  <button
+                    key={f.id}
+                    onClick={() => setSelectedFy(f.id)}
+                    className={`px-3 py-1 rounded-lg text-xs font-mono transition-all ${
+                      selectedFy === f.id
+                        ? 'bg-sky-500/20 text-sky-300 border border-sky-500/40 font-semibold'
+                        : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40 border border-transparent'
+                    }`}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="text-[11px] font-mono text-slate-400">
+                Filtered: <strong className="text-white font-semibold">{documents.length}</strong> documents
+              </div>
+            </div>
+          )}
+
           {/* Category Tabs */}
           <div className="flex items-center gap-2 overflow-x-auto pb-2 border-b border-slate-800 text-xs">
             {categories.map((cat) => (
@@ -343,10 +585,16 @@ export default function DocumentLockerPage() {
 
           {/* Document Grid */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {documents.length === 0 ? (
+            {displayedDocuments.length === 0 ? (
               <div className="col-span-full py-16 text-center text-slate-500 bg-slate-900 border border-slate-800 rounded-xl space-y-3">
                 <FileCheck2 className="w-12 h-12 mx-auto text-slate-600" />
-                <h4 className="text-sm font-semibold text-slate-300">Vault Empty in this Category</h4>
+                <h4 className="text-sm font-semibold text-slate-300">
+                  {dossierScope === 'permanent'
+                    ? 'No Permanent Corporate Documents in this Category'
+                    : dossierScope === 'annual'
+                    ? `No Annual Filings Found for ${selectedFy === 'all' ? 'Any Year' : selectedFy}`
+                    : 'Vault Empty in this Category'}
+                </h4>
                 <p className="text-xs text-slate-500 max-w-sm mx-auto">
                   Deposit statutory documents (COI, MOA, AOA, PAN, ADT-1, INC-20A) to trigger active corporate entity extraction.
                 </p>
@@ -354,11 +602,11 @@ export default function DocumentLockerPage() {
                   onClick={() => setDepositModalOpen(true)}
                   className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-lg inline-flex items-center gap-1.5"
                 >
-                  <Plus className="w-3.5 h-3.5" /> Deposit First Document
+                  <Plus className="w-3.5 h-3.5" /> Deposit Document
                 </button>
               </div>
             ) : (
-              documents.map((doc) => (
+              displayedDocuments.map((doc) => (
                 <div
                   key={doc.id}
                   onClick={() => setViewDoc(doc)}
@@ -366,9 +614,29 @@ export default function DocumentLockerPage() {
                 >
                   <div className="flex items-start justify-between">
                     <div>
-                      <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-400 uppercase">
-                        {doc.category.replace('_', ' ')}
-                      </span>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-400 uppercase">
+                          {doc.category.replace('_', ' ')}
+                        </span>
+                        {doc.metadata?.fiscal_year || doc.metadata?.assessment_year ? (
+                          <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-sky-500/10 text-sky-400 border border-sky-500/20">
+                            {doc.metadata?.fiscal_year ? `FY ${doc.metadata.fiscal_year}` : ''}
+                            {doc.metadata?.assessment_year ? ` (AY ${doc.metadata.assessment_year})` : ''}
+                          </span>
+                        ) : (doc.document_name || '').includes('25-26') || (doc.document_name || '').includes('2025-26') ? (
+                          <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-sky-500/10 text-sky-400 border border-sky-500/20">
+                            FY 2025-26 (AY 2026-27)
+                          </span>
+                        ) : (doc.document_name || '').includes('26-27') || (doc.document_name || '').includes('2026-27') ? (
+                          <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-sky-500/10 text-sky-400 border border-sky-500/20">
+                            FY 2026-27 (AY 2027-28)
+                          </span>
+                        ) : (
+                          <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-purple-500/10 text-purple-300 border border-purple-500/20">
+                            Permanent Legal
+                          </span>
+                        )}
+                      </div>
                       <h4 className="font-semibold text-white text-sm mt-1.5 group-hover:text-emerald-300 transition-colors">
                         {doc.document_name}
                       </h4>

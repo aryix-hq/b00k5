@@ -45,6 +45,8 @@ export default function LoginPage() {
       }
       localStorage.setItem('b00k5_user_email', data.email);
       localStorage.setItem('b00k5_user_role', data.role || 'ADMIN');
+      localStorage.setItem('b00k5_role', (data.role || 'owner').toLowerCase());
+      localStorage.setItem('b00k5_is_super_admin', data.is_super_admin ? 'true' : 'false');
 
       router.push('/dashboard');
     } catch (err: any) {
@@ -81,6 +83,8 @@ export default function LoginPage() {
       }
       localStorage.setItem('b00k5_user_email', data.email);
       localStorage.setItem('b00k5_user_role', data.role || 'ADMIN');
+      localStorage.setItem('b00k5_role', (data.role || 'owner').toLowerCase());
+      localStorage.setItem('b00k5_is_super_admin', data.is_super_admin ? 'true' : 'false');
       setGoogleModalOpen(false);
 
       router.push('/dashboard');

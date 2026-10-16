@@ -276,6 +276,17 @@ class ReconciliationEngine:
             desc_upper = (line.description or "").upper()
             ref_upper = (line.reference_number or "").upper()
 
+            # Guard: Skip zero-value non-financial statement lines (e.g. blank trailing rows)
+            dep = line.deposit_amount or Decimal("0.00")
+            wdr = line.withdrawal_amount or Decimal("0.00")
+            if dep <= Decimal("0.00") and wdr <= Decimal("0.00"):
+                line.reconciliation_tier = "tier1_exact"
+                line.reconciliation_status = "reconciled"
+                line.confidence_score = Decimal("100.00")
+                line.notes = "Zero-value non-financial row ignored"
+                tier1_count += 1
+                continue
+
             existing_suspense_je = (await session.execute(
                 select(JournalEntry).where(
                     JournalEntry.tenant_id == tenant_id,
@@ -472,6 +483,8 @@ class ReconciliationEngine:
 
                 is_deposit = line.deposit_amount > Decimal("0.00")
                 amount = line.deposit_amount if is_deposit else line.withdrawal_amount
+                if not amount or amount <= Decimal("0.00"):
+                    continue
 
                 existing_suspense = (await session.execute(
                     select(JournalEntry).where(

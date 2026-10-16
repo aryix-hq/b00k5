@@ -5,6 +5,7 @@ import uuid
 import pytest
 import requests
 from pathlib import Path
+pytest.importorskip("selenium", reason="selenium not installed; skipping browser E2E tests")
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service

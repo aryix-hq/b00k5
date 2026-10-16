@@ -1,6 +1,6 @@
 from typing import Optional
 import uuid
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, ConfigDict
 
 class Token(BaseModel):
     access_token: str
@@ -9,6 +9,7 @@ class Token(BaseModel):
     email: str
     tenant_id: Optional[str] = None
     role: Optional[str] = None
+    is_super_admin: bool = False
 
 class LoginRequest(BaseModel):
     email: str
@@ -30,12 +31,11 @@ class UserCreate(BaseModel):
     phone: Optional[str] = None
 
 class UserResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     email: str
     first_name: str
     last_name: str
     phone: Optional[str] = None
     is_active: bool
-
-    class Config:
-        from_attributes = True

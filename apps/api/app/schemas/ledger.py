@@ -2,7 +2,7 @@ from typing import Optional, List
 from datetime import date, datetime
 import uuid
 from decimal import Decimal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict, model_validator
 
 class AccountBase(BaseModel):
     code: str
@@ -16,15 +16,12 @@ class AccountCreate(AccountBase):
     pass
 
 class AccountResponse(AccountBase):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     tenant_id: uuid.UUID
     is_active: bool
     created_at: datetime
-
-    class Config:
-        from_attributes = True
-
-from pydantic import BaseModel, Field, model_validator
 
 class JournalLineCreate(BaseModel):
     account_id: uuid.UUID
@@ -41,6 +38,8 @@ class JournalLineCreate(BaseModel):
         return self
 
 class JournalLineResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     account_id: uuid.UUID
     account_code: Optional[str] = None
@@ -48,9 +47,6 @@ class JournalLineResponse(BaseModel):
     debit_amount: Decimal
     credit_amount: Decimal
     description: Optional[str]
-
-    class Config:
-        from_attributes = True
 
 class JournalEntryCreate(BaseModel):
     entry_number: str
@@ -76,6 +72,8 @@ class JournalEntryCreate(BaseModel):
         return self
 
 class JournalEntryResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     tenant_id: uuid.UUID
     entry_number: str
@@ -85,9 +83,6 @@ class JournalEntryResponse(BaseModel):
     is_posted: bool
     lines: List[JournalLineResponse] = []
     created_at: datetime
-
-    class Config:
-        from_attributes = True
 
 class TrialBalanceItem(BaseModel):
     account_id: uuid.UUID

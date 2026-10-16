@@ -1,12 +1,16 @@
 import os
 from typing import Optional
 try:
-    from pydantic_settings import BaseSettings
+    from pydantic_settings import BaseSettings, SettingsConfigDict
 except ImportError:
     class BaseSettings:
         pass
+    class SettingsConfigDict:
+        def __init__(self, **kwargs):
+            pass
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(extra="ignore", case_sensitive=True)
     PROJECT_NAME: str = "b00k5"
     VERSION: str = "1.0.0"
     API_V1_STR: str = "/api/v1"
@@ -41,6 +45,7 @@ class Settings(BaseSettings):
     BUCKET_VAULT: str = os.getenv("MINIO_BUCKET_STATUTORY", "b00k5-statutory")
     BUCKET_EXPENSES: str = os.getenv("MINIO_BUCKET_RECEIPTS", "b00k5-receipts")
     BUCKET_INVOICES: str = os.getenv("MINIO_BUCKET_RECEIPTS", "b00k5-receipts")
+    BUCKET_BACKUPS: str = os.getenv("MINIO_BUCKET_BACKUPS", "b00k5-backups")
 
     # Security & Auth
     APP_ENV: str = os.getenv("APP_ENV", "development")
@@ -51,9 +56,6 @@ class Settings(BaseSettings):
 
     # Hardware DSC Bridge
     DSC_BRIDGE_URL: str = os.getenv("DSC_BRIDGE_URL", "http://127.0.0.1:28045")
-
-    class Config:
-        case_sensitive = True
 
 
 KNOWN_INSECURE_SECRETS = {

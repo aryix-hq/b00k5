@@ -17,13 +17,18 @@ import {
   Hash,
   Eye,
   RefreshCw,
-  Lock
+  Lock,
+  Info,
+  ExternalLink,
+  BookOpen
 } from 'lucide-react';
 import { fetchApi } from '@/lib/api';
+import { AboutModal } from '@/components/AboutModal';
 
 export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [showAboutModal, setShowAboutModal] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   const [profile, setProfile] = useState({
@@ -55,7 +60,7 @@ export default function SettingsPage() {
           const data = await res.json();
           const dbLogo = data.logo_url || '';
           if (dbLogo) {
-            localStorage.setItem('b00k5_logo_url', dbLogo);
+            try { localStorage.setItem('b00k5_logo_url', dbLogo); } catch (e) {}
           } else {
             localStorage.removeItem('b00k5_logo_url');
           }
@@ -124,17 +129,25 @@ export default function SettingsPage() {
     fd.append('file', file);
 
     try {
-      const token = localStorage.getItem('b00k5_token');
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/setup/upload-logo`, {
+      const token = localStorage.getItem('b00k5_token') || localStorage.getItem('token');
+      const tenantId =
+        localStorage.getItem('b00k5_active_tenant_id') ||
+        localStorage.getItem('b00k5_tenant_id') ||
+        localStorage.getItem('tenant_id');
+      const headers: Record<string, string> = {};
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      if (tenantId) headers['X-Tenant-ID'] = tenantId;
+      const url = `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/setup/upload-logo${token ? `?token=${encodeURIComponent(token)}` : ''}${tenantId ? `&tenant_id=${encodeURIComponent(tenantId)}` : ''}`;
+      const res = await fetch(url, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
+        headers,
         body: fd
       });
 
       if (res.ok) {
         const data = await res.json();
         setProfile(p => ({ ...p, logo_url: data.logo_url }));
-        localStorage.setItem('b00k5_logo_url', data.logo_url);
+        try { localStorage.setItem('b00k5_logo_url', data.logo_url); } catch (e) {}
         setMessage({ type: 'success', text: 'Company logo uploaded and updated across all letterheads!' });
       } else {
         setMessage({ type: 'error', text: 'Failed to upload logo image.' });
@@ -672,15 +685,54 @@ export default function SettingsPage() {
                       {profile.statutory_profile?.status || profile.statutory_profile?.business_commencement?.status || 'Business Commencement Declared u/s 10A'}
                     </p>
                     <span className="text-[10px] text-slate-500">
-                      SRN: {profile.statutory_profile?.srn || 'AB6835884'} | Required before borrowing powers activate
+                      SRN: {profile.statutory_profile?.srn || 'SRN12345678'} | Required before borrowing powers activate
                     </span>
                   </div>
+                </div>
+              </div>
+
+              {/* About b00k5 & ARYIX Ecosystem Card */}
+              <div className="p-6 bg-slate-900 border border-slate-800 rounded-xl space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Info className="w-4 h-4 text-sky-400" />
+                    <h3 className="text-sm font-semibold text-white">About b00k5 &amp; ARYIX</h3>
+                  </div>
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-sky-500/10 text-sky-400 border border-sky-500/20 font-semibold">
+                    v1.0.4-ga
+                  </span>
+                </div>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  b00k5 is the sovereign, local-first Indian financial ERP engineered by <strong>ARYIX</strong>. Free and open source under Apache 2.0.
+                </p>
+                <div className="flex flex-wrap items-center gap-3 pt-1">
+                  <button
+                    id="settings-about-btn"
+                    type="button"
+                    onClick={() => setShowAboutModal(true)}
+                    className="px-3 py-1.5 bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 transition cursor-pointer"
+                  >
+                    <BookOpen className="w-3.5 h-3.5" />
+                    <span>View Sovereign Manifesto &amp; Offerings</span>
+                  </button>
+                  <a
+                    id="settings-aryix-link"
+                    href="https://www.aryix.co.in/"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold rounded-lg flex items-center gap-1.5 transition"
+                  >
+                    <span>Visit ARYIX</span>
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  </a>
                 </div>
               </div>
             </div>
           </div>
         </main>
       </div>
+
+      <AboutModal isOpen={showAboutModal} onClose={() => setShowAboutModal(false)} />
     </div>
   );
 }

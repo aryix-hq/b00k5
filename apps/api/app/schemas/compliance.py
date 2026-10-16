@@ -2,7 +2,7 @@ from typing import Optional, Dict, Any, List
 from datetime import date, datetime
 import uuid
 from decimal import Decimal
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 class ComplianceEventCreate(BaseModel):
     category: str # board_meeting_120d, dir3_kyc, aoc_4, mgt_7, inc_20a, advance_tax, gstr_1, gstr_3b
@@ -14,6 +14,8 @@ class ComplianceEventCreate(BaseModel):
     metadata_json: Optional[Dict[str, Any]] = None
 
 class ComplianceEventResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     tenant_id: uuid.UUID
     category: str
@@ -28,9 +30,8 @@ class ComplianceEventResponse(BaseModel):
     completed_at: Optional[datetime] = None
     document_id: Optional[uuid.UUID] = None
     created_at: datetime
-
-    class Config:
-        from_attributes = True
+    fiscal_year: Optional[str] = None
+    assessment_year: Optional[str] = None
 
 class ComplianceSummaryResponse(BaseModel):
     total_events: int

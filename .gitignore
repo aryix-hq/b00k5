@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+.venv
 
 # Python
 __pycache__/
@@ -45,3 +46,19 @@ tests/e2e/screenshots/
 # OS
 .DS_Store
 Thumbs.db
+
+# Storage, Dumps & Backups
+storage/
+dumps/
+backups/
+*.tar.gz
+*.sql.gz
+*.dump
+
+#anti
+.agents/*
+AGENTS.md
+DEFECT_INVENTORY.md
+AUDIT_REPORT_360.md
+plans/*
+PROJECT_EXECUTION_PLAN.md

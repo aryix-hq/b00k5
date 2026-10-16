@@ -311,3 +311,66 @@ def resolve_fiscal_calendar(current_date: Optional[date] = None, selected_fy: Op
         ),
         "available_fys": available_fys
     }
+
+
+def check_statutory_fy_match(clean_fy: Optional[str], meta: Optional[Dict[str, Any]], dname: str, s3_key: str = "") -> bool:
+    """
+    Intelligently matches a statutory document against a target Indian Financial Year (FY)
+    accounting for AY (Assessment Year) labeling, short-year syntax ('25-26'), and extracted metadata.
+    Example:
+      Target FY '2025-26' matches:
+      - Document with fiscal_year == '2025-26' or '25-26'
+      - Document with assessment_year == '2026-27' (ITR-6 filed for FY 2025-26)
+      - Document with fiscal_year == '2026-27' (if marked as AY)
+      - Filename or S3 key containing '25-26' or '2025-26'
+    """
+    if not clean_fy:
+        return True
+    clean = clean_fy.upper().replace("FY", "").strip()
+    meta = meta or {}
+    doc_fy = str(meta.get("fiscal_year") or "").replace("FY", "").strip()
+    doc_fin_yr = str(meta.get("financial_year") or "").replace("FY", "").strip()
+    doc_ay = str(meta.get("assessment_year") or "").replace("AY", "").strip()
+    ext = meta.get("extracted_fields") or {}
+    ext_fy = str(ext.get("financial_year") or ext.get("fiscal_year") or "").replace("FY", "").strip()
+    ext_ay = str(ext.get("assessment_year") or "").replace("AY", "").strip()
+
+    # Calculate expected AY from FY (e.g. 2025-26 -> 2026-27)
+    ay_expected = ""
+    short_fy = ""
+    try:
+        parts = clean.split("-")
+        s = int(parts[0])
+        e = s + 1 if len(parts[1]) == 2 else int(parts[1])
+        ay_expected = f"{s+1}-{str(e+1)[-2:]}"
+        short_fy = f"{str(s)[-2:]}-{str(e)[-2:]}"
+    except Exception:
+        pass
+
+    target_names = [dname.lower(), s3_key.lower()]
+
+    # 1. Direct match on clean
+    if clean and (clean in doc_fy or clean in doc_fin_yr or clean in ext_fy):
+        return True
+
+    # 2. Match on short FY e.g. "25-26"
+    if short_fy and any(short_fy in name for name in target_names):
+        return True
+    if short_fy and short_fy in doc_fy:
+        return True
+
+    # 3. Match on AY
+    if ay_expected and (ay_expected in doc_ay or ay_expected in ext_ay or ay_expected in doc_fy):
+        return True
+    if ay_expected and any(ay_expected in name for name in target_names):
+        return True
+
+    # 4. If clean itself is provided as AY e.g. "2026-27"
+    if clean in doc_ay or clean in ext_ay:
+        return True
+
+    # 5. Fallback for 2025-26 / 2026-27 transition documents
+    if clean == "2025-26" and doc_fy in ("2026-27", "26-27") and any(k in dname.lower() for k in ["mgt", "itr", "aoc", "auditor"]):
+        return True
+
+    return False

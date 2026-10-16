@@ -15,6 +15,7 @@ from typing import Optional, Dict, Any, Tuple, List
 
 from app.core.fiscal_year import get_financial_year, get_assessment_year, is_date_in_fy, get_fy_date_bounds
 from app.services.gst_calculator import validate_gstin_checksum, INDIAN_STATE_CODES
+from app.services.ocr_service import OCR_MERCHANT_BLACKLIST, is_blacklisted_merchant, extract_counterparty_from_invoice_text
 
 GSTIN_REGEX = re.compile(r'\b([0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1})\b')
 PAN_REGEX = re.compile(r'\b([A-Z]{5}[0-9]{4}[A-Z]{1})\b')
@@ -52,7 +53,7 @@ STANDARD_EXPENSE_CATEGORIES = [
         "code": "4040",
         "name": "Legal, MCA Compliance & Professional Fees",
         "schedule_iii": "Other Expenses - Legal & Professional",
-        "keywords": ["CHARTERED ACCOUNTANT", "LEGAL", "ADVOCATE", "CONSULTING", "COMPANY SECRETARY", "ROC FILING", "MCA", "MINISTRY OF CORPORATE AFFAIRS", "CORPORATE AFFAIRS", "REGISTRAR OF COMPANIES", "CHALLAN", "AUDITOR", "ADVISORY", "SHASTRY", "PROFESSIONAL FEE", "LEGAL EXPENSES"],
+        "keywords": ["CHARTERED ACCOUNTANT", "LEGAL", "ADVOCATE", "CONSULTING", "COMPANY SECRETARY", "ROC FILING", "MCA", "MINISTRY OF CORPORATE AFFAIRS", "CORPORATE AFFAIRS", "REGISTRAR OF COMPANIES", "CHALLAN", "AUDITOR", "ADVISORY", "PROFESSIONAL FEE", "LEGAL EXPENSES"],
         "display": "[4040] Legal, MCA Compliance & Professional Fees"
     },
     {
@@ -700,11 +701,39 @@ class StatutoryBillAnalyzer:
                     if len(cand) > 2 and not any(w in cand.upper() for w in ["GSTIN", "STATE", "DATE", "ADDRESS", "INVOICE", "RAZORPAY"]):
                         return cand
 
+        # Check explicit Sold By / Seller / Supplier / Vendor lines
+        if not is_customer_invoice:
+            cp_extracted = extract_counterparty_from_invoice_text(text)
+            if cp_extracted and not is_blacklisted_merchant(cp_extracted):
+                return cp_extracted
+
+            sold_by_match = re.search(
+                r'(?:Sold\s*By|Seller\s*Name|Vendor\s*Name|Supplier\s*Name|Billed\s*By|Biller\s*Name)\s*[:\-]?\s*([^\n\r]+)',
+                text,
+                re.I
+            )
+            if sold_by_match:
+                cand = sold_by_match.group(1).strip()
+                cand_clean = re.sub(r'[^A-Za-z0-9\s\.\&,\-]', '', cand).strip()
+                if len(cand_clean) > 3 and not is_blacklisted_merchant(cand_clean) and not any(k in cand_clean.upper() for k in ["GSTIN", "STATE", "DATE", "PAN", "CIN"]):
+                    return cand_clean
+
         # Check known common vendors
         text_upper = text.upper()
         known_vendors = [
             ("AMAZON WEB SERVICES", "Amazon Web Services India Pvt Ltd"),
             ("AWS", "Amazon Web Services India Pvt Ltd"),
+            ("AMAZON SELLER", "Amazon Seller Services Private Limited"),
+            ("AMAZON RETAIL", "Amazon Retail India Private Limited"),
+            ("AMAZON PAY", "Amazon Pay (India) Private Limited"),
+            ("APPARIO RETAIL", "Appario Retail Private Limited"),
+            ("APPARIO", "Appario Retail Private Limited"),
+            ("CLOUDTAIL INDIA", "Cloudtail India Private Limited"),
+            ("CLOUDTAIL", "Cloudtail India Private Limited"),
+            ("AMAZON.IN", "Amazon Seller Services Private Limited"),
+            ("AMAZON INDIA", "Amazon Seller Services Private Limited"),
+            ("AMAZON", "Amazon Seller Services Private Limited"),
+            ("FLIPKART", "Flipkart Internet Private Limited"),
             ("GOOGLE CLOUD", "Google Cloud India Private Limited"),
             ("GOOGLE IRELAND", "Google Ireland Limited"),
             ("MICROSOFT", "Microsoft Corporation (India) Pvt Ltd"),
@@ -728,7 +757,7 @@ class StatutoryBillAnalyzer:
             ("AWFIS", "Awfis Space Solutions Limited"),
             ("APPLE", "Apple India Private Limited"),
             ("DELL", "Dell India Private Limited"),
-            ("S SHASTRY", "S Shastry & Co (Chartered Accountants)"),
+            ("APEX AUDIT", "M/s Apex Audit & Associates (Chartered Accountants)"),
             ("RAMAN & ASSOCIATES", "M/s S. Raman & Associates (Statutory Auditors)")
         ]
         if not is_customer_invoice:
@@ -741,13 +770,15 @@ class StatutoryBillAnalyzer:
         ignored_keywords = [
             "TAX INVOICE", "ORIGINAL FOR RECIPIENT", "DUPLICATE", "TRIPLICATE", "INVOICE",
             "BILL", "GSTIN", "CIN", "PAN", "DATE", "PAGE", "SUPPLY", "REVERSE CHARGE",
-            "HSN", "SAC", "STATE CODE", "TOTAL", "AMOUNT", "DESCRIPTION", "PARTICULARS"
+            "HSN", "SAC", "STATE CODE", "TOTAL", "AMOUNT", "DESCRIPTION", "PARTICULARS",
+            "SIGNATURE VALID", "SIGNATURE NOT VERIFIED", "DIGITALLY SIGNED", "DIGITAL SIGNATURE",
+            "SIGNATURE", "SIGNED BY", "VALID", "INVALID", "AUTHENTICATED", "REASON", "LOCATION"
         ]
         for line in lines[:12]:
             clean = re.sub(r'[^A-Za-z0-9\s\.\&,\-]', '', line).strip()
-            if len(clean) > 3 and not any(k in clean.upper() for k in ignored_keywords):
-                # Ensure contains letters
-                if re.search(r'[A-Za-z]{3,}', clean):
+            if len(clean) > 3 and not is_blacklisted_merchant(clean) and not any(k in clean.upper() for k in ignored_keywords):
+                # Ensure contains letters and not just numbers/dates
+                if re.search(r'[A-Za-z]{3,}', clean) and not any(sig in clean.upper() for sig in ("SIGNATURE", "VALID")):
                     return clean
 
         # Filename fallback

@@ -6,9 +6,10 @@ The **b00k5** persistence tier is engineered exclusively on **PostgreSQL 16+**, 
 
 ### Key Data Invariant Standards:
 1. **Primary Keys:** Every table uses canonical Version 4 Universally Unique Identifiers (`UUID`) generated via `uuid_generate_v4()`.
-2. **Monetary Precision:** Floats (`FLOAT`, `DOUBLE PRECISION`) are prohibited. All monetary and currency values use `NUMERIC(15, 2)` or `NUMERIC(12, 2)` to eliminate IEEE 754 binary floating-point drift.
-3. **Transaction Immutability:** Posted general ledger vouchers (`is_posted = TRUE`) reject `UPDATE` and `DELETE` queries via PostgreSQL triggers (`enforce_journal_immutability`). Adjustments must be recorded via compensating reversal entries or credit/debit notes.
-4. **Multi-Tenant Row-Level Security:** Every multi-tenant table enforces `FORCE ROW LEVEL SECURITY` linked to `current_setting('app.current_tenant_id', true)::UUID`.
+2. **Monetary Precision:** Binary floats (`FLOAT`, `DOUBLE PRECISION`) are strictly prohibited. All monetary and currency values use `NUMERIC(15, 2)` to eliminate IEEE 754 binary floating-point drift.
+3. **Transaction Immutability:** Posted general ledger vouchers (`is_posted = TRUE`) reject `UPDATE` and `DELETE` queries via PostgreSQL kernel triggers (`enforce_journal_immutability`). Adjustments must be recorded via compensating reversal entries or credit/debit notes.
+4. **Multi-Tenant Row-Level Security:** Every multi-tenant table enforces `ENABLE ROW LEVEL SECURITY` and `FORCE ROW LEVEL SECURITY` linked to `current_setting('app.current_tenant', true)::UUID`.
+5. **Companies Act Section 128 Retention:** Foreign keys linking operational records (`journal_entries`, `invoices`, `expenses`, `document_vault`, `statutory_filing_anchors`) to `tenants` enforce `ON DELETE RESTRICT`. Tenant deactivation occurs via soft archiving (`is_archived = TRUE`, `archived_at = TIMESTAMPTZ`), safeguarding the statutory 8-year record preservation requirement.
 
 ---
 
@@ -18,6 +19,7 @@ The **b00k5** persistence tier is engineered exclusively on **PostgreSQL 16+**, 
 erDiagram
     TENANTS ||--o{ TENANT_USERS : has
     USERS ||--o{ TENANT_USERS : belongs_to
+    TENANTS ||--o{ FISCAL_YEARS : defines
     TENANTS ||--o{ CHART_OF_ACCOUNTS : owns
     TENANTS ||--o{ JOURNAL_ENTRIES : records
     JOURNAL_ENTRIES ||--|{ JOURNAL_LINES : contains
@@ -34,6 +36,10 @@ erDiagram
     BANK_STATEMENTS ||--|{ BANK_STATEMENT_LINES : details
     BANK_STATEMENT_LINES ||--o| JOURNAL_ENTRIES : matches
     TENANTS ||--o{ DOCUMENT_VAULT : stores
+    TENANTS ||--o{ STATUTORY_FILING_ANCHORS : locks
+    TENANTS ||--o{ ADVANCE_TAX_FORECASTS : models
+    TENANTS ||--o{ ADVANCE_TAX_CHALLANS : tracks
+    TENANTS ||--o{ GST_CHALLANS : tracks
     TENANTS ||--o{ COMPLIANCE_EVENTS : tracks
     TENANTS ||--o{ CORPORATE_MEETINGS : convenes
     TENANTS ||--o{ DSC_SIGNATURE_AUDIT : logs
@@ -49,7 +55,9 @@ erDiagram
         varchar pan UK
         char state_code
         text registered_office
-        timestamp created_at
+        boolean is_archived
+        timestamptz archived_at
+        timestamptz created_at
     }
 
     USERS {
@@ -58,9 +66,9 @@ erDiagram
         text password_hash
         varchar first_name
         varchar last_name
-        varchar phone
         boolean is_active
-        timestamp created_at
+        boolean is_superuser
+        timestamptz created_at
     }
 
     TENANT_USERS {
@@ -68,59 +76,67 @@ erDiagram
         uuid tenant_id FK
         uuid user_id FK
         varchar role
-        boolean is_primary
-        timestamp joined_at
+        timestamptz created_at
+    }
+
+    FISCAL_YEARS {
+        uuid id PK
+        uuid tenant_id FK
+        varchar label
+        date start_date
+        date end_date
+        varchar status
+        date lock_date
+        boolean is_locked
     }
 
     CHART_OF_ACCOUNTS {
         uuid id PK
         uuid tenant_id FK
-        varchar code
+        varchar code UK
         varchar name
-        varchar type
-        varchar sub_type
-        varchar normal_balance
+        varchar classification
+        varchar schedule_iii_head
+        boolean is_system
         boolean is_active
-        boolean is_reconciled
     }
 
     JOURNAL_ENTRIES {
         uuid id PK
         uuid tenant_id FK
         varchar entry_number UK
-        date entry_date
+        date date
+        varchar entry_type
         text narration
-        varchar source_document_type
-        uuid source_document_id
         boolean is_posted
-        timestamp posted_at
+        timestamptz posted_at
+        uuid created_by FK
     }
 
     JOURNAL_LINES {
         uuid id PK
         uuid journal_entry_id FK
-        uuid tenant_id FK
         uuid account_id FK
-        numeric debit_amount
-        numeric credit_amount
-        text description
+        numeric debit
+        numeric credit
+        text narration
+        integer line_order
     }
 
     INVOICES {
         uuid id PK
         uuid tenant_id FK
-        uuid contact_id FK
+        uuid customer_id FK
         varchar invoice_number UK
-        varchar type
-        date issue_date
+        date invoice_date
         date due_date
-        char place_of_supply
+        varchar place_of_supply
         boolean is_interstate
         numeric subtotal
-        numeric cgst_total
-        numeric sgst_total
-        numeric igst_total
-        numeric grand_total
+        numeric cgst_amount
+        numeric sgst_amount
+        numeric igst_amount
+        numeric total_amount
         varchar status
         uuid journal_entry_id FK
     }
@@ -128,397 +144,339 @@ erDiagram
     EXPENSES {
         uuid id PK
         uuid tenant_id FK
-        varchar merchant_name
-        numeric base_amount
-        numeric tax_amount
-        numeric total_amount
+        varchar expense_number UK
         date expense_date
-        varchar category
+        numeric total_amount
         varchar payment_mode
-        boolean paid_personally
-        varchar director_payable_code
-        varchar status
-        boolean is_struck_off
+        varchar payment_status
+        boolean is_director_loan
+        varchar dpt3_status
         uuid journal_entry_id FK
     }
 
-    BANK_STATEMENTS {
+    STATUTORY_FILING_ANCHORS {
         uuid id PK
         uuid tenant_id FK
-        varchar bank_name
-        varchar account_number
-        varchar statement_period
-        numeric opening_balance
-        numeric closing_balance
-        integer total_transactions
-        integer matched_transactions
-        varchar status
+        varchar fiscal_year
+        varchar assessment_year
+        varchar form_type
+        varchar srn_or_ack_number
+        date filing_date
+        varchar signatory_din
+        varchar auditor_udin
+        varchar s3_document_key
+        varchar document_sha256
+        jsonb schedule_iii_payload
+        boolean is_locked
     }
 
-    BANK_STATEMENT_LINES {
+    ADVANCE_TAX_FORECASTS {
         uuid id PK
-        uuid statement_id FK
         uuid tenant_id FK
-        date transaction_date
-        text description
-        varchar reference_number
-        numeric debit_amount
-        numeric credit_amount
-        numeric balance_after
-        varchar reconciliation_status
-        uuid matched_journal_entry_id FK
-        integer match_tier
+        varchar fiscal_year
+        varchar assessment_year
+        date calculation_date
+        numeric projected_annual_profit
+        numeric effective_tax_rate
+        numeric net_advance_tax_payable
+        numeric q1_due
+        numeric q2_due
+        numeric q3_due
+        numeric q4_due
+        numeric interest_234b_projected
+        numeric interest_234c_projected
     }
 
-    DOCUMENT_VAULT {
+    GST_CHALLANS {
         uuid id PK
         uuid tenant_id FK
-        varchar category
-        varchar document_name
-        varchar document_number
-        varchar minio_s3_key
-        bigint file_size_bytes
-        varchar mime_type
-        char sha256_hash
-        timestamp verified_at
+        varchar fiscal_year
+        varchar period
+        varchar frequency
+        varchar challan_type
+        varchar cpin UK
+        numeric total_amount
+        date payment_date
     }
 ```
 
 ---
 
-## 3. Data Dictionary & Table Specifications
+## 3. Comprehensive Table Data Dictionary
 
 ### 3.1 Organization & Identity
 
 #### `tenants`
-Stores corporate entities registered under MCA (Private Limited, OPC, LLP).
-* `id` (`UUID`, PK, `uuid_generate_v4()`): Unique tenant ID.
-* `legal_name` (`VARCHAR(255)`, NOT NULL): Official name as per Certificate of Incorporation (COI).
-* `trade_name` (`VARCHAR(255)`): Brand / DBA name.
-* `cin` (`VARCHAR(21)`, UNIQUE): 21-digit Corporate Identity Number (e.g., `U72900KA2026PTC123456`).
+Stores registered legal entities (Private Limited, OPC, LLP).
+* `id` (`UUID`, PK): Entity unique identifier.
+* `legal_name` (`VARCHAR(255)`, NOT NULL): Official legal name registered with MCA.
+* `trade_name` (`VARCHAR(255)`): Trade/doing-business-as name.
+* `cin` (`VARCHAR(21)`, UNIQUE): 21-character Corporate Identity Number.
 * `gstin` (`VARCHAR(15)`, UNIQUE): 15-character Goods and Services Tax Identification Number.
 * `pan` (`VARCHAR(10)`, UNIQUE): 10-character Permanent Account Number.
-* `state_code` (`CHAR(2)`, NOT NULL): 2-digit Indian State Code as per GSTN (e.g., `29` for Karnataka, `27` for Maharashtra).
-* `registered_office` (`TEXT`, NOT NULL): Registered address as per MCA Master Data.
-* `financial_year_start` (`DATE`, DEFAULT `'2025-04-01'`): Start date of the current accounting period.
+* `state_code` (`CHAR(2)`, NOT NULL): 2-digit Indian State code (e.g., `29` for Karnataka).
+* `registered_office` (`TEXT`): Official registered address for statutory notices.
+* `is_archived` (`BOOLEAN`, DEFAULT `FALSE`): Companies Act Sec 128 soft-delete flag.
+* `archived_at` (`TIMESTAMPTZ`): Timestamp when organization was archived.
 * `created_at` (`TIMESTAMPTZ`, DEFAULT `CURRENT_TIMESTAMP`).
 
 #### `users`
-Global platform accounts capable of membership across multiple tenants.
-* `id` (`UUID`, PK, `uuid_generate_v4()`).
-* `email` (`VARCHAR(255)`, UNIQUE, NOT NULL): Primary login email.
-* `password_hash` (`TEXT`, NOT NULL): Bcrypt password hash.
-* `first_name` (`VARCHAR(128)`, NOT NULL).
-* `last_name` (`VARCHAR(128)`, NOT NULL).
-* `phone` (`VARCHAR(20)`).
-* `is_active` (`BOOLEAN`, DEFAULT `TRUE`).
+Global authentication directory.
+* `id` (`UUID`, PK): User unique identifier.
+* `email` (`VARCHAR(255)`, UNIQUE, NOT NULL): Authentication email address.
+* `password_hash` (`TEXT`, NOT NULL): Argon2id or bcrypt password hash.
+* `first_name` (`VARCHAR(100)`), `last_name` (`VARCHAR(100)`).
+* `is_active` (`BOOLEAN`, DEFAULT `TRUE`): Login active state.
+* `is_superuser` (`BOOLEAN`, DEFAULT `FALSE`): Platform admin privilege.
 
 #### `tenant_users`
-Maps users to specific corporate tenants with Role-Based Access Control (RBAC).
+Multi-tenant membership and Role-Based Access Control (RBAC).
 * `id` (`UUID`, PK).
-* `tenant_id` (`UUID`, FK `tenants.id` ON DELETE CASCADE).
-* `user_id` (`UUID`, FK `users.id` ON DELETE CASCADE).
-* `role` (`VARCHAR(64)`, NOT NULL): One of `owner`, `admin`, `accountant`, `auditor_ca`, `viewer`.
-* `din` (`VARCHAR(8)`): Director Identification Number for signers.
-* `is_primary` (`BOOLEAN`, DEFAULT `FALSE`).
-* Unique constraint: `(tenant_id, user_id)`.
+* `tenant_id` (`UUID`, NOT NULL, FK `tenants.id` ON DELETE RESTRICT).
+* `user_id` (`UUID`, NOT NULL, FK `users.id` ON DELETE CASCADE).
+* `role` (`VARCHAR(50)`, NOT NULL): Role persona (`owner`, `admin`, `accountant`, `auditor_ca`, `viewer`).
 
 ---
 
-### 3.2 General Ledger & Chart of Accounts
+### 3.2 General Ledger & Financial Invariants
+
+#### `fiscal_years`
+Tracks financial year operating states and 3-stage closing cycles.
+* `id` (`UUID`, PK).
+* `tenant_id` (`UUID`, NOT NULL, FK `tenants.id`).
+* `label` (`VARCHAR(32)`, NOT NULL): Display label (e.g., `FY 2026-27`).
+* `start_date` (`DATE`, NOT NULL): April 1 of start year.
+* `end_date` (`DATE`, NOT NULL): March 31 of end year.
+* `status` (`VARCHAR(32)`, NOT NULL): `active_operating`, `audit_closing_window`, or `statutory_frozen`.
+* `lock_date` (`DATE`): Date after which voucher modifications are prohibited.
+* `is_locked` (`BOOLEAN`, DEFAULT `FALSE`).
 
 #### `chart_of_accounts`
-Standard Schedule III / GAAP accounts master.
+Schedule III Division I compliant nominal, real, and personal accounts.
 * `id` (`UUID`, PK).
-* `tenant_id` (`UUID`, FK `tenants.id`).
-* `code` (`VARCHAR(32)`, NOT NULL): Numerical account code (e.g., `1010`, `2050`).
-* `name` (`VARCHAR(255)`, NOT NULL): Descriptive ledger name.
-* `type` (`VARCHAR(32)`, NOT NULL): `asset`, `liability`, `equity`, `revenue`, `expense`.
-* `sub_type` (`VARCHAR(64)`, NOT NULL): E.g., `bank`, `current_asset`, `tax_liability`, `payroll`.
-* `normal_balance` (`VARCHAR(8)`, NOT NULL): Either `debit` or `credit`.
+* `tenant_id` (`UUID`, NOT NULL, FK `tenants.id`).
+* `code` (`VARCHAR(20)`, NOT NULL): Unique numerical account code (e.g., `1001`, `2105`, `4001`).
+* `name` (`VARCHAR(255)`, NOT NULL): Account title.
+* `classification` (`VARCHAR(50)`, NOT NULL): `ASSET`, `LIABILITY`, `EQUITY`, `REVENUE`, `EXPENSE`.
+* `schedule_iii_head` (`VARCHAR(100)`): Schedule III Non-Ind AS line mapping.
+* `is_system` (`BOOLEAN`, DEFAULT `FALSE`): Protected platform account.
 * `is_active` (`BOOLEAN`, DEFAULT `TRUE`).
-* Unique constraint: `(tenant_id, code)`.
 
 #### `journal_entries`
-Immutable double-entry transaction headers.
+Double-entry voucher headers.
 * `id` (`UUID`, PK).
-* `tenant_id` (`UUID`, FK `tenants.id`).
-* `entry_number` (`VARCHAR(64)`, NOT NULL): Sequence voucher number (e.g., `JV-EXP-4DD0057B`, `INV-2026-001`).
-* `entry_date` (`DATE`, NOT NULL): Effective accounting date.
-* `narration` (`TEXT`, NOT NULL): Business justification / explanation.
-* `source_document_type` (`VARCHAR(64)`): E.g., `invoice`, `expense`, `bank_reconciliation`, `period_close`.
-* `source_document_id` (`UUID`): Link to parent invoice/expense/bank line.
-* `is_posted` (`BOOLEAN`, DEFAULT `FALSE`): When `TRUE`, record becomes permanently immutable.
-* `posted_at` (`TIMESTAMPTZ`): Timestamp of formal ledger entry.
+* `tenant_id` (`UUID`, NOT NULL, FK `tenants.id` ON DELETE RESTRICT).
+* `entry_number` (`VARCHAR(50)`, NOT NULL): Sequential voucher reference (e.g., `JV-2026-0001`).
+* `date` (`DATE`, NOT NULL): Transaction date (`DD/MM/YYYY`).
+* `entry_type` (`VARCHAR(50)`, NOT NULL): `STANDARD`, `INVOICE`, `EXPENSE`, `BANK`, `REVERSAL`, `AUDIT_ADJUSTMENT`.
+* `narration` (`TEXT`, NOT NULL): Audit rationale.
+* `is_posted` (`BOOLEAN`, DEFAULT `FALSE`): When `TRUE`, trigger blocks updates.
+* `posted_at` (`TIMESTAMPTZ`): Timestamp of posting.
+* `created_by` (`UUID`, FK `users.id`).
 
 #### `journal_lines`
-Individual debit and credit legs of a journal entry.
+Individual debit and credit postings.
 * `id` (`UUID`, PK).
-* `journal_entry_id` (`UUID`, FK `journal_entries.id` ON DELETE RESTRICT).
-* `tenant_id` (`UUID`, FK `tenants.id`).
-* `account_id` (`UUID`, FK `chart_of_accounts.id`).
-* `debit_amount` (`NUMERIC(15, 2)`, NOT NULL, DEFAULT `0.00`, CHECK `>= 0.00`).
-* `credit_amount` (`NUMERIC(15, 2)`, NOT NULL, DEFAULT `0.00`, CHECK `>= 0.00`).
-* `description` (`TEXT`): Line-specific breakdown.
-* Constraint `check_debit_or_credit_positive`: Ensures a line item is either a debit OR a credit, never both and never both zero.
-
-#### `journal_items` (View)
-Unified view aggregating `journal_lines` with `chart_of_accounts` details for rapid reporting:
-```sql
-CREATE VIEW journal_items AS
-SELECT 
-    jl.id,
-    jl.journal_entry_id,
-    jl.tenant_id,
-    jl.account_id,
-    coa.code AS account_code,
-    coa.name AS account_name,
-    coa.type AS account_type,
-    jl.debit_amount,
-    jl.credit_amount,
-    jl.description,
-    je.entry_date,
-    je.entry_number,
-    je.narration
-FROM journal_lines jl
-JOIN journal_entries je ON jl.journal_entry_id = je.id
-JOIN chart_of_accounts coa ON jl.account_id = coa.id;
-```
+* `journal_entry_id` (`UUID`, NOT NULL, FK `journal_entries.id` ON DELETE CASCADE).
+* `account_id` (`UUID`, NOT NULL, FK `chart_of_accounts.id`).
+* `debit` (`NUMERIC(15, 2)`, NOT NULL, DEFAULT `0.00`): Debit amount ($\ge 0$).
+* `credit` (`NUMERIC(15, 2)`, NOT NULL, DEFAULT `0.00`): Credit amount ($\ge 0$).
+* `narration` (`TEXT`): Line-specific annotation.
+* `line_order` (`INTEGER`, NOT NULL): Sequence order for voucher rendering.
 
 ---
 
-### 3.3 Accounts Receivable & Invoicing
+### 3.3 Banking & 3-Tier Reconciliation
 
-#### `contacts`
-Customer and vendor address book with GSTIN profiles.
+#### `bank_statements`
+Headers for imported bank statements (PDF / CSV / MT940).
 * `id` (`UUID`, PK).
-* `tenant_id` (`UUID`, FK `tenants.id`).
-* `name` (`VARCHAR(255)`, NOT NULL).
-* `is_customer` (`BOOLEAN`, DEFAULT `FALSE`).
-* `is_vendor` (`BOOLEAN`, DEFAULT `FALSE`).
-* `gstin` (`VARCHAR(15)`): Counterparty GSTIN.
-* `pan` (`VARCHAR(10)`): Permanent Account Number.
-* `state_code` (`CHAR(2)`): 2-digit State Code for Place of Supply.
-* `billing_address` (`TEXT`).
+* `tenant_id` (`UUID`, NOT NULL, FK `tenants.id` ON DELETE RESTRICT).
+* `bank_name` (`VARCHAR(100)`, NOT NULL): Bank institution name.
+* `account_number_mask` (`VARCHAR(20)`): Masked account identifier.
+* `period_start` (`DATE`, NOT NULL), `period_end` (`DATE`, NOT NULL).
+* `opening_balance` (`NUMERIC(15, 2)`), `closing_balance` (`NUMERIC(15, 2)`).
+* `s3_document_key` (`VARCHAR(500)`): MinIO object key for authentic uploaded file.
+
+#### `bank_statement_lines`
+Individual bank statement transaction records.
+* `id` (`UUID`, PK).
+* `statement_id` (`UUID`, NOT NULL, FK `bank_statements.id` ON DELETE CASCADE).
+* `transaction_date` (`DATE`, NOT NULL).
+* `value_date` (`DATE`).
+* `amount` (`NUMERIC(15, 2)`, NOT NULL): Positive for credits, negative for debits.
+* `reference_number` (`VARCHAR(100)`): UTR / Cheque / IMPS / NEFT reference.
+* `narration` (`TEXT`): Raw bank narrative.
+* `status` (`VARCHAR(50)`, DEFAULT `'UNRECONCILED'`): `UNRECONCILED`, `PROVISIONALLY_MATCHED`, `RECONCILED`, `SUSPENSE`.
+* `matched_journal_entry_id` (`UUID`, FK `journal_entries.id`).
+* `match_confidence` (`NUMERIC(5, 2)`): 1.00 for Tier 1, 0.85+ for Tier 2.
+
+---
+
+### 3.4 Invoicing & Expenses
 
 #### `invoices`
-Tax Invoices, Proformas, and Credit Notes.
+Sales tax invoices complying with Rule 46 of CGST Rules.
 * `id` (`UUID`, PK).
-* `tenant_id` (`UUID`, FK `tenants.id`).
-* `contact_id` (`UUID`, FK `contacts.id`).
-* `invoice_number` (`VARCHAR(64)`, NOT NULL).
-* `type` (`VARCHAR(32)`, DEFAULT `'tax_invoice'`): `tax_invoice`, `proforma`, `credit_note`, `debit_note`.
-* `issue_date` (`DATE`, NOT NULL).
-* `due_date` (`DATE`, NOT NULL).
-* `place_of_supply` (`CHAR(2)`, NOT NULL): Destination state code.
-* `is_interstate` (`BOOLEAN`, NOT NULL): Automatically evaluated by database trigger: `is_interstate = (place_of_supply != tenant.state_code)`.
+* `tenant_id` (`UUID`, NOT NULL, FK `tenants.id` ON DELETE RESTRICT).
+* `customer_id` (`UUID`, NOT NULL, FK `contacts.id`).
+* `invoice_number` (`VARCHAR(50)`, NOT NULL): Sequential tax invoice series.
+* `invoice_date` (`DATE`, NOT NULL), `due_date` (`DATE`, NOT NULL).
+* `place_of_supply` (`CHAR(2)`, NOT NULL): 2-digit Indian State code.
+* `is_interstate` (`BOOLEAN`, NOT NULL): `TRUE` = IGST, `FALSE` = CGST + SGST.
 * `subtotal` (`NUMERIC(15, 2)`, NOT NULL).
-* `cgst_total` (`NUMERIC(15, 2)`, DEFAULT `0.00`).
-* `sgst_total` (`NUMERIC(15, 2)`, DEFAULT `0.00`).
-* `igst_total` (`NUMERIC(15, 2)`, DEFAULT `0.00`).
-* `grand_total` (`NUMERIC(15, 2)`, NOT NULL).
-* `status` (`VARCHAR(32)`, DEFAULT `'draft'`): `draft`, `sent`, `partially_paid`, `paid`, `cancelled`.
-* `journal_entry_id` (`UUID`, FK `journal_entries.id`).
-
-#### `invoice_items`
-Line items with HSN/SAC classifications.
-* `id` (`UUID`, PK).
-* `invoice_id` (`UUID`, FK `invoices.id` ON DELETE CASCADE).
-* `description` (`TEXT`, NOT NULL).
-* `hsn_sac_code` (`VARCHAR(16)`, NOT NULL): HSN for goods, SAC for services.
-* `quantity` (`NUMERIC(12, 4)`, NOT NULL, DEFAULT `1.0000`).
-* `unit_price` (`NUMERIC(15, 2)`, NOT NULL).
-* `tax_rate_percent` (`NUMERIC(5, 2)`, NOT NULL): E.g., `18.00`, `12.00`, `5.00`.
-* `taxable_amount` (`NUMERIC(15, 2)`, NOT NULL).
 * `cgst_amount` (`NUMERIC(15, 2)`, DEFAULT `0.00`).
 * `sgst_amount` (`NUMERIC(15, 2)`, DEFAULT `0.00`).
 * `igst_amount` (`NUMERIC(15, 2)`, DEFAULT `0.00`).
 * `total_amount` (`NUMERIC(15, 2)`, NOT NULL).
-
----
-
-### 3.4 Accounts Payable, Expenses & Reimbursements
+* `status` (`VARCHAR(50)`, DEFAULT `'DRAFT'`): `DRAFT`, `ISSUED`, `PAID`, `CANCELLED`.
+* `journal_entry_id` (`UUID`, FK `journal_entries.id`): Auto-posted voucher.
 
 #### `expenses`
-Vendor bills and founder out-of-pocket claims.
+Vendor bills, founder out-of-pocket claims, and director loans.
 * `id` (`UUID`, PK).
-* `tenant_id` (`UUID`, FK `tenants.id`).
-* `merchant_name` (`VARCHAR(255)`, NOT NULL).
-* `merchant_gstin` (`VARCHAR(15)`): Extracted via OCR regex.
+* `tenant_id` (`UUID`, NOT NULL, FK `tenants.id` ON DELETE RESTRICT).
+* `vendor_id` (`UUID`, FK `contacts.id`).
+* `expense_number` (`VARCHAR(50)`, NOT NULL).
 * `expense_date` (`DATE`, NOT NULL).
-* `category` (`VARCHAR(64)`, NOT NULL): E.g., `cloud_hosting`, `professional_legal`, `office_rent`.
-* `category_code` (`VARCHAR(16)`): Standard COA reference (e.g., `4010`).
-* `base_amount` (`NUMERIC(15, 2)`, NOT NULL).
-* `tax_amount` (`NUMERIC(15, 2)`, DEFAULT `0.00`).
 * `total_amount` (`NUMERIC(15, 2)`, NOT NULL).
-* `payment_mode` (`VARCHAR(32)`): `bank_transfer`, `credit_card`, `cash`, `upi`.
-* `paid_personally` (`BOOLEAN`, DEFAULT `FALSE`): When `TRUE`, triggers Director Reimbursements liability.
-* `director_payable_code` (`VARCHAR(32)`, DEFAULT `'2105'`).
-* `tds_section` (`VARCHAR(16)`): E.g., `194C`, `194J`, `194I`.
-* `tds_rate_percent` (`NUMERIC(5, 2)`, DEFAULT `0.00`).
-* `tds_deducted_amount` (`NUMERIC(15, 2)`, DEFAULT `0.00`).
-* `status` (`VARCHAR(32)`, DEFAULT `'pending'`): `pending`, `approved`, `reimbursed`, `rejected`.
-* `is_struck_off` (`BOOLEAN`, DEFAULT `FALSE`): Audit trail strike-off flag.
-* `strike_off_reason` (`TEXT`): Auditor rationale when item is voided.
+* `payment_mode` (`VARCHAR(50)`, NOT NULL): `DIRECTOR_PERSONAL`, `COMPANY_BANK`, `PETTY_CASH`.
+* `payment_status` (`VARCHAR(50)`, DEFAULT `'UNPAID'`): `UNPAID`, `REIMBURSED`, `SETTLED`.
+* `is_director_loan` (`BOOLEAN`, DEFAULT `FALSE`): Rule 2(1)(c)(viii) DPT-3 loan flag.
+* `dpt3_status` (`VARCHAR(50)`, DEFAULT `'EXEMPT'`): Statutory loan disclosure status.
+* `sec40a3_violation` (`BOOLEAN`, DEFAULT `FALSE`): Income Tax single-day cash $> ₹10,000$ alert.
 * `journal_entry_id` (`UUID`, FK `journal_entries.id`).
-* `minio_receipt_key` (`VARCHAR(512)`): Path in S3 `b00k5-receipts` bucket.
-
-#### `expense_audit_logs`
-Chronological event ledger recording every edit, strike-off, and status transition.
-* `id` (`UUID`, PK).
-* `expense_id` (`UUID`, FK `expenses.id` ON DELETE CASCADE).
-* `changed_by` (`UUID`, FK `users.id`).
-* `action` (`VARCHAR(64)`, NOT NULL): `created`, `updated`, `struck_off`, `reimbursed`.
-* `previous_state` (`JSONB`).
-* `new_state` (`JSONB`).
-* `change_reason` (`TEXT`).
-* `created_at` (`TIMESTAMPTZ`, DEFAULT `CURRENT_TIMESTAMP`).
 
 ---
 
-### 3.5 Bank Reconciliation
+### 3.5 Statutory Filings, Tax Forecasting & SRE Logs
 
-#### `bank_statements`
-Ingested monthly statement batches.
+#### `statutory_filing_anchors`
+Preserves certified prior-year opening balances from filed returns (**MGT-7/7A**, **AOC-4**, **ITR-6**).
 * `id` (`UUID`, PK).
-* `tenant_id` (`UUID`, FK `tenants.id`).
-* `bank_name` (`VARCHAR(128)`, NOT NULL): E.g., `HDFC Bank`, `ICICI Bank`.
-* `account_number` (`VARCHAR(64)`, NOT NULL).
-* `statement_period` (`VARCHAR(32)`, NOT NULL): E.g., `2025-05`, `2025-06`.
-* `opening_balance` (`NUMERIC(15, 2)`, NOT NULL).
-* `closing_balance` (`NUMERIC(15, 2)`, NOT NULL).
-* `total_transactions` (`INTEGER`, DEFAULT `0`).
-* `matched_transactions` (`INTEGER`, DEFAULT `0`).
-* `status` (`VARCHAR(32)`, DEFAULT `'pending'`): `pending`, `reconciled`, `discrepant`.
+* `tenant_id` (`UUID`, NOT NULL, FK `tenants.id` ON DELETE RESTRICT).
+* `fiscal_year` (`VARCHAR(32)`, NOT NULL): e.g., `FY 2025-26`.
+* `assessment_year` (`VARCHAR(32)`, NOT NULL): e.g., `AY 2026-27`.
+* `form_type` (`VARCHAR(50)`, NOT NULL): `AOC_4`, `MGT_7`, `MGT_7A`, `ITR_6`.
+* `srn_or_ack_number` (`VARCHAR(100)`, NOT NULL): MCA SRN or ITR Ack Number.
+* `filing_date` (`DATE`, NOT NULL).
+* `signatory_din` (`VARCHAR(8)`): Director DIN.
+* `auditor_udin` (`VARCHAR(18)`): ICAI Unique Document Identification Number.
+* `s3_document_key` (`VARCHAR(500)`): MinIO authentic binary key.
+* `document_sha256` (`VARCHAR(64)`): Cryptographic hash.
+* `schedule_iii_payload` (`JSONB`, DEFAULT `'{}'`): Extracted opening balances.
+* `is_locked` (`BOOLEAN`, DEFAULT `TRUE`).
 
-#### `bank_statement_lines`
-Individual lines extracted from bank statements.
+#### `advance_tax_forecasts`
+Income Tax Section 208/209/210 and Section 234B/234C interest projection engine.
 * `id` (`UUID`, PK).
-* `statement_id` (`UUID`, FK `bank_statements.id` ON DELETE CASCADE).
-* `tenant_id` (`UUID`, FK `tenants.id`).
-* `transaction_date` (`DATE`, NOT NULL).
-* `description` (`TEXT`, NOT NULL): Raw narration string.
-* `reference_number` (`VARCHAR(128)`): Extracted UTR, IMPS, or Cheque number.
-* `debit_amount` (`NUMERIC(15, 2)`, DEFAULT `0.00`).
-* `credit_amount` (`NUMERIC(15, 2)`, DEFAULT `0.00`).
-* `balance_after` (`NUMERIC(15, 2)`, NOT NULL).
-* `reconciliation_status` (`VARCHAR(32)`, DEFAULT `'unmatched'`): `unmatched`, `matched`, `suspense`.
-* `matched_journal_entry_id` (`UUID`, FK `journal_entries.id`).
-* `match_tier` (`INTEGER`): `1` (Exact UTR), `2` (Fuzzy date/amount), `3` (Suspense allocation).
+* `tenant_id` (`UUID`, NOT NULL, FK `tenants.id` ON DELETE CASCADE).
+* `fiscal_year` (`VARCHAR(32)`, NOT NULL), `assessment_year` (`VARCHAR(32)`, NOT NULL).
+* `calculation_date` (`DATE`, NOT NULL).
+* `tax_regime` (`VARCHAR(50)`, NOT NULL): e.g., `SECTION_115BAA` (22% + 10% surcharge + 4% cess = 25.168%).
+* `projected_annual_profit` (`NUMERIC(15, 2)`), `net_advance_tax_payable` (`NUMERIC(15, 2)`).
+* `q1_due`, `q2_due`, `q3_due`, `q4_due` (`NUMERIC(15, 2)`): Statutory cumulative installments (15%, 45%, 75%, 100%).
+* `q1_paid`, `q2_paid`, `q3_paid`, `q4_paid` (`NUMERIC(15, 2)`): Actual tax challans credited.
+* `interest_234c_projected`, `interest_234b_projected` (`NUMERIC(15, 2)`): Penal interest calculations.
 
----
-
-### 3.6 Statutory Vault & Compliance
-
-#### `document_vault`
-Central cryptographic legal repository.
+#### `gst_challans`
+Records PMT-06 and GSTR-3B tax payment challans.
 * `id` (`UUID`, PK).
-* `tenant_id` (`UUID`, FK `tenants.id`).
-* `category` (`VARCHAR(64)`, NOT NULL): `corporate_legal`, `tax_registrations`, `operational_licenses`, `equity_captable`, `statutory_filings`.
-* `document_name` (`VARCHAR(255)`, NOT NULL).
-* `document_number` (`VARCHAR(128)`): E.g., PAN, GSTIN, CIN, Resolution number.
-* `minio_s3_key` (`VARCHAR(512)`, NOT NULL): S3 object location.
+* `tenant_id` (`UUID`, NOT NULL, FK `tenants.id` ON DELETE CASCADE).
+* `fiscal_year` (`VARCHAR(32)`, NOT NULL), `period` (`VARCHAR(32)`, NOT NULL).
+* `frequency` (`VARCHAR(32)`, NOT NULL): `MONTHLY`, `QUARTERLY`.
+* `challan_type` (`VARCHAR(32)`, NOT NULL): `PMT_06`, `GSTR_3B`.
+* `cpin` (`VARCHAR(20)`, UNIQUE, NOT NULL): 14-digit Common Portal Identification Number.
+* `cin` (`VARCHAR(30)`): Challan Identification Number.
+* `payment_date` (`DATE`, NOT NULL).
+* `cgst_amount`, `sgst_amount`, `igst_amount`, `cess_amount` (`NUMERIC(15, 2)`).
+* `total_amount` (`NUMERIC(15, 2)`, NOT NULL).
+
+#### `database_backup_logs`
+SRE disaster recovery verification and automated backup registry.
+* `id` (`UUID`, PK).
+* `tenant_id` (`UUID`, NOT NULL, FK `tenants.id`).
+* `backup_filename` (`VARCHAR(255)`, NOT NULL).
+* `backup_type` (`VARCHAR(50)`, NOT NULL): `SCHEDULED_NIGHTLY`, `PRE_UPGRADE`, `DR_DRILL`.
 * `file_size_bytes` (`BIGINT`, NOT NULL).
-* `mime_type` (`VARCHAR(128)`, NOT NULL).
-* `sha256_hash` (`CHAR(64)`, NOT NULL): Cryptographic fingerprint for tamper-evidence.
-* `verified_at` (`TIMESTAMPTZ`): Timestamp when audited by CA.
-
-#### `compliance_events`
-Statutory compliance calendar tracking deadlines and fines.
-* `id` (`UUID`, PK).
-* `tenant_id` (`UUID`, FK `tenants.id`).
-* `title` (`VARCHAR(255)`, NOT NULL).
-* `statutory_ref` (`VARCHAR(128)`, NOT NULL): E.g., `Companies Act Sec 173`, `MCA Form INC-20A`.
-* `due_date` (`DATE`, NOT NULL).
-* `fine_per_day` (`NUMERIC(10, 2)`, DEFAULT `100.00`).
-* `status` (`VARCHAR(32)`, DEFAULT `'upcoming'`): `upcoming`, `due_soon`, `overdue`, `filed`, `verified`, `compliant`.
-* `completion_date` (`DATE`): Recorded filing date.
-* `mca_srn` (`VARCHAR(32)`): Service Request Number from MCA21 portal.
-
-#### `dsc_signature_audit`
-Cryptographic log of hardware DSC token signatures.
-* `id` (`UUID`, PK).
-* `tenant_id` (`UUID`, FK `tenants.id`).
-* `document_id` (`UUID`, FK `document_vault.id`).
-* `signer_user_id` (`UUID`, FK `users.id`).
-* `signer_name` (`VARCHAR(255)`, NOT NULL).
-* `signer_din` (`VARCHAR(8)`): Director Identification Number.
-* `certificate_issuer` (`VARCHAR(255)`, NOT NULL): E.g., `eMudhra`, `Capricorn`, `VSign`.
-* `certificate_serial` (`VARCHAR(128)`, NOT NULL).
-* `sha256_hash` (`CHAR(64)`, NOT NULL): Digest of document signed.
-* `signature_timestamp` (`TIMESTAMPTZ`, DEFAULT `CURRENT_TIMESTAMP`).
+* `checksum_sha256` (`VARCHAR(64)`, NOT NULL).
+* `encryption_mode` (`VARCHAR(50)`, DEFAULT `'AES-256-GCM'`).
+* `status` (`VARCHAR(50)`, DEFAULT `'SUCCESS'`).
 
 ---
 
-## 4. Database Triggers & Business Constraints
+## 4. Kernel Triggers & Stored Functions
 
-### 4.1 Inviolable Zero-Sum Trigger (`check_zero_sum_balance`)
+### 4.1 Transaction Immutability Trigger (`enforce_journal_immutability`)
 ```sql
-CREATE OR REPLACE FUNCTION verify_journal_entry_balance()
+CREATE OR REPLACE FUNCTION enforce_journal_immutability()
 RETURNS TRIGGER AS $$
-DECLARE
-    v_total_debit NUMERIC(15, 2);
-    v_total_credit NUMERIC(15, 2);
-    v_discrepancy NUMERIC(15, 2);
 BEGIN
-    SELECT 
-        COALESCE(SUM(debit_amount), 0.00),
-        COALESCE(SUM(credit_amount), 0.00)
-    INTO v_total_debit, v_total_credit
-    FROM journal_lines
-    WHERE journal_entry_id = NEW.journal_entry_id;
-
-    v_discrepancy := ABS(v_total_debit - v_total_credit);
-
-    IF v_discrepancy > 0.00 THEN
-        RAISE EXCEPTION 'check_zero_sum_balance: Inviolable Double-Entry Invariant Failed! Total Debits (%) != Total Credits (%). Discrepancy: %',
-            v_total_debit, v_total_credit, v_discrepancy;
+    IF OLD.is_posted = TRUE THEN
+        RAISE EXCEPTION 'COMPLIANCE VIOLATION: Posted journal entries are strictly immutable. Compensating adjustment entry required.'
+            USING ERRCODE = 'P0001';
     END IF;
-
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE CONSTRAINT TRIGGER check_zero_sum_balance
-AFTER INSERT OR UPDATE ON journal_lines
-DEFERRABLE INITIALLY DEFERRED
-FOR EACH ROW
-EXECUTE FUNCTION verify_journal_entry_balance();
+CREATE TRIGGER trg_journal_entry_immutability
+BEFORE UPDATE OR DELETE ON journal_entries
+FOR EACH ROW EXECUTE FUNCTION enforce_journal_immutability();
 ```
 
-### 4.2 Immutability Trigger (`enforce_journal_immutability`)
+### 4.2 Balanced Voucher Invariant Function (`check_journal_balance`)
 ```sql
-CREATE OR REPLACE FUNCTION protect_posted_journal_entries()
-RETURNS TRIGGER AS $$
+CREATE OR REPLACE FUNCTION check_journal_balance(entry_id UUID)
+RETURNS BOOLEAN AS $$
+DECLARE
+    v_total_debit NUMERIC(15, 2);
+    v_total_credit NUMERIC(15, 2);
 BEGIN
-    IF OLD.is_posted = TRUE THEN
-        RAISE EXCEPTION 'Immutability Violation: Posted journal entries (entry_number: %) cannot be modified or deleted.', OLD.entry_number;
+    SELECT COALESCE(SUM(debit), 0.00), COALESCE(SUM(credit), 0.00)
+    INTO v_total_debit, v_total_credit
+    FROM journal_lines
+    WHERE journal_entry_id = entry_id;
+
+    IF v_total_debit <> v_total_credit THEN
+        RAISE EXCEPTION 'LEDGER UNBALANCED: Total Debits (%) do not equal Total Credits (%) for voucher %',
+            v_total_debit, v_total_credit, entry_id
+            USING ERRCODE = 'P0002';
     END IF;
-    RETURN OLD;
+
+    RETURN TRUE;
 END;
 $$ LANGUAGE plpgsql;
-
-CREATE TRIGGER enforce_journal_immutability
-BEFORE UPDATE OR DELETE ON journal_entries
-FOR EACH ROW
-EXECUTE FUNCTION protect_posted_journal_entries();
 ```
 
 ---
 
-## 5. Schedule III Chart of Accounts Code Standards
+## 5. Schedule III Chart of Accounts (Non-Ind AS Division I Seed)
 
-| Code Range | Class | Normal Balance | Description | Example Accounts |
-| :--- | :--- | :--- | :--- | :--- |
-| **1000–1099** | Assets (Current & Liquid) | **Debit** | Liquid bank balances, cash, fixed deposits | `1010 Bank (HDFC)`, `1040 Fixed Deposits` |
-| **1100–1199** | Assets (Receivables) | **Debit** | Trade Debtors, customer receivables | `1020 Trade Receivables` |
-| **1200–1299** | Assets (Tax Credits) | **Debit** | Input Tax Credits (GST) | `1030 Input CGST`, `1031 Input SGST`, `1032 Input IGST` |
-| **1500–1599** | Assets (Fixed / PP&E) | **Debit** | Property, Plant & Equipment | `1050 IT Hardware & Workstations` |
-| **2000–2099** | Equity & Capital | **Credit** | Issued share capital, retained earnings | `2010 Share Capital`, `2020 Reserves & Surplus` |
-| **2100–2199** | Liabilities (Director & Debt)| **Credit** | Director borrowings & personal claims | `2030 Director Loans`, `2105 Founder Reimbursements` |
-| **2200–2299** | Liabilities (Payables) | **Credit** | Trade Creditors, vendor payables | `2040 Trade Payables` |
-| **2300–2399** | Liabilities (Tax Duties) | **Credit** | Output GST collected & TDS withheld | `2050 Output CGST`, `2060 TDS Payable u/s 194J` |
-| **2099** | Suspense / Clearing | **Credit** | Unmatched bank statement reconciliation | `2099 Bank Reconciliation Suspense` |
-| **3000–3999** | Revenue (Income) | **Credit** | Operating SaaS sales, consulting services | `3010 SaaS Subscriptions`, `3030 FD Interest` |
-| **4000–4999** | Expenses (Direct) | **Debit** | Cloud compute, hosting, server infrastructure| `4010 Cloud Infrastructure (AWS/GCP)` |
-| **5000–5999** | Expenses (Indirect & Admin)| **Debit** | Salaries, legal counsel, office rent | `4020 Payroll`, `5010 Legal & Professional Fees` |
+| Account Code | Account Name | Classification | Schedule III Head |
+| :--- | :--- | :--- | :--- |
+| `1001` | Equity Share Capital | `EQUITY` | Share Capital |
+| `1002` | Retained Earnings | `EQUITY` | Reserves and Surplus |
+| `2001` | Long-Term Bank Borrowings | `LIABILITY` | Long-Term Borrowings |
+| `2002` | Short-Term Working Capital Loans | `LIABILITY` | Short-Term Borrowings |
+| `2003` | Trade Payables (Sundry Creditors) | `LIABILITY` | Trade Payables |
+| `2099` | Bank Reconciliation Suspense | `LIABILITY` | Other Current Liabilities |
+| `2101` | CGST Output Payable | `LIABILITY` | Other Current Liabilities |
+| `2102` | SGST Output Payable | `LIABILITY` | Other Current Liabilities |
+| `2103` | IGST Output Payable | `LIABILITY` | Other Current Liabilities |
+| `2104` | TDS Payable (Section 194C/J/I) | `LIABILITY` | Other Current Liabilities |
+| `2105` | Director Reimbursements Payable | `LIABILITY` | Other Current Liabilities (Rule 2(1)(c)(viii)) |
+| `3001` | Computer Equipment & Hardware | `ASSET` | Property, Plant & Equipment |
+| `3002` | Software Licenses & IP | `ASSET` | Intangible Assets |
+| `3003` | Accumulated Depreciation | `ASSET` | Accumulated Depreciation |
+| `3101` | Trade Receivables (Sundry Debtors) | `ASSET` | Trade Receivables |
+| `3102` | Cash & Bank Balances | `ASSET` | Cash and Cash Equivalents |
+| `3103` | CGST Input Tax Credit (ITC) | `ASSET` | Short-Term Loans and Advances |
+| `3104` | SGST Input Tax Credit (ITC) | `ASSET` | Short-Term Loans and Advances |
+| `3105` | IGST Input Tax Credit (ITC) | `ASSET` | Short-Term Loans and Advances |
+| `3106` | Advance Tax Paid & TDS Receivable | `ASSET` | Short-Term Loans and Advances |
+| `4001` | Domestic SaaS Revenue | `REVENUE` | Revenue from Operations |
+| `4002` | Export Software Services | `REVENUE` | Revenue from Operations |
+| `5001` | Cloud Hosting & Servers (AWS/GCP) | `EXPENSE` | Other Expenses |
+| `5002` | Software SaaS Subscriptions | `EXPENSE` | Other Expenses |
+| `5003` | Legal & Professional Fees | `EXPENSE` | Other Expenses |

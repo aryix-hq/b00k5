@@ -29,6 +29,7 @@ CREATE TABLE tenants (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     legal_name VARCHAR(255) NOT NULL,
     trade_name VARCHAR(255),
+    entity_type VARCHAR(64) DEFAULT 'Private Limited Company',
     cin VARCHAR(21) UNIQUE,               -- 21-digit Corporate Identity Number (e.g. U72900KA2026PTC123456)
     pan VARCHAR(10) UNIQUE NOT NULL,      -- 10-char Permanent Account Number
     gstin VARCHAR(15) UNIQUE,             -- 15-char Goods and Services Tax Identification Number
@@ -37,12 +38,16 @@ CREATE TABLE tenants (
     currency VARCHAR(3) DEFAULT 'INR',
     fy_start_month SMALLINT DEFAULT 4,    -- Default Indian Financial Year starts in April (4)
     logo_url TEXT,                        -- Base64 or MinIO object key for company logo
+    logo_s3_key VARCHAR(255),
     statutory_profile JSONB DEFAULT '{}'::jsonb, -- Legal extraction matrix (MOA, AOA, ADT-1, etc.)
+    is_archived BOOLEAN DEFAULT FALSE,
+    archived_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TYPE user_role_enum AS ENUM ('owner', 'finance_manager', 'auditor_ca', 'employee');
+CREATE TYPE user_role_enum AS ENUM ('owner', 'company_owner', 'finance_manager', 'auditor_ca', 'ca_auditor', 'employee');
+CREATE TYPE tenant_role_enum AS ENUM ('company_owner', 'ca_auditor', 'finance_manager', 'employee', 'owner', 'auditor_ca');
 
 CREATE TABLE users (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -52,6 +57,7 @@ CREATE TABLE users (
     last_name VARCHAR(128) NOT NULL,
     phone VARCHAR(20),
     is_active BOOLEAN DEFAULT TRUE,
+    is_super_admin BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
@@ -62,12 +68,29 @@ CREATE TABLE tenant_users (
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     role user_role_enum NOT NULL DEFAULT 'employee',
     din VARCHAR(8),                        -- Director Identification Number if user is an MCA director
+    icai_membership_no VARCHAR(16),        -- For CAs / Auditors
     is_primary BOOLEAN DEFAULT FALSE,
+    is_active BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT unique_tenant_user UNIQUE(tenant_id, user_id)
 );
 
 CREATE INDEX idx_tenant_users_lookup ON tenant_users(tenant_id, user_id);
+
+CREATE TABLE tenant_invitations (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    email VARCHAR(255) NOT NULL,
+    role VARCHAR(64) NOT NULL DEFAULT 'employee',
+    token VARCHAR(128) UNIQUE NOT NULL,
+    invited_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    is_accepted BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_tenant_invitations_token ON tenant_invitations(token);
+CREATE INDEX idx_tenant_invitations_tenant ON tenant_invitations(tenant_id);
 
 -- ============================================================================
 -- 2. GENERAL LEDGER & CHART OF ACCOUNTS (CORE DOUBLE-ENTRY)
@@ -84,6 +107,12 @@ CREATE TABLE fiscal_years (
     start_date DATE NOT NULL,
     end_date DATE NOT NULL,
     is_closed BOOLEAN DEFAULT FALSE,
+    is_statutory_sealed BOOLEAN DEFAULT FALSE,
+    closing_stage VARCHAR(32) DEFAULT 'active' NOT NULL CHECK (closing_stage IN ('active', 'audit_closing_window', 'statutory_sealed')),
+    audit_closing_deadline DATE,
+    statutory_seal_hash VARCHAR(64),
+    sealed_at TIMESTAMPTZ,
+    sealed_by_user_id UUID REFERENCES users(id),
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT uq_tenant_fy_label UNIQUE (tenant_id, label)
 );
@@ -111,7 +140,7 @@ CREATE INDEX idx_coa_tenant_type ON chart_of_accounts(tenant_id, type);
 
 CREATE TABLE journal_entries (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE RESTRICT,
     entry_number VARCHAR(64) NOT NULL,
     entry_date DATE NOT NULL,
     reference_type VARCHAR(64),            -- e.g., 'invoice', 'expense', 'manual_jv', 'bank_reconciliation'
@@ -164,20 +193,34 @@ CREATE TRIGGER enforce_journal_immutability
 BEFORE UPDATE OR DELETE ON journal_entries
 FOR EACH ROW EXECUTE FUNCTION prevent_posted_journal_mutation();
 
--- Prevent posting into a closed fiscal period at the database level
+-- Prevent posting into a closed fiscal period or statutory sealed period at the database level
 CREATE OR REPLACE FUNCTION check_journal_entry_period_open()
 RETURNS TRIGGER AS $$
 DECLARE
     v_closed BOOLEAN;
+    v_sealed BOOLEAN;
+    v_stage VARCHAR(32);
 BEGIN
     IF NEW.status = 'posted' THEN
-        SELECT TRUE INTO v_closed
+        SELECT is_closed, is_statutory_sealed, COALESCE(closing_stage, 'active')
+        INTO v_closed, v_sealed, v_stage
         FROM fiscal_years
         WHERE tenant_id = NEW.tenant_id
-          AND is_closed = TRUE
           AND NEW.entry_date BETWEEN start_date AND end_date
         LIMIT 1;
 
+        -- Hard lock: Statutory Sealed (Stage 3)
+        IF v_sealed IS TRUE OR v_stage = 'statutory_sealed' THEN
+            RAISE EXCEPTION 'Statutory Breach: Cannot post or modify journal entry (%) dated % in a legally sealed fiscal period anchored to filed MCA Form AOC-4.',
+                NEW.entry_number, NEW.entry_date;
+        END IF;
+
+        -- If in audit closing window (Stage 2), allow posting adjustments
+        IF v_stage = 'audit_closing_window' THEN
+            RETURN NEW;
+        END IF;
+
+        -- Closed period violation (if manually closed without being in audit window)
         IF v_closed IS TRUE THEN
             RAISE EXCEPTION 'Period Close Violation: Cannot post journal entry (%) dated % into a closed fiscal period.',
                 NEW.entry_number, NEW.entry_date;
@@ -421,7 +464,7 @@ CREATE INDEX idx_contacts_tenant ON contacts(tenant_id);
 
 CREATE TABLE invoices (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE RESTRICT,
     contact_id UUID NOT NULL REFERENCES contacts(id),
     invoice_number VARCHAR(64) NOT NULL,
     type invoice_type_enum DEFAULT 'tax_invoice',
@@ -434,6 +477,7 @@ CREATE TABLE invoices (
     sgst_total NUMERIC(15, 2) DEFAULT 0.00,
     igst_total NUMERIC(15, 2) DEFAULT 0.00,
     grand_total NUMERIC(15, 2) NOT NULL,
+    tds_amount NUMERIC(15, 2) DEFAULT 0.00 CHECK (tds_amount >= 0),
     status invoice_status_enum DEFAULT 'draft',
     pdf_s3_key TEXT,
     fiscal_year_id UUID REFERENCES fiscal_years(id) ON DELETE SET NULL,
@@ -488,7 +532,7 @@ CREATE TYPE tds_section_enum AS ENUM ('none', '194C', '194J', '194I', '194Q', '1
 
 CREATE TABLE expenses (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE RESTRICT,
     employee_id UUID NOT NULL REFERENCES users(id),
     merchant_name VARCHAR(255) NOT NULL,
     merchant_gstin VARCHAR(15),
@@ -520,11 +564,11 @@ CREATE TABLE expenses (
     notes TEXT,
     approved_by UUID REFERENCES users(id),
     reimbursed_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT uq_expense_receipt UNIQUE (tenant_id, receipt_sha256)
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX idx_expenses_tenant_status ON expenses(tenant_id, status);
+CREATE INDEX idx_expenses_tenant_receipt_sha ON expenses(tenant_id, receipt_sha256);
 
 CREATE TABLE expense_audit_logs (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -554,7 +598,7 @@ CREATE TYPE document_category_enum AS ENUM (
 
 CREATE TABLE document_vault (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE RESTRICT,
     category document_category_enum NOT NULL,
     document_name VARCHAR(255) NOT NULL,
     document_number VARCHAR(128), -- e.g., Certificate No., Udyam Reg No.
@@ -608,14 +652,17 @@ ALTER TABLE cloud_sync_ledger ENABLE ROW LEVEL SECURITY;
 
 CREATE TYPE compliance_category_enum AS ENUM (
     'board_meeting_120d', -- Section 173: max 120 days between consecutive board meetings
-    'dir3_kyc',           -- Annual Director KYC by Sep 30
+    'partner_meeting',    -- LLP: Periodic meeting of Designated Partners
+    'dir3_kyc',           -- Annual Director/Designated Partner KYC by Sep 30
     'aoc_4',              -- Financial statements filing within 30 days of AGM
     'mgt_7',              -- Annual Return filing within 60 days of AGM
+    'llp_form_11',        -- LLP: Annual Return under Rule 25(1) by May 30
+    'llp_form_8',         -- LLP: Statement of Account & Solvency under Rule 24 by Oct 30
     'inc_20a',            -- Commencement of Business within 180 days of incorporation
     'advance_tax',        -- Advance tax installments (Jun 15, Sep 15, Dec 15, Mar 15)
     'gstr_1',             -- Monthly/Quarterly GST Outward Supplies
     'gstr_3b',            -- Monthly Summary GST Return
-    'itr_filing'          -- Annual Corporate Income Tax Return (ITR-6)
+    'itr_filing'          -- Annual Corporate / Partnership Income Tax Return (ITR-5/6)
 );
 
 CREATE TYPE compliance_status_enum AS ENUM ('upcoming', 'due_soon', 'overdue', 'completed', 'waived');
@@ -779,28 +826,64 @@ CREATE POLICY tenant_isolation_policy ON corporate_meetings
 
 CREATE POLICY tenant_isolation_policy ON invoices
     FOR ALL
-    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
-    WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
+    USING (
+        tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid
+        AND COALESCE(NULLIF(current_setting('app.current_user_role', true), ''), 'admin') NOT IN ('employee')
+    )
+    WITH CHECK (
+        tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid
+        AND COALESCE(NULLIF(current_setting('app.current_user_role', true), ''), 'admin') NOT IN ('employee')
+    );
 
 CREATE POLICY tenant_isolation_policy ON expenses
     FOR ALL
-    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
-    WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
+    USING (
+        tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid
+        AND (
+            COALESCE(NULLIF(current_setting('app.current_user_role', true), ''), 'admin') NOT IN ('employee')
+            OR employee_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid
+        )
+    )
+    WITH CHECK (
+        tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid
+        AND (
+            COALESCE(NULLIF(current_setting('app.current_user_role', true), ''), 'admin') NOT IN ('employee')
+            OR employee_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid
+        )
+    );
 
 CREATE POLICY tenant_isolation_policy ON document_vault
     FOR ALL
-    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
-    WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
+    USING (
+        tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid
+        AND COALESCE(NULLIF(current_setting('app.current_user_role', true), ''), 'admin') NOT IN ('employee')
+    )
+    WITH CHECK (
+        tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid
+        AND COALESCE(NULLIF(current_setting('app.current_user_role', true), ''), 'admin') NOT IN ('employee')
+    );
 
 CREATE POLICY tenant_isolation_policy ON journal_entries
     FOR ALL
-    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
-    WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
+    USING (
+        tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid
+        AND COALESCE(NULLIF(current_setting('app.current_user_role', true), ''), 'admin') NOT IN ('employee')
+    )
+    WITH CHECK (
+        tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid
+        AND COALESCE(NULLIF(current_setting('app.current_user_role', true), ''), 'admin') NOT IN ('employee')
+    );
 
 CREATE POLICY tenant_isolation_policy ON journal_lines
     FOR ALL
-    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
-    WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
+    USING (
+        tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid
+        AND COALESCE(NULLIF(current_setting('app.current_user_role', true), ''), 'admin') NOT IN ('employee')
+    )
+    WITH CHECK (
+        tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid
+        AND COALESCE(NULLIF(current_setting('app.current_user_role', true), ''), 'admin') NOT IN ('employee')
+    );
 
 CREATE POLICY tenant_isolation_contacts ON contacts
     FOR ALL
@@ -869,9 +952,11 @@ BEGIN
     (p_tenant_id, '1032', 'Input IGST', 'asset', 'tax_asset', 'debit', 'Input Integrated GST Credit on inter-state purchases'),
     (p_tenant_id, '1040', 'Loans & Advances / Prepayments', 'asset', 'current_asset', 'debit', 'Prepaid subscriptions & security deposits'),
     (p_tenant_id, '1050', 'Property, Plant & Equipment (Hardware)', 'asset', 'fixed_asset', 'debit', 'Office computers, servers & IT hardware'),
+    (p_tenant_id, '1059', 'Accumulated Depreciation - Fixed Assets', 'asset', 'fixed_asset', 'credit', 'Contra-asset for cumulative Schedule II depreciation'),
 
     -- 2000–2999: Equity & Liabilities (Schedule III)
     (p_tenant_id, '2010', 'Paid-up Equity Share Capital', 'equity', 'share_capital', 'credit', 'Nominal value of equity shares issued'),
+    (p_tenant_id, '2015', 'Prior Period Statutory Adjustments (Surplus/Deficit)', 'equity', 'retained_earnings', 'credit', 'AS-5 / Section 128 adjustments between filed returns and ledger'),
     (p_tenant_id, '2020', 'Reserves & Surplus / Retained Earnings', 'equity', 'retained_earnings', 'credit', 'Accumulated profits or losses'),
     (p_tenant_id, '2030', 'Long-Term & Director Borrowings', 'liability', 'director_loan', 'credit', 'Unsecured loans from directors/promoters'),
     (p_tenant_id, '2040', 'Trade Payables (Creditors)', 'liability', 'current_liability', 'credit', 'Vendor unpaid bills & invoices'),
@@ -880,6 +965,9 @@ BEGIN
     (p_tenant_id, '2052', 'Output IGST', 'liability', 'tax_liability', 'credit', 'Integrated GST collected on inter-state sales'),
     (p_tenant_id, '2060', 'TDS Payable u/s 194J (Professional)', 'liability', 'tax_liability', 'credit', 'TDS on tech/professional services'),
     (p_tenant_id, '2061', 'TDS Payable u/s 194C (Contractor)', 'liability', 'tax_liability', 'credit', 'TDS on contractor invoices'),
+    (p_tenant_id, '2062', 'TDS Payable u/s 194I (Rent)', 'liability', 'tax_liability', 'credit', 'TDS on rent of land, building & machinery'),
+    (p_tenant_id, '2063', 'TDS Payable u/s 194Q (Purchase of Goods)', 'liability', 'tax_liability', 'credit', 'TDS on high-value goods purchases'),
+    (p_tenant_id, '2064', 'TCS Payable u/s 206C', 'liability', 'tax_liability', 'credit', 'Tax Collected at Source on sales'),
     (p_tenant_id, '2099', 'Suspense Account (Bank Reconciliation)', 'liability', 'suspense', 'credit', 'Unmatched bank statement lines pending allocation'),
 
     -- 3000–3999: Revenue from Operations & Other Income (Schedule III)
@@ -891,9 +979,404 @@ BEGIN
     (p_tenant_id, '4020', 'Employee Benefit Expenses / Payroll', 'expense', 'payroll', 'debit', 'Salaries, stipends and contractor payouts'),
     (p_tenant_id, '4030', 'Finance Costs & Bank Charges', 'expense', 'financial_expense', 'debit', 'Payment gateway fees & wire charges'),
     (p_tenant_id, '4040', 'Legal & Professional Fees (CA/CS/ROC)', 'expense', 'professional_fees', 'debit', 'Auditor retainer, CS filings, legal advisory'),
-    (p_tenant_id, '4050', 'Rent & Workplace Expenses', 'expense', 'rent', 'debit', 'Office lease, coworking and utilities');
+    (p_tenant_id, '4050', 'Rent & Workplace Expenses', 'expense', 'rent', 'debit', 'Office lease, coworking and utilities'),
+    (p_tenant_id, '4070', 'Depreciation & Amortization Expense', 'expense', 'depreciation', 'debit', 'Schedule II Companies Act depreciation on fixed assets');
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ============================================================================
+-- 10. STATUTORY BASELINE ANCHORS & ADVANCE TAX FORECASTING (PHASE 8)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS statutory_filing_anchors (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE RESTRICT,
+    fiscal_year VARCHAR(32) NOT NULL,
+    assessment_year VARCHAR(32) NOT NULL,
+    form_type VARCHAR(50) NOT NULL,
+    srn_or_ack_number VARCHAR(100) NOT NULL,
+    filing_date DATE NOT NULL,
+    signatory_din VARCHAR(8),
+    auditor_udin VARCHAR(18),
+    s3_document_key VARCHAR(500),
+    document_sha256 VARCHAR(64),
+    schedule_iii_payload JSONB NOT NULL DEFAULT '{}',
+    is_locked BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_tenant_fy_form UNIQUE (tenant_id, fiscal_year, form_type)
+);
+
+CREATE INDEX IF NOT EXISTS idx_statutory_anchors_tenant_fy ON statutory_filing_anchors(tenant_id, fiscal_year);
+ALTER TABLE statutory_filing_anchors ENABLE ROW LEVEL SECURITY;
+ALTER TABLE statutory_filing_anchors FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation_statutory_anchors ON statutory_filing_anchors
+    FOR ALL
+    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
+    WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
+
+CREATE TABLE IF NOT EXISTS advance_tax_forecasts (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    fiscal_year VARCHAR(32) NOT NULL,
+    assessment_year VARCHAR(32) NOT NULL,
+    calculation_date DATE NOT NULL,
+    tax_regime VARCHAR(50) NOT NULL,
+    ytd_revenue NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    ytd_expenses NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    ytd_net_profit NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    projected_annual_profit NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    effective_tax_rate NUMERIC(6, 3) NOT NULL,
+    gross_projected_tax NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    tds_tcs_credits_claimed NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    net_advance_tax_payable NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    q1_due NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    q2_due NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    q3_due NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    q4_due NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    q1_paid NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    q2_paid NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    q3_paid NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    q4_paid NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    interest_234c_projected NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    interest_234b_projected NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_advance_tax_forecasts_tenant ON advance_tax_forecasts(tenant_id, fiscal_year);
+ALTER TABLE advance_tax_forecasts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE advance_tax_forecasts FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation_advance_tax_forecasts ON advance_tax_forecasts
+    FOR ALL
+    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
+    WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
+
+CREATE TABLE IF NOT EXISTS advance_tax_challans (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    fiscal_year VARCHAR(32) NOT NULL,
+    quarter VARCHAR(2) NOT NULL,
+    payment_date DATE NOT NULL,
+    bsr_code VARCHAR(7) NOT NULL,
+    challan_serial_no VARCHAR(10) NOT NULL,
+    cin_number VARCHAR(30),
+    amount_paid NUMERIC(15, 2) NOT NULL,
+    s3_challan_receipt_key VARCHAR(500),
+    bank_statement_line_id UUID REFERENCES bank_statement_lines(id),
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_tenant_challan UNIQUE (tenant_id, bsr_code, challan_serial_no)
+);
+
+CREATE INDEX IF NOT EXISTS idx_advance_tax_challans_tenant ON advance_tax_challans(tenant_id, fiscal_year);
+ALTER TABLE advance_tax_challans ENABLE ROW LEVEL SECURITY;
+ALTER TABLE advance_tax_challans FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation_advance_tax_challans ON advance_tax_challans
+    FOR ALL
+    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
+    WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
+
+CREATE TABLE IF NOT EXISTS gst_challans (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    fiscal_year VARCHAR(32) NOT NULL,
+    period VARCHAR(32) NOT NULL,
+    frequency VARCHAR(32) NOT NULL,
+    challan_type VARCHAR(32) NOT NULL,
+    cpin VARCHAR(20) NOT NULL,
+    cin VARCHAR(30),
+    payment_date DATE NOT NULL,
+    bank_ref_no VARCHAR(50),
+    cgst_amount NUMERIC(15, 2) DEFAULT 0.00 NOT NULL,
+    sgst_amount NUMERIC(15, 2) DEFAULT 0.00 NOT NULL,
+    igst_amount NUMERIC(15, 2) DEFAULT 0.00 NOT NULL,
+    cess_amount NUMERIC(15, 2) DEFAULT 0.00 NOT NULL,
+    interest_amount NUMERIC(15, 2) DEFAULT 0.00 NOT NULL,
+    penalty_amount NUMERIC(15, 2) DEFAULT 0.00 NOT NULL,
+    total_amount NUMERIC(15, 2) NOT NULL,
+    s3_challan_receipt_key VARCHAR(500),
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_tenant_gst_cpin UNIQUE (tenant_id, cpin)
+);
+
+CREATE INDEX IF NOT EXISTS idx_gst_challans_tenant ON gst_challans(tenant_id, fiscal_year);
+ALTER TABLE gst_challans ENABLE ROW LEVEL SECURITY;
+ALTER TABLE gst_challans FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation_gst_challans ON gst_challans
+    FOR ALL
+    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
+    WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
+
+-- ============================================================================
+-- 11. INDIAN TDS & SCHEDULE II FIXED ASSETS TABLES (PHASE 10)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS tds_challans (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    fiscal_year VARCHAR(32) NOT NULL,
+    quarter VARCHAR(2) NOT NULL,
+    section VARCHAR(32) NOT NULL,
+    bsr_code VARCHAR(7) NOT NULL,
+    challan_serial_no VARCHAR(10) NOT NULL,
+    payment_date DATE NOT NULL,
+    tds_amount NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    surcharge_amount NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    cess_amount NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    interest_amount NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    fee_amount NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    total_amount NUMERIC(15, 2) NOT NULL,
+    cin VARCHAR(30),
+    minor_head VARCHAR(10) DEFAULT '200',
+    s3_challan_receipt_key VARCHAR(500),
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_tenant_tds_challan UNIQUE (tenant_id, bsr_code, challan_serial_no)
+);
+
+CREATE INDEX IF NOT EXISTS idx_tds_challans_tenant ON tds_challans(tenant_id, fiscal_year);
+ALTER TABLE tds_challans ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tds_challans FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation_tds_challans ON tds_challans
+    FOR ALL
+    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
+    WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
+
+CREATE TABLE IF NOT EXISTS tds_deductions (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    expense_id UUID REFERENCES expenses(id) ON DELETE SET NULL,
+    journal_entry_id UUID REFERENCES journal_entries(id) ON DELETE SET NULL,
+    deductee_name VARCHAR(255) NOT NULL,
+    deductee_pan VARCHAR(10) NOT NULL,
+    deductee_type VARCHAR(20) DEFAULT 'COMPANY',
+    section VARCHAR(32) NOT NULL,
+    rate_percentage NUMERIC(5, 2) NOT NULL,
+    gross_amount NUMERIC(15, 2) NOT NULL,
+    tds_amount NUMERIC(15, 2) NOT NULL,
+    net_payable NUMERIC(15, 2) NOT NULL,
+    deduction_date DATE NOT NULL,
+    fiscal_year VARCHAR(32) NOT NULL,
+    quarter VARCHAR(2) NOT NULL,
+    tds_challan_id UUID REFERENCES tds_challans(id) ON DELETE SET NULL,
+    certificate_number VARCHAR(50),
+    status VARCHAR(32) DEFAULT 'PENDING_DEPOSIT',
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_tds_deductions_tenant ON tds_deductions(tenant_id, fiscal_year, quarter);
+ALTER TABLE tds_deductions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tds_deductions FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation_tds_deductions ON tds_deductions
+    FOR ALL
+    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
+    WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
+
+CREATE TABLE IF NOT EXISTS fixed_assets (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    asset_code VARCHAR(50) NOT NULL,
+    asset_name VARCHAR(255) NOT NULL,
+    category VARCHAR(100) NOT NULL,
+    purchase_date DATE NOT NULL,
+    capitalization_date DATE NOT NULL,
+    gross_block NUMERIC(15, 2) NOT NULL,
+    salvage_value NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    useful_life_years NUMERIC(5, 2) NOT NULL,
+    depreciation_method VARCHAR(20) NOT NULL DEFAULT 'SLM',
+    accumulated_depreciation NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    net_block NUMERIC(15, 2) NOT NULL,
+    location VARCHAR(255),
+    serial_number VARCHAR(100),
+    status VARCHAR(50) DEFAULT 'ACTIVE',
+    purchase_journal_id UUID REFERENCES journal_entries(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_tenant_asset_code UNIQUE (tenant_id, asset_code)
+);
+
+CREATE INDEX IF NOT EXISTS idx_fixed_assets_tenant ON fixed_assets(tenant_id, status);
+ALTER TABLE fixed_assets ENABLE ROW LEVEL SECURITY;
+ALTER TABLE fixed_assets FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation_fixed_assets ON fixed_assets
+    FOR ALL
+    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
+    WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
+
+CREATE TABLE IF NOT EXISTS fixed_asset_depreciation_runs (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    fiscal_year VARCHAR(32) NOT NULL,
+    period_start DATE NOT NULL,
+    period_end DATE NOT NULL,
+    run_date DATE NOT NULL,
+    total_depreciation_amount NUMERIC(15, 2) NOT NULL,
+    journal_entry_id UUID REFERENCES journal_entries(id) ON DELETE SET NULL,
+    status VARCHAR(50) DEFAULT 'POSTED',
+    details JSONB DEFAULT '[]',
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_depreciation_runs_tenant ON fixed_asset_depreciation_runs(tenant_id, fiscal_year);
+ALTER TABLE fixed_asset_depreciation_runs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE fixed_asset_depreciation_runs FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation_depreciation_runs ON fixed_asset_depreciation_runs
+    FOR ALL
+    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
+    WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
+
+-- ==============================================================================
+-- PHASE 11: E-INVOICING (IRN/QR) & MCA STATUTORY REGISTERS (MGT-1, MBP-1/2/4, SH-1)
+-- ==============================================================================
+
+-- 1. E-Invoicing columns on invoices
+ALTER TABLE invoices ADD COLUMN IF NOT EXISTS irn VARCHAR(64);
+ALTER TABLE invoices ADD COLUMN IF NOT EXISTS ack_no VARCHAR(32);
+ALTER TABLE invoices ADD COLUMN IF NOT EXISTS ack_date TIMESTAMPTZ;
+ALTER TABLE invoices ADD COLUMN IF NOT EXISTS signed_qr_code TEXT;
+ALTER TABLE invoices ADD COLUMN IF NOT EXISTS irn_status VARCHAR(32) DEFAULT 'PENDING';
+ALTER TABLE invoices ADD COLUMN IF NOT EXISTS einvoice_payload JSONB;
+
+-- 2. Form MGT-1 Register of Members (Sec 88)
+CREATE TABLE IF NOT EXISTS statutory_members (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE RESTRICT,
+    folio_number VARCHAR(64) NOT NULL,
+    member_name VARCHAR(255) NOT NULL,
+    father_or_spouse_name VARCHAR(255),
+    pan VARCHAR(10),
+    email VARCHAR(255),
+    address TEXT,
+    date_of_becoming_member DATE NOT NULL,
+    date_of_cessation DATE,
+    number_of_shares NUMERIC(15, 2) NOT NULL,
+    distinctive_from BIGINT NOT NULL,
+    distinctive_to BIGINT NOT NULL,
+    nominal_value_per_share NUMERIC(10, 2) DEFAULT 10.00,
+    amount_paid_per_share NUMERIC(10, 2) DEFAULT 10.00,
+    certificate_number VARCHAR(64),
+    status VARCHAR(32) DEFAULT 'ACTIVE',
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT unique_tenant_folio UNIQUE(tenant_id, folio_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_members_tenant ON statutory_members(tenant_id);
+ALTER TABLE statutory_members ENABLE ROW LEVEL SECURITY;
+ALTER TABLE statutory_members FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation_members ON statutory_members
+    FOR ALL
+    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
+    WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
+
+-- 3. Form MBP-2 Register of Loans & Guarantees (Sec 186)
+CREATE TABLE IF NOT EXISTS statutory_loans_guarantees (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE RESTRICT,
+    transaction_type VARCHAR(32) NOT NULL,
+    body_corporate_name VARCHAR(255) NOT NULL,
+    cin_or_pan VARCHAR(32),
+    amount NUMERIC(15, 2) NOT NULL,
+    interest_rate_pct NUMERIC(5, 2),
+    tenure_months INT,
+    board_resolution_date DATE NOT NULL,
+    special_resolution_date DATE,
+    status VARCHAR(32) DEFAULT 'ACTIVE',
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_loans_tenant ON statutory_loans_guarantees(tenant_id);
+ALTER TABLE statutory_loans_guarantees ENABLE ROW LEVEL SECURITY;
+ALTER TABLE statutory_loans_guarantees FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation_loans ON statutory_loans_guarantees
+    FOR ALL
+    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
+    WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
+
+-- 4. Form MBP-4 Register of Contracts with Interested Directors (Sec 189)
+CREATE TABLE IF NOT EXISTS statutory_contracts_interested_directors (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE RESTRICT,
+    contract_date DATE NOT NULL,
+    party_name VARCHAR(255) NOT NULL,
+    nature_of_contract TEXT NOT NULL,
+    contract_value NUMERIC(15, 2),
+    director_name VARCHAR(255) NOT NULL,
+    director_din VARCHAR(8),
+    nature_of_interest TEXT NOT NULL,
+    board_meeting_date DATE NOT NULL,
+    voting_status VARCHAR(64) DEFAULT 'ABSTAINED',
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_contracts_tenant ON statutory_contracts_interested_directors(tenant_id);
+ALTER TABLE statutory_contracts_interested_directors ENABLE ROW LEVEL SECURITY;
+ALTER TABLE statutory_contracts_interested_directors FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation_contracts ON statutory_contracts_interested_directors
+    FOR ALL
+    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
+    WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
+
+-- 5. Director Annual Disclosures (MBP-1 & DIR-8)
+CREATE TABLE IF NOT EXISTS director_annual_disclosures (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE RESTRICT,
+    fiscal_year VARCHAR(10) NOT NULL,
+    form_type VARCHAR(16) NOT NULL,
+    director_name VARCHAR(255) NOT NULL,
+    director_din VARCHAR(8) NOT NULL,
+    filing_date DATE NOT NULL,
+    disclosure_payload JSONB NOT NULL,
+    is_digitally_signed BOOLEAN DEFAULT FALSE,
+    signed_hash TEXT,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_disclosures_tenant ON director_annual_disclosures(tenant_id, fiscal_year);
+ALTER TABLE director_annual_disclosures ENABLE ROW LEVEL SECURITY;
+ALTER TABLE director_annual_disclosures FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation_disclosures ON director_annual_disclosures
+    FOR ALL
+    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
+    WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
+
+-- 6. Form SH-1 Digital Share Certificates (Sec 46)
+CREATE TABLE IF NOT EXISTS share_certificates (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE RESTRICT,
+    certificate_number VARCHAR(64) NOT NULL,
+    member_id UUID NOT NULL REFERENCES statutory_members(id) ON DELETE RESTRICT,
+    number_of_shares INT NOT NULL,
+    distinctive_from BIGINT NOT NULL,
+    distinctive_to BIGINT NOT NULL,
+    face_value NUMERIC(10, 2) DEFAULT 10.00,
+    issue_date DATE NOT NULL,
+    signatory_director_1 VARCHAR(255),
+    signatory_director_2 VARCHAR(255),
+    signatory_secretary_or_authorized VARCHAR(255),
+    status VARCHAR(32) DEFAULT 'ISSUED',
+    pdf_s3_key TEXT,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT unique_tenant_cert_num UNIQUE(tenant_id, certificate_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_certs_tenant ON share_certificates(tenant_id);
+ALTER TABLE share_certificates ENABLE ROW LEVEL SECURITY;
+ALTER TABLE share_certificates FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation_certs ON share_certificates
+    FOR ALL
+    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
+    WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
 
 -- Grant table, sequence, and function privileges to non-superuser application role b00k5_app
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO b00k5_app;

@@ -68,14 +68,19 @@ function getExpenseFY(dateStr?: string): string {
   }
 }
 
+function normalizeFY(val: string): string {
+  if (!val || val === 'all') return 'all';
+  const match = val.match(/(\d{4})/);
+  if (match) {
+    const y = parseInt(match[1], 10);
+    return `${y}-${String(y + 1).slice(-2)}`;
+  }
+  return val.replace(/^FY\s*/i, '').trim();
+}
+
 function matchFY(itemFY: string, selectedPeriod: string): boolean {
   if (!selectedPeriod || selectedPeriod === 'all') return true;
-  const cleanSel = selectedPeriod.replace(/[^0-9]/g, '');
-  const cleanItem = itemFY.replace(/[^0-9]/g, '');
-  if (cleanSel.startsWith('2025') && cleanItem.startsWith('2025')) return true;
-  if (cleanSel.startsWith('2026') && cleanItem.startsWith('2026')) return true;
-  if (cleanSel.startsWith('2024') && cleanItem.startsWith('2024')) return true;
-  return cleanSel === cleanItem;
+  return normalizeFY(itemFY) === normalizeFY(selectedPeriod);
 }
 
 interface ExpenseItem {
@@ -108,6 +113,9 @@ interface SummaryData {
   director_payable_balance: number;
   total_itc_claimed_on_personal: number;
   dpt3_deemed_deposit_warning: boolean;
+  has_dpt3_declaration?: boolean;
+  dpt3_declared_amount?: number;
+  dpt3_declaration_ref?: string;
   company_bank_expenses_count: number;
   company_bank_expenses_amount: number;
 }
@@ -168,6 +176,11 @@ export default function ExpensesHubPage() {
   const [submittingSettle, setSubmittingSettle] = useState(false);
   const [syncingGL, setSyncingGL] = useState(false);
 
+  // RBAC & Document Gate State
+  const [userRole, setUserRole] = useState<string>('owner');
+  const [isMandatoryDocsLocked, setIsMandatoryDocsLocked] = useState<boolean>(false);
+  const isAuditor = userRole.includes('auditor') || userRole.includes('ca');
+
   const handleSyncGL = async () => {
     setSyncingGL(true);
     try {
@@ -184,13 +197,23 @@ export default function ExpensesHubPage() {
     }
   };
 
-  async function loadData() {
+  async function loadData(targetFY?: string) {
     setLoading(true);
     try {
-      const [sumRes, expRes, dirRes] = await Promise.all([
-        fetchApi('/api/v1/expenses/summary').catch(() => null),
-        fetchApi('/api/v1/expenses').catch(() => []),
-        fetchApi('/api/v1/compliance/directors').catch(() => null)
+      const storedRole = typeof window !== 'undefined' ? (localStorage.getItem('b00k5_role') || 'owner').toLowerCase() : 'owner';
+      setUserRole(storedRole);
+
+      const activeFY = targetFY !== undefined ? targetFY : selectedFY;
+      const normFY = normalizeFY(activeFY);
+      const fyParam = normFY !== 'all' ? normFY : '';
+      const summaryUrl = fyParam ? `/api/v1/expenses/summary?fy=${encodeURIComponent(fyParam)}` : '/api/v1/expenses/summary';
+      const expensesUrl = fyParam ? `/api/v1/expenses?fy=${encodeURIComponent(fyParam)}` : '/api/v1/expenses';
+
+      const [sumRes, expRes, dirRes, tenantProf] = await Promise.all([
+        fetchApi(summaryUrl).catch(() => null),
+        fetchApi(expensesUrl).catch(() => []),
+        fetchApi('/api/v1/compliance/directors').catch(() => null),
+        fetchApi('/api/v1/vault/statutory-profile').catch(() => null)
       ]);
       if (sumRes) setSummary(sumRes);
       if (expRes && Array.isArray(expRes)) setExpenses(expRes);
@@ -198,6 +221,16 @@ export default function ExpensesHubPage() {
         setDirectors(dirRes.directors);
         setEditDirectorName(prev => prev || dirRes.directors[0].name);
         setSettleDirector(prev => prev || dirRes.directors[0].name);
+      }
+      if (tenantProf) {
+        const statusVal = tenantProf.onboarding_status;
+        const coiOk = Boolean(tenantProf.coi_verified);
+        const panOk = Boolean(tenantProf.pan_verified);
+        if (statusVal === 'PENDING_DOCUMENTS' && !(coiOk && panOk)) {
+          setIsMandatoryDocsLocked(true);
+        } else {
+          setIsMandatoryDocsLocked(false);
+        }
       }
     } catch (e: any) {
       console.error('Error fetching expenses:', e);
@@ -207,25 +240,30 @@ export default function ExpensesHubPage() {
   }
 
   useEffect(() => {
-    loadData();
     if (typeof window !== 'undefined') {
       const stored = localStorage.getItem('b00k5_selected_fy');
-      if (stored) setSelectedFY(stored);
+      if (stored) setSelectedFY(normalizeFY(stored));
 
       const onFYChanged = (e: any) => {
-        if (e.detail) setSelectedFY(e.detail);
+        if (e.detail) setSelectedFY(normalizeFY(e.detail));
       };
       window.addEventListener('b00k5_fy_changed', onFYChanged);
       return () => window.removeEventListener('b00k5_fy_changed', onFYChanged);
     }
   }, []);
 
+  useEffect(() => {
+    loadData(selectedFY);
+  }, [selectedFY]);
+
   const handleExportAuditorDossier = async () => {
     setExportingAuditor(true);
     try {
       const token = typeof window !== 'undefined' ? localStorage.getItem('b00k5_token') : null;
-      const tenantId = typeof window !== 'undefined' ? localStorage.getItem('b00k5_tenant_id') : null;
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/expenses/export-auditor-package`, {
+      const tenantId = typeof window !== 'undefined' ? (localStorage.getItem('b00k5_active_tenant_id') || localStorage.getItem('b00k5_tenant_id')) : null;
+      const normFY = normalizeFY(selectedFY);
+      const fyQuery = normFY !== 'all' ? `?fy=${encodeURIComponent(normFY)}` : '';
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/expenses/export-auditor-package${fyQuery}`, {
         headers: {
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
           ...(tenantId ? { 'X-Tenant-ID': tenantId } : {})
@@ -239,7 +277,7 @@ export default function ExpensesHubPage() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      const fyTag = selectedFY && selectedFY !== 'all' ? selectedFY.replace(/\s+/g, '') : 'FY2026-27';
+      const fyTag = normFY !== 'all' ? `FY${normFY}` : 'FY2026-27';
       a.download = `Auditor_Dossier_${fyTag}.zip`;
       document.body.appendChild(a);
       a.click();
@@ -465,6 +503,44 @@ export default function ExpensesHubPage() {
     return true;
   });
 
+  const [dpt3Generating, setDpt3Generating] = useState(false);
+
+  const handleGenerateDPT3Declaration = async (convertToLoan: boolean = false) => {
+    if (convertToLoan && !confirm('Convert unpaid director reimbursements into an Exempt Director Loan (Account 2030) with a written Rule 2(1)(c)(viii) declaration?')) return;
+    setDpt3Generating(true);
+    try {
+      const token = typeof window !== 'undefined' ? (localStorage.getItem('b00k5_token') || localStorage.getItem('token')) : null;
+      const tenantId = typeof window !== 'undefined' ? localStorage.getItem('b00k5_tenant_id') : null;
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      if (tenantId) headers['X-Tenant-ID'] = tenantId;
+
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/compliance/dpt3-declaration`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          financial_year: normalizeFY(selectedFY),
+          amount: summary?.director_payable_balance || 0,
+          convert_to_loan: convertToLoan
+        })
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        alert(`Success: ${data.message}\nVault Record ID: ${data.document_vault_id}`);
+        window.open(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/compliance/download-document/DPT3_DEC?token=${encodeURIComponent(token || '')}`, '_blank');
+        loadData();
+      } else {
+        const err = await res.json().catch(() => null);
+        alert(err?.detail || 'Failed to generate DPT-3 declaration');
+      }
+    } catch (e: any) {
+      alert(e.message || 'Error generating declaration');
+    } finally {
+      setDpt3Generating(false);
+    }
+  };
+
   // Dynamically computed metrics scoped to selected FY filter
   const activeFYExpenses = expenses.filter((e) => {
     if (selectedFY === 'all') return true;
@@ -521,15 +597,24 @@ export default function ExpensesHubPage() {
             </div>
 
             <div className="flex flex-wrap items-center gap-3">
-              <button
-                onClick={handleSyncGL}
-                disabled={syncingGL}
-                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-emerald-400 hover:text-emerald-300 text-xs font-semibold rounded-lg flex items-center gap-2 border border-emerald-500/30 shadow-sm transition disabled:opacity-50"
-                title="Synchronize all expenses and founder claims 1:1 with General Ledger double-entry vouchers"
-              >
-                <RefreshCw className={`w-4 h-4 ${syncingGL ? 'animate-spin' : ''}`} />
-                {syncingGL ? 'Syncing with GL...' : 'Sync with General Ledger'}
-              </button>
+              {isAuditor && (
+                <span className="text-xs font-mono font-semibold px-3 py-1.5 rounded-lg bg-indigo-500/10 border border-indigo-500/30 text-indigo-300 flex items-center gap-1.5">
+                  <ShieldCheck className="w-4 h-4 text-indigo-400" />
+                  Statutory Audit Mode (Read-Only)
+                </span>
+              )}
+
+              {!isAuditor && (
+                <button
+                  onClick={handleSyncGL}
+                  disabled={syncingGL}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-emerald-400 hover:text-emerald-300 text-xs font-semibold rounded-lg flex items-center gap-2 border border-emerald-500/30 shadow-sm transition disabled:opacity-50"
+                  title="Synchronize all expenses and founder claims 1:1 with General Ledger double-entry vouchers"
+                >
+                  <RefreshCw className={`w-4 h-4 ${syncingGL ? 'animate-spin' : ''}`} />
+                  {syncingGL ? 'Syncing with GL...' : 'Sync with General Ledger'}
+                </button>
+              )}
 
               <button
                 onClick={handleExportAuditorDossier}
@@ -541,34 +626,66 @@ export default function ExpensesHubPage() {
                 {exportingAuditor ? 'Exporting Package...' : 'Export Auditor Dossier (.zip)'}
               </button>
 
-              <button
-                onClick={() => {
-                  setSettleAmount(String(summary?.director_payable_balance || 0));
-                  setSettlementOpen(true);
-                }}
-                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-lg flex items-center gap-2 border border-slate-700 transition"
-              >
-                <DollarSign className="w-4 h-4 text-emerald-400" />
-                Settle Reimbursement
-              </button>
+              {!isAuditor && (
+                <>
+                  <button
+                    onClick={() => {
+                      setSettleAmount(String(summary?.director_payable_balance || 0));
+                      setSettlementOpen(true);
+                    }}
+                    disabled={isMandatoryDocsLocked}
+                    className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-lg flex items-center gap-2 border border-slate-700 transition disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    <DollarSign className="w-4 h-4 text-emerald-400" />
+                    Settle Reimbursement
+                  </button>
 
-              <button
-                onClick={() => setBatchUploadModalOpen(true)}
-                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-lg flex items-center gap-2 shadow-sm transition"
-              >
-                <UploadCloud className="w-4 h-4" />
-                Batch Ingest Receipts (50 max)
-              </button>
+                  <button
+                    onClick={() => setBatchUploadModalOpen(true)}
+                    disabled={isMandatoryDocsLocked}
+                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-lg flex items-center gap-2 shadow-sm transition disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    <UploadCloud className="w-4 h-4" />
+                    Batch Ingest Receipts (50 max)
+                  </button>
 
-              <Link
-                href="/expenses/new"
-                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-lg flex items-center gap-2 shadow-sm transition"
-              >
-                <Plus className="w-4 h-4" />
-                Record New Expense / Bill
-              </Link>
+                  {!isMandatoryDocsLocked ? (
+                    <Link
+                      href="/expenses/new"
+                      className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-lg flex items-center gap-2 shadow-sm transition"
+                    >
+                      <Plus className="w-4 h-4" />
+                      Record New Expense / Bill
+                    </Link>
+                  ) : (
+                    <span
+                      title="Commercial operations restricted until Certificate of Incorporation and PAN Card are uploaded to Vault"
+                      className="px-4 py-2 bg-slate-800 text-slate-500 text-xs font-semibold rounded-lg flex items-center gap-2 border border-slate-700 cursor-not-allowed"
+                    >
+                      <Plus className="w-4 h-4" />
+                      Record New Expense (Locked)
+                    </span>
+                  )}
+                </>
+              )}
             </div>
           </div>
+
+          {/* Mandatory Document Gate Warning Banner */}
+          {isMandatoryDocsLocked && (
+            <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs flex items-start gap-3">
+              <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+              <div className="flex-1">
+                <div className="font-semibold text-white">Commercial Operations Locked — Mandatory Documents Pending</div>
+                <div className="text-slate-300 mt-0.5">
+                  Under Companies Act 2013 §10A, corporate expense recording and ledger disbursements are restricted until the Certificate of Incorporation (COI) and Company PAN Card have been uploaded and verified in the Corporate Vault.
+                </div>
+                <Link href="/vault" className="inline-block mt-2 font-semibold text-sky-400 hover:underline">
+                  Go to Corporate Vault to Complete Verification &rarr;
+                </Link>
+              </div>
+            </div>
+          )}
 
           {notification && (
             <div
@@ -617,13 +734,38 @@ export default function ExpensesHubPage() {
               </div>
               <p className="text-[11px] text-slate-400">
                 {summary?.dpt3_deemed_deposit_warning ? (
-                  <span className="text-amber-400 flex items-center gap-1">
-                    <AlertTriangle className="w-3 h-3" /> Rule 2(1)(c)(viii) DPT-3 Alert
+                  <span className="text-amber-400 flex items-center gap-1 font-medium">
+                    <AlertTriangle className="w-3 h-3 text-amber-400" /> Rule 2(1)(c)(viii) DPT-3 Alert
+                  </span>
+                ) : summary?.has_dpt3_declaration ? (
+                  <span className="text-emerald-400 flex items-center gap-1 font-medium">
+                    <CheckCircle2 className="w-3 h-3 text-emerald-400" /> Rule 2(1)(c)(viii) Compliant
                   </span>
                 ) : (
                   'Reimbursements payable balance'
                 )}
               </p>
+              {summary?.has_dpt3_declaration ? (
+                <div className="pt-2">
+                  <div className="p-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-[10px] font-mono flex items-center justify-between">
+                    <span>Own-Funds Declaration Active</span>
+                    <span className="font-bold">₹{(summary.dpt3_declared_amount || 0).toLocaleString('en-IN')}</span>
+                  </div>
+                </div>
+              ) : (summary?.director_payable_balance || 0) > 0 ? (
+                <div className="pt-2">
+                  <button
+                    type="button"
+                    disabled={dpt3Generating}
+                    onClick={() => handleGenerateDPT3Declaration(false)}
+                    className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 text-[11px] font-medium border border-amber-500/30 transition"
+                    title="Generate statutory written declaration under Rule 2(1)(c)(viii) of Acceptance of Deposits Rules, 2014"
+                  >
+                    <FileText className="w-3.5 h-3.5 text-amber-400" />
+                    <span>{dpt3Generating ? 'Generating...' : 'Generate DPT-3 Declaration'}</span>
+                  </button>
+                </div>
+              ) : null}
             </div>
 
             {/* Pending Reimbursement Claims */}
@@ -733,14 +875,22 @@ export default function ExpensesHubPage() {
                 <Calendar className="w-3.5 h-3.5 text-amber-400 shrink-0" />
                 <span className="text-slate-400 font-medium whitespace-nowrap">Period:</span>
                 <select
-                  value={selectedFY}
-                  onChange={(e) => setSelectedFY(e.target.value)}
+                  value={normalizeFY(selectedFY)}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setSelectedFY(val);
+                    if (typeof window !== 'undefined') {
+                      const storageVal = val === 'all' ? 'all' : `FY ${val}`;
+                      localStorage.setItem('b00k5_selected_fy', storageVal);
+                      window.dispatchEvent(new CustomEvent('b00k5_fy_changed', { detail: storageVal }));
+                    }
+                  }}
                   className="bg-transparent text-amber-300 font-mono font-bold focus:outline-none cursor-pointer"
                 >
                   <option value="all" className="bg-slate-900 text-white">All Financial Years</option>
-                  <option value="FY 2026-2027" className="bg-slate-900 text-white">FY 2026-27 (Active Period)</option>
-                  <option value="FY 2025-2026" className="bg-slate-900 text-white">FY 2025-26 (Audited Period)</option>
-                  <option value="FY 2024-2025" className="bg-slate-900 text-white">FY 2024-25</option>
+                  <option value="2026-27" className="bg-slate-900 text-white">FY 2026-27 (Active Period)</option>
+                  <option value="2025-26" className="bg-slate-900 text-white">FY 2025-26 (Audited Period)</option>
+                  <option value="2024-25" className="bg-slate-900 text-white">FY 2024-25</option>
                 </select>
               </div>
 
@@ -761,7 +911,7 @@ export default function ExpensesHubPage() {
               </select>
 
               <button
-                onClick={loadData}
+                onClick={() => loadData()}
                 title="Refresh Table"
                 className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition"
               >
@@ -835,10 +985,20 @@ export default function ExpensesHubPage() {
                             )}
                             <div className="mt-1">
                               {item.receipt_s3_key ? (
-                                <span className="inline-flex items-center gap-1 text-[10px] font-mono text-emerald-400">
-                                  <FileCheck className="w-3 h-3 text-emerald-400" /> Original Bill Attached
-                                </span>
-                              ) : (
+                                <div className="flex items-center gap-2">
+                                  <span className="inline-flex items-center gap-1 text-[10px] font-mono text-emerald-400">
+                                    <FileCheck className="w-3 h-3 text-emerald-400" /> Original Bill Attached
+                                  </span>
+                                  <a
+                                    href={`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/expenses/${item.id}/receipt`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center gap-1 text-[10px] font-semibold text-sky-400 hover:text-sky-300 bg-sky-950/60 hover:bg-sky-900/60 border border-sky-800/60 rounded px-1.5 py-0.5 transition"
+                                  >
+                                    <Download className="w-3 h-3 text-sky-400" /> View Bill
+                                  </a>
+                                </div>
+                              ) : !isAuditor ? (
                                 <label className="cursor-pointer inline-flex items-center gap-1 text-[10px] font-semibold text-sky-400 hover:text-sky-300 bg-sky-950/60 hover:bg-sky-900/60 border border-sky-800/60 rounded px-1.5 py-0.5 transition">
                                   <UploadCloud className="w-3 h-3 text-sky-400" /> Attach Original Bill PDF
                                   <input
@@ -848,6 +1008,8 @@ export default function ExpensesHubPage() {
                                     onChange={(e) => handleDirectReceiptUpload(item.id, e.target.files?.[0])}
                                   />
                                 </label>
+                              ) : (
+                                <span className="text-[10px] text-slate-500 font-mono italic">No bill attached</span>
                               )}
                             </div>
                             {isStruckOff && item.notes && (
@@ -941,7 +1103,7 @@ export default function ExpensesHubPage() {
                             >
                               <History className="w-4 h-4" />
                             </button>
-                            {!isStruckOff && (
+                            {!isStruckOff && !isAuditor && (
                               <>
                                 <button
                                   onClick={() => openEditModal(item)}

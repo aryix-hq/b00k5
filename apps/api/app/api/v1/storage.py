@@ -234,13 +234,16 @@ async def get_gdrive_sync_dashboard(
     vault_docs = (await db.execute(vault_stmt)).scalars().all()
 
     # Canonical hierarchy for current tenant
+    from app.core.fiscal_year import get_financial_year
     safe_name = tenant.legal_name.replace(" ", "_")
+    cur_fy = get_financial_year(date.today())
+    fy_str = f"FY {cur_fy}"
     hierarchy = [
         f"/b00k5/{safe_name}/Corporate Legal (COI, MOA, AOA)/",
         f"/b00k5/{safe_name}/Tax Registrations (PAN, GST)/",
-        f"/b00k5/{safe_name}/FY 2025-26/Bank Statements/",
-        f"/b00k5/{safe_name}/FY 2025-26/Vendor Bills & ITC/",
-        f"/b00k5/{safe_name}/FY 2025-26/Statutory Filings (AOC-4, MGT-7)/",
+        f"/b00k5/{safe_name}/{fy_str}/Bank Statements/",
+        f"/b00k5/{safe_name}/{fy_str}/Vendor Bills & ITC/",
+        f"/b00k5/{safe_name}/{fy_str}/Statutory Filings (AOC-4, MGT-7)/",
         f"/b00k5/{safe_name}/Board Governance & SS-1 Minutes/"
     ]
 

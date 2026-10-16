@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 try:
-    from pydantic import BaseModel, Field
+    from pydantic import BaseModel, Field, ConfigDict
     HAVE_PYDANTIC = True
 except ImportError:
     HAVE_PYDANTIC = False
@@ -45,8 +45,7 @@ class CloudSyncResponse(BaseModel):
     synced_at: Optional[datetime] = None
     created_at: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class StorageUploadResponse(BaseModel):
     sync_id: uuid.UUID

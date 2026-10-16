@@ -1,7 +1,7 @@
 from typing import Optional
 from datetime import datetime
 import uuid
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 class DSCDigestRequest(BaseModel):
     document_type: str # 'board_minutes', 'invoice', 'aoc4', 'mgt7'
@@ -25,6 +25,8 @@ class DSCSignatureSubmit(BaseModel):
     token_serial_number: Optional[str] = None
 
 class DSCSignatureAuditResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     tenant_id: uuid.UUID
     document_type: str
@@ -36,6 +38,3 @@ class DSCSignatureAuditResponse(BaseModel):
     sha256_document_hash: str
     signed_pdf_s3_key: str
     signed_at: datetime
-
-    class Config:
-        from_attributes = True

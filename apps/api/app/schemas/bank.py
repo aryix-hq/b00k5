@@ -2,9 +2,11 @@ from typing import Optional, List
 from datetime import date, datetime
 import uuid
 from decimal import Decimal
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 class BankStatementLineResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     statement_id: uuid.UUID
     line_number: int
@@ -26,10 +28,9 @@ class BankStatementLineResponse(BaseModel):
     notes: Optional[str] = None
     created_at: datetime
 
-    class Config:
-        from_attributes = True
-
 class BankStatementResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     tenant_id: uuid.UUID
     bank_name: str
@@ -44,9 +45,6 @@ class BankStatementResponse(BaseModel):
     status: str
     lines: List[BankStatementLineResponse] = []
     created_at: datetime
-
-    class Config:
-        from_attributes = True
 
 class ConfirmMatchRequest(BaseModel):
     journal_line_id: Optional[uuid.UUID] = None

@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState, useRef } from 'react';
 import { Building2, Shield, User as UserIcon, Users, LogOut, Calendar, ChevronDown, Settings, Cloud, FolderLock, Check, AlertTriangle } from 'lucide-react';
+import { TenantSwitcher } from '@/components/navigation/TenantSwitcher';
 
 export function Navbar() {
   const now = new Date();
@@ -68,7 +69,13 @@ export function Navbar() {
 
     const handleFYEvent = (e: any) => {
       if (e.detail) {
-        setSelectedFY(e.detail);
+        const val = typeof e.detail === 'string' ? e.detail : (e.detail.full || e.detail.short);
+        const match = (val || '').match(/(\d{4})/);
+        if (match) {
+          const startY = parseInt(match[1]);
+          const normalized = `FY ${startY}-${String(startY + 1).slice(-2)}`;
+          setSelectedFY(normalized);
+        }
       }
     };
 
@@ -81,10 +88,21 @@ export function Navbar() {
   }, [currentActiveFY]);
 
   const handleFYChange = (newFY: string) => {
-    setSelectedFY(newFY);
+    const match = (newFY || '').match(/(\d{4})/);
+    const startY = match ? parseInt(match[1]) : currentYr;
+    const cleanShort = `${startY}-${String(startY + 1).slice(-2)}`;
+    const fullDisplay = `FY ${cleanShort}`;
+
+    setSelectedFY(fullDisplay);
     if (typeof window !== 'undefined') {
-      localStorage.setItem('b00k5_selected_fy', newFY);
-      window.dispatchEvent(new CustomEvent('b00k5_fy_changed', { detail: newFY }));
+      localStorage.setItem('b00k5_selected_fy', fullDisplay);
+      localStorage.setItem('b00k5_selected_fy_clean', cleanShort);
+      window.dispatchEvent(new CustomEvent('b00k5_fy_changed', {
+        detail: fullDisplay
+      }));
+      window.dispatchEvent(new CustomEvent('b00k5_fy_obj_changed', {
+        detail: { full: fullDisplay, short: cleanShort, startYear: startY }
+      }));
       window.dispatchEvent(new Event('storage'));
     }
   };
@@ -141,12 +159,12 @@ export function Navbar() {
   const isPrior = selectedStartYr < currentYr;
   const isFuture = selectedStartYr > currentYr;
 
-  // Dynamic available periods (e.g. Current FY first, past 5 years, upcoming year)
+  // Dynamic available periods (standardized 2-digit Indian FY format)
   const availablePeriods: string[] = [currentActiveFY];
   for (let y = currentYr - 1; y >= currentYr - 5; y--) {
-    availablePeriods.push(`FY ${y}-${y + 1}`);
+    availablePeriods.push(`FY ${y}-${String(y + 1).slice(-2)}`);
   }
-  availablePeriods.push(`FY ${currentYr + 1}-${currentYr + 2}`);
+  availablePeriods.push(`FY ${currentYr + 1}-${String(currentYr + 2).slice(-2)}`);
 
   const displayName = currentUser ? `${currentUser.first_name} ${currentUser.last_name}` : 'Corporate Officer';
   const displayEmail = currentUser?.email || 'officer@b00k5.internal';
@@ -155,18 +173,7 @@ export function Navbar() {
     <>
       <header className="h-16 border-b border-slate-800 bg-slate-900/30 px-6 flex items-center justify-between relative z-40">
         <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2">
-            <Building2 className="w-5 h-5 text-sky-400" />
-            <span className="font-semibold text-slate-100">{companyName}</span>
-          </div>
-          {cin && (
-            <>
-              <span className="text-slate-600">|</span>
-              <span className="font-mono text-xs text-slate-400 bg-slate-800/80 px-2 py-1 rounded border border-slate-700">
-                CIN: {cin}
-              </span>
-            </>
-          )}
+          <TenantSwitcher />
         </div>
 
         <div className="flex items-center gap-4">
@@ -307,9 +314,19 @@ export function Navbar() {
       <div id="prior-period-banner" className="w-full bg-amber-500/15 border-b border-amber-500/30 px-6 py-2 text-xs text-amber-300 font-medium flex items-center justify-between z-30">
         <div className="flex items-center gap-2">
           <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
-          <span>Prior Period Active (FY 2025-26 | AY 2026-27). Books are in Closing Mode.</span>
+          <span>Prior Period Active (FY {selectedPeriodFY} | AY {selectedPeriodAY}). Books are in Closing Mode.</span>
         </div>
         <span className="text-[11px] text-amber-400/80 font-mono">Restricted Period</span>
+      </div>
+    )}
+
+    {isFuture && (
+      <div id="future-period-banner" className="w-full bg-purple-500/15 border-b border-purple-500/30 px-6 py-2 text-xs text-purple-300 font-medium flex items-center justify-between z-30">
+        <div className="flex items-center gap-2">
+          <Calendar className="w-4 h-4 text-purple-400 shrink-0" />
+          <span>Upcoming Period Active (FY {selectedPeriodFY} | AY {selectedPeriodAY}). Planning Mode.</span>
+        </div>
+        <span className="text-[11px] text-purple-400/80 font-mono">Future Period</span>
       </div>
     )}
   </>

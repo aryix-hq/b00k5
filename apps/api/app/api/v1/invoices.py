@@ -1,16 +1,17 @@
 from typing import List, Optional, Any, Dict
 import uuid
 from decimal import Decimal
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status, Response
+from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status, Response, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
-from app.api.deps import get_db, get_current_user, get_current_tenant
+from app.api.deps import get_db, get_current_user, get_current_tenant, check_mandatory_company_documents
 from app.models.tenant import User, Tenant
 from app.models.invoice import Invoice, InvoiceItem, Contact
 from app.models.ledger import JournalEntry, JournalLine
 from app.schemas.invoice import (
-    InvoiceCreate, InvoiceResponse,
+    InvoiceCreate, InvoiceUpdate, InvoiceResponse,
     ContactCreate, ContactResponse
 )
 from app.services.gst_calculator import calculate_tax_breakdown, COMMON_HSN_SAC
@@ -20,6 +21,9 @@ from app.services.bill_invoice_parser import BillInvoiceParser
 from app.core.s3 import upload_document
 from app.core.config import settings
 from app.core.fiscal_year import get_or_create_fiscal_year
+from app.core.iam import require_owner, require_ca_or_owner, IAMContext
+from app.services.einvoice_service import EInvoiceService
+from app.schemas.einvoice import EInvoiceResponse, EInvoiceGenerateRequest
 
 router = APIRouter()
 
@@ -31,11 +35,11 @@ def get_hsn_catalog():
 @router.post("/contacts", response_model=ContactResponse)
 async def create_contact(
     payload: ContactCreate,
-    tenant: Tenant = Depends(get_current_tenant),
+    ctx: IAMContext = Depends(require_owner),
     db: AsyncSession = Depends(get_db)
 ):
     contact = Contact(
-        tenant_id=tenant.id,
+        tenant_id=ctx.tenant.id,
         name=payload.name,
         is_customer=payload.is_customer,
         is_vendor=payload.is_vendor,
@@ -55,20 +59,76 @@ async def create_contact(
 @router.get("/contacts", response_model=List[ContactResponse])
 async def list_contacts(
     is_customer: Optional[bool] = None,
-    tenant: Tenant = Depends(get_current_tenant),
+    ctx: IAMContext = Depends(require_ca_or_owner),
     db: AsyncSession = Depends(get_db)
 ):
-    stmt = select(Contact).where(Contact.tenant_id == tenant.id)
+    stmt = select(Contact).where(Contact.tenant_id == ctx.tenant.id)
     if is_customer is not None:
         stmt = stmt.where(Contact.is_customer == is_customer)
     res = await db.execute(stmt)
     return res.scalars().all()
 
+@router.put("/contacts/{contact_id}", response_model=ContactResponse)
+async def update_contact(
+    contact_id: uuid.UUID,
+    payload: ContactCreate,
+    ctx: IAMContext = Depends(require_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    stmt = select(Contact).where(Contact.id == contact_id, Contact.tenant_id == ctx.tenant.id)
+    contact = (await db.execute(stmt)).scalar_one_or_none()
+    if not contact:
+        raise HTTPException(status_code=404, detail="Contact not found")
+    contact.name = payload.name.strip()
+    contact.gstin = payload.gstin.strip().upper() if payload.gstin else None
+    contact.pan = payload.pan.strip().upper() if payload.pan else None
+    contact.state_code = payload.state_code.strip()
+    contact.billing_address = payload.billing_address.strip()
+    if payload.shipping_address:
+        contact.shipping_address = payload.shipping_address.strip()
+    contact.email = payload.email.strip() if payload.email else None
+    contact.phone = payload.phone.strip() if payload.phone else None
+    await db.commit()
+    await db.refresh(contact)
+    return contact
+
+@router.delete("/contacts/{contact_id}")
+async def delete_contact(
+    contact_id: uuid.UUID,
+    ctx: IAMContext = Depends(require_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Deletes an unreferenced customer contact.
+    Enforces statutory invariant: contacts with linked tax invoices cannot be deleted
+    to preserve Companies Act Section 128 double-entry audit trails and GST records.
+    """
+    stmt = select(Contact).where(Contact.id == contact_id, Contact.tenant_id == ctx.tenant.id)
+    contact = (await db.execute(stmt)).scalar_one_or_none()
+    if not contact:
+        raise HTTPException(status_code=404, detail="Customer contact not found")
+
+    # Check for linked invoices
+    inv_count_stmt = select(func.count(Invoice.id)).where(
+        Invoice.contact_id == contact_id,
+        Invoice.tenant_id == ctx.tenant.id
+    )
+    linked_count = (await db.execute(inv_count_stmt)).scalar() or 0
+    if linked_count > 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot delete customer '{contact.name}': {linked_count} tax invoice(s) are linked to this record. Companies Act audit trail rules require customer records with posted transactions to be preserved."
+        )
+
+    await db.delete(contact)
+    await db.commit()
+    return {"status": "success", "message": f"Customer '{contact.name}' deleted successfully."}
+
 @router.post("/", response_model=InvoiceResponse)
 async def create_invoice(
     payload: InvoiceCreate,
-    current_user: User = Depends(get_current_user),
-    tenant: Tenant = Depends(get_current_tenant),
+    ctx: IAMContext = Depends(require_owner),
+    _doc_guard: Tenant = Depends(check_mandatory_company_documents),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -76,6 +136,9 @@ async def create_invoice(
     based on Company Operating State vs Place of Supply (POS), and automatically
     posts balanced double-entry accounts receivable entries into the General Ledger.
     """
+    current_user = ctx.user
+    tenant = ctx.tenant
+
     # 1. Validate contact
     contact_res = await db.execute(
         select(Contact).where(Contact.id == payload.contact_id, Contact.tenant_id == tenant.id)
@@ -105,15 +168,37 @@ async def create_invoice(
     igst_total = Decimal("0.00")
     grand_total = Decimal("0.00")
 
+    has_gstin = bool(tenant.gstin and len(tenant.gstin.strip()) == 15)
+
+    if not has_gstin:
+        for item_in in payload.items:
+            rate_dec = Decimal(str(item_in.gst_rate_percent or 0))
+            if rate_dec > Decimal("0.00"):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Statutory Violation (Section 32 CGST Act): Unregistered entities without a verified GSTIN cannot collect GST or issue Tax Invoices. Tax rate must be 0.00% (Bill of Supply)."
+                )
+
     calculated_items = []
     for item_in in payload.items:
         taxable_val = round(item_in.quantity * item_in.unit_price, 2)
-        calc = calculate_tax_breakdown(
-            operating_state=operating_state,
-            place_of_supply=pos,
-            taxable_value=taxable_val,
-            gst_rate_percent=item_in.gst_rate_percent
-        )
+        if has_gstin:
+            calc = calculate_tax_breakdown(
+                operating_state=operating_state,
+                place_of_supply=pos,
+                taxable_value=taxable_val,
+                gst_rate_percent=item_in.gst_rate_percent
+            )
+            item_gst_rate = item_in.gst_rate_percent
+        else:
+            # Unregistered supplier under CGST Act Section 22 / 32: Tax rate is strictly 0.00%
+            calc = {
+                "cgst_amount": Decimal("0.00"),
+                "sgst_amount": Decimal("0.00"),
+                "igst_amount": Decimal("0.00"),
+                "total_amount": taxable_val
+            }
+            item_gst_rate = Decimal("0.00")
 
         item = InvoiceItem(
             item_description=item_in.item_description,
@@ -121,7 +206,7 @@ async def create_invoice(
             quantity=item_in.quantity,
             unit_price=item_in.unit_price,
             taxable_value=taxable_val,
-            gst_rate_percent=item_in.gst_rate_percent,
+            gst_rate_percent=item_gst_rate,
             cgst_amount=calc["cgst_amount"],
             sgst_amount=calc["sgst_amount"],
             igst_amount=calc["igst_amount"],
@@ -179,12 +264,18 @@ async def create_invoice(
                 "seller_gstin": tenant.gstin,
                 "seller_pan": tenant.pan,
                 "seller_address": tenant.registered_office,
+                "seller_email": getattr(current_user, "email", "") or "",
+                "seller_phone": getattr(current_user, "phone", "") or "",
+                "logo_url": tenant.logo_url or (tenant.statutory_profile or {}).get("logo_url"),
+                "logo_s3_key": tenant.logo_s3_key or (tenant.statutory_profile or {}).get("logo_s3_key"),
                 "issue_date": str(invoice.issue_date),
                 "due_date": str(invoice.due_date),
                 "place_of_supply": pos,
                 "customer_name": contact.name,
-                "customer_gstin": contact.gstin,
-                "customer_address": contact.billing_address,
+                "customer_gstin": contact.gstin or "",
+                "customer_address": contact.billing_address or "",
+                "customer_email": getattr(contact, "email", "") or "",
+                "customer_phone": getattr(contact, "phone", "") or "",
                 "subtotal": float(invoice.subtotal),
                 "cgst_total": float(invoice.cgst_total),
                 "sgst_total": float(invoice.sgst_total),
@@ -192,11 +283,11 @@ async def create_invoice(
                 "grand_total": float(invoice.grand_total),
                 "items": [
                     {
-                        "description": it.description,
-                        "hsn_sac_code": it.hsn_sac_code,
-                        "quantity": float(it.quantity),
-                        "unit_price": float(it.unit_price),
-                        "taxable_amount": float(it.taxable_amount)
+                        "description": getattr(it, "item_description", getattr(it, "description", "Services")),
+                        "hsn_sac_code": getattr(it, "hsn_sac_code", "-"),
+                        "quantity": float(it.quantity or 1),
+                        "unit_price": float(it.unit_price or 0),
+                        "taxable_amount": float(getattr(it, "taxable_value", getattr(it, "taxable_amount", 0)))
                     }
                     for it in invoice.items
                 ],
@@ -232,28 +323,200 @@ async def create_invoice(
 
 @router.get("/", response_model=List[InvoiceResponse])
 async def list_invoices(
-    tenant: Tenant = Depends(get_current_tenant),
+    fy: Optional[str] = Query(None),
+    ctx: IAMContext = Depends(require_ca_or_owner),
     db: AsyncSession = Depends(get_db)
 ):
     stmt = (
         select(Invoice)
         .options(selectinload(Invoice.items), selectinload(Invoice.contact))
-        .where(Invoice.tenant_id == tenant.id)
-        .order_by(Invoice.created_at.desc())
+        .where(Invoice.tenant_id == ctx.tenant.id)
     )
+    if fy and fy.lower() != "all":
+        from app.core.fiscal_year import get_fy_date_bounds
+        try:
+            fy_start, fy_end = get_fy_date_bounds(fy)
+            stmt = stmt.where(Invoice.issue_date >= fy_start, Invoice.issue_date <= fy_end)
+        except Exception:
+            pass
+    stmt = stmt.order_by(Invoice.created_at.desc())
     res = await db.execute(stmt)
     return res.scalars().all()
+
+@router.get("/next-number")
+async def get_next_invoice_number(
+    invoice_date: Optional[str] = None,
+    ctx: IAMContext = Depends(require_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Returns the next sequential invoice number in Indian standard format INV-YYYY-MM-XXX
+    (e.g., INV-2026-05-001, INV-2026-10-001).
+    """
+    from datetime import datetime, date as dt_date
+    target_dt = dt_date.today()
+    if invoice_date:
+        try:
+            target_dt = datetime.strptime(invoice_date[:10], "%Y-%m-%d").date()
+        except Exception:
+            pass
+
+    year_str = str(target_dt.year)
+    month_str = f"{target_dt.month:02d}"
+    prefix = f"INV-{year_str}-{month_str}-"
+
+    stmt = select(Invoice.invoice_number).where(
+        Invoice.tenant_id == ctx.tenant.id,
+        Invoice.invoice_number.like(f"{prefix}%")
+    )
+    existing_nums = (await db.execute(stmt)).scalars().all()
+
+    max_seq = 0
+    for num in existing_nums:
+        suffix = num[len(prefix):]
+        if suffix.isdigit():
+            max_seq = max(max_seq, int(suffix))
+
+    next_seq = max_seq + 1
+    next_num = f"{prefix}{next_seq:03d}"
+    return {
+        "next_invoice_number": next_num,
+        "format": "INV-YYYY-MM-XXX",
+        "year": year_str,
+        "month": month_str,
+        "sequence": next_seq
+    }
+
+
+class GSTThresholdStatusResponse(BaseModel):
+    has_gstin: bool
+    gstin: Optional[str] = None
+    is_registered: bool
+    current_fy: str
+    turnover_amount: float
+    threshold_limit: float = 2000000.00
+    threshold_exceeded: bool
+    threshold_approaching: bool
+    exemption_active: bool
+    status_code: str
+    message: str
+
+
+@router.get("/gst-threshold-status", response_model=GSTThresholdStatusResponse)
+async def get_gst_threshold_status(
+    ctx: IAMContext = Depends(require_ca_or_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Statutory Section 22 CGST Act Turnover Threshold & GST Registration Watchdog.
+    - Evaluates aggregate turnover against ₹20,00,000 threshold for the current FY.
+    - If GSTIN is absent and turnover exceeds ₹20 Lakhs, prompts mandatory registration.
+    - If turnover is under ₹20 Lakhs, confirms Section 22 Exemption (Non-GST / Bill of Supply Mode).
+    """
+    tenant = ctx.tenant
+    clean_gstin = (tenant.gstin or "").strip().upper()
+    has_gstin = len(clean_gstin) == 15
+
+    from app.core.fiscal_year import resolve_fiscal_calendar, get_fy_date_bounds
+    cal = resolve_fiscal_calendar()
+    active_fy = cal.get("active_fy", "2026-27")
+    fy_start, fy_end = get_fy_date_bounds(active_fy)
+
+    stmt = (
+        select(func.coalesce(func.sum(Invoice.subtotal), Decimal("0.00")))
+        .where(
+            Invoice.tenant_id == tenant.id,
+            Invoice.issue_date.between(fy_start, fy_end),
+            Invoice.status != "cancelled"
+        )
+    )
+    res = await db.execute(stmt)
+    turnover = Decimal(str(res.scalar_one() or "0.00"))
+    turnover_float = float(turnover)
+
+    threshold_limit = 2000000.00
+    approaching_limit = 1500000.00
+
+    if has_gstin:
+        return GSTThresholdStatusResponse(
+            has_gstin=True,
+            gstin=clean_gstin,
+            is_registered=True,
+            current_fy=f"FY {active_fy}",
+            turnover_amount=turnover_float,
+            threshold_limit=threshold_limit,
+            threshold_exceeded=False,
+            threshold_approaching=False,
+            exemption_active=False,
+            status_code="registered",
+            message=f"GSTIN {clean_gstin} verified and registered on GSTN."
+        )
+
+    if turnover_float >= threshold_limit:
+        return GSTThresholdStatusResponse(
+            has_gstin=False,
+            gstin=None,
+            is_registered=False,
+            current_fy=f"FY {active_fy}",
+            turnover_amount=turnover_float,
+            threshold_limit=threshold_limit,
+            threshold_exceeded=True,
+            threshold_approaching=False,
+            exemption_active=False,
+            status_code="threshold_exceeded",
+            message=(
+                f"CGST Section 22 Mandatory Registration Alert: Current FY turnover of ₹{turnover_float:,.2f} "
+                f"has exceeded the statutory threshold of ₹20,00,000. Under Section 22 of the CGST Act 2017, "
+                f"the company is legally required to apply for GST Registration within 30 days."
+            )
+        )
+    elif turnover_float >= approaching_limit:
+        return GSTThresholdStatusResponse(
+            has_gstin=False,
+            gstin=None,
+            is_registered=False,
+            current_fy=f"FY {active_fy}",
+            turnover_amount=turnover_float,
+            threshold_limit=threshold_limit,
+            threshold_exceeded=False,
+            threshold_approaching=True,
+            exemption_active=True,
+            status_code="approaching",
+            message=(
+                f"GST Threshold Warning: Current FY turnover is ₹{turnover_float:,.2f} "
+                f"({round((turnover_float / threshold_limit) * 100, 1)}% of ₹20,00,000 limit). "
+                f"Mandatory GST registration will be triggered upon crossing ₹20 Lakhs."
+            )
+        )
+    else:
+        return GSTThresholdStatusResponse(
+            has_gstin=False,
+            gstin=None,
+            is_registered=False,
+            current_fy=f"FY {active_fy}",
+            turnover_amount=turnover_float,
+            threshold_limit=threshold_limit,
+            threshold_exceeded=False,
+            threshold_approaching=False,
+            exemption_active=True,
+            status_code="exempt",
+            message=(
+                f"Section 22 Exemption Active: Current FY turnover of ₹{turnover_float:,.2f} is below the "
+                f"₹20,00,000 threshold. Invoicing is issued in Non-GST / Bill of Supply mode."
+            )
+        )
+
 
 @router.get("/{invoice_id}", response_model=InvoiceResponse)
 async def get_invoice(
     invoice_id: uuid.UUID,
-    tenant: Tenant = Depends(get_current_tenant),
+    ctx: IAMContext = Depends(require_ca_or_owner),
     db: AsyncSession = Depends(get_db)
 ):
     stmt = (
         select(Invoice)
         .options(selectinload(Invoice.items), selectinload(Invoice.contact))
-        .where(Invoice.id == invoice_id, Invoice.tenant_id == tenant.id)
+        .where(Invoice.id == invoice_id, Invoice.tenant_id == ctx.tenant.id)
     )
     res = await db.execute(stmt)
     inv = res.scalar_one_or_none()
@@ -261,14 +524,309 @@ async def get_invoice(
         raise HTTPException(status_code=404, detail="Invoice not found")
     return inv
 
+@router.put("/{invoice_id}", response_model=InvoiceResponse)
+async def update_invoice(
+    invoice_id: uuid.UUID,
+    payload: InvoiceUpdate,
+    ctx: IAMContext = Depends(require_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Modifies an existing invoice:
+    - Allows updating invoice number, customer contact, issue/due dates, POS, and line items
+    - Automatically re-balances General Ledger double-entry journal vouchers
+    - Re-generates verified tax invoice PDF with database-driven seller and customer details
+    """
+    current_user = ctx.user
+    tenant = ctx.tenant
+    stmt = (
+        select(Invoice)
+        .options(selectinload(Invoice.items), selectinload(Invoice.contact))
+        .where(Invoice.id == invoice_id, Invoice.tenant_id == tenant.id)
+    )
+    inv = (await db.execute(stmt)).scalar_one_or_none()
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invoice record not found")
+
+    # Protection against closed financial years
+    closed_fys = (tenant.statutory_profile or {}).get("closed_fiscal_years", {})
+    from app.core.fiscal_year import get_financial_year
+    check_date = payload.issue_date or inv.issue_date
+    fy_str = get_financial_year(check_date)
+    if closed_fys.get(fy_str):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot modify invoice #{inv.invoice_number} because Financial Year {fy_str} is legally locked and closed."
+        )
+
+    # Check duplicate invoice number if changed
+    if payload.invoice_number and payload.invoice_number.strip() != inv.invoice_number:
+        dup = await db.execute(
+            select(Invoice).where(
+                Invoice.tenant_id == tenant.id,
+                Invoice.invoice_number == payload.invoice_number.strip(),
+                Invoice.id != inv.id
+            )
+        )
+        if dup.scalar_one_or_none():
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Invoice number '{payload.invoice_number.strip()}' is already taken by another invoice."
+            )
+        inv.invoice_number = payload.invoice_number.strip()
+
+    # Update Contact if changed
+    contact = inv.contact
+    if payload.contact_id and payload.contact_id != inv.contact_id:
+        c_stmt = select(Contact).where(Contact.id == payload.contact_id, Contact.tenant_id == tenant.id)
+        c_res = (await db.execute(c_stmt)).scalar_one_or_none()
+        if not c_res:
+            raise HTTPException(status_code=404, detail="Selected contact does not exist")
+        inv.contact_id = c_res.id
+        inv.contact = c_res
+        contact = c_res
+
+    if payload.issue_date:
+        inv.issue_date = payload.issue_date
+    if payload.due_date:
+        inv.due_date = payload.due_date
+    if payload.place_of_supply:
+        inv.place_of_supply = payload.place_of_supply.strip()
+
+    operating_state = tenant.state_code
+    pos = inv.place_of_supply
+    inv.is_interstate = (operating_state != pos)
+
+    # Re-calculate line items if updated
+    if payload.items is not None and len(payload.items) > 0:
+        for old_it in list(inv.items):
+            await db.delete(old_it)
+        inv.items.clear()
+
+        subtotal = Decimal("0.00")
+        cgst_total = Decimal("0.00")
+        sgst_total = Decimal("0.00")
+        igst_total = Decimal("0.00")
+        grand_total = Decimal("0.00")
+
+        new_items = []
+        for it_in in payload.items:
+            taxable_val = round(it_in.quantity * it_in.unit_price, 2)
+            calc = calculate_tax_breakdown(
+                operating_state=operating_state,
+                place_of_supply=pos,
+                taxable_value=taxable_val,
+                gst_rate_percent=it_in.gst_rate_percent
+            )
+            item = InvoiceItem(
+                invoice_id=inv.id,
+                item_description=it_in.item_description,
+                hsn_sac_code=it_in.hsn_sac_code,
+                quantity=it_in.quantity,
+                unit_price=it_in.unit_price,
+                taxable_value=taxable_val,
+                gst_rate_percent=it_in.gst_rate_percent,
+                cgst_amount=calc["cgst_amount"],
+                sgst_amount=calc["sgst_amount"],
+                igst_amount=calc["igst_amount"],
+                total_amount=calc["total_amount"]
+            )
+            new_items.append(item)
+            subtotal += taxable_val
+            cgst_total += calc["cgst_amount"]
+            sgst_total += calc["sgst_amount"]
+            igst_total += calc["igst_amount"]
+            grand_total += calc["total_amount"]
+
+        inv.items = new_items
+        inv.subtotal = subtotal
+        inv.cgst_total = cgst_total
+        inv.sgst_total = sgst_total
+        inv.igst_total = igst_total
+        inv.grand_total = grand_total
+
+    if payload.status:
+        inv.status = payload.status
+
+    await db.flush()
+
+    # Re-synchronize Double-Entry Journal Entry in General Ledger
+    if inv.status != "cancelled":
+        jv_stmt = (
+            select(JournalEntry)
+            .options(selectinload(JournalEntry.lines))
+            .where(
+                JournalEntry.tenant_id == tenant.id,
+                JournalEntry.reference_type == "invoice",
+                JournalEntry.reference_id == inv.id
+            )
+        )
+        existing_jv = (await db.execute(jv_stmt)).scalar_one_or_none()
+
+        ar_acc = await LedgerService.ensure_account(db, tenant.id, "1020", "Trade Receivables (Sundry Debtors)", "asset", "accounts_receivable", "debit")
+        rev_acc = await LedgerService.ensure_account(db, tenant.id, "3010", "Revenue from Operations (Sales / Services)", "revenue", "operating_revenue", "credit")
+        cgst_acc = await LedgerService.ensure_account(db, tenant.id, "2050", "Output CGST Payable", "liability", "tax_payable", "credit")
+        sgst_acc = await LedgerService.ensure_account(db, tenant.id, "2051", "Output SGST Payable", "liability", "tax_payable", "credit")
+        igst_acc = await LedgerService.ensure_account(db, tenant.id, "2052", "Output IGST Payable", "liability", "tax_payable", "credit")
+
+        if existing_jv:
+            # Under Indian Accounting Standards and statutory immutability constraints,
+            # a posted journal entry cannot be mutated. Post a formal Reversal JV.
+            rev_jv_number = f"JV-INV-REVERSAL-{inv.invoice_number}-{uuid.uuid4().hex[:6].upper()}"
+            reversal_entry = JournalEntry(
+                tenant_id=tenant.id,
+                entry_number=rev_jv_number,
+                entry_date=inv.issue_date,
+                reference_type="invoice_adjustment_reversal",
+                reference_id=inv.id,
+                narration=f"Reversal of original posted entry for modified invoice #{inv.invoice_number}",
+                status="posted",
+                is_posted=True,
+                created_by=current_user.id
+            )
+            db.add(reversal_entry)
+            await db.flush()
+
+            rev_lines = []
+            for old_line in existing_jv.lines:
+                rev_lines.append(JournalLine(
+                    journal_entry_id=reversal_entry.id,
+                    tenant_id=tenant.id,
+                    account_id=old_line.account_id,
+                    debit_amount=old_line.credit_amount,
+                    credit_amount=old_line.debit_amount,
+                    description=f"Reversal: {old_line.description or 'Invoice adjustment'}"
+                ))
+            db.add_all(rev_lines)
+            await db.flush()
+
+        # Create the revised journal entry for the updated invoice amounts
+        revised_jv_number = f"JV-INV-{inv.invoice_number}-{uuid.uuid4().hex[:6].upper()}"
+        target_entry = JournalEntry(
+            tenant_id=tenant.id,
+            entry_number=revised_jv_number,
+            entry_date=inv.issue_date,
+            reference_type="invoice",
+            reference_id=inv.id,
+            narration=f"Revised Tax Invoice #{inv.invoice_number} issued to {contact.name if contact else 'contact'}",
+            status="posted",
+            is_posted=True,
+            created_by=current_user.id
+        )
+        db.add(target_entry)
+        await db.flush()
+
+        jv_lines = [
+            JournalLine(
+                journal_entry_id=target_entry.id,
+                tenant_id=tenant.id,
+                account_id=ar_acc.id,
+                debit_amount=inv.grand_total,
+                credit_amount=Decimal("0.00"),
+                description=f"Debtor claim for Inv #{inv.invoice_number}"
+            ),
+            JournalLine(
+                journal_entry_id=target_entry.id,
+                tenant_id=tenant.id,
+                account_id=rev_acc.id,
+                debit_amount=Decimal("0.00"),
+                credit_amount=inv.subtotal,
+                description=f"Revenue recognition for Inv #{inv.invoice_number}"
+            )
+        ]
+        if inv.cgst_total and inv.cgst_total > Decimal("0.00") and cgst_acc:
+            jv_lines.append(JournalLine(
+                journal_entry_id=target_entry.id,
+                tenant_id=tenant.id,
+                account_id=cgst_acc.id,
+                debit_amount=Decimal("0.00"),
+                credit_amount=inv.cgst_total,
+                description=f"Output CGST for Inv #{inv.invoice_number}"
+            ))
+        if inv.sgst_total and inv.sgst_total > Decimal("0.00") and sgst_acc:
+            jv_lines.append(JournalLine(
+                journal_entry_id=target_entry.id,
+                tenant_id=tenant.id,
+                account_id=sgst_acc.id,
+                debit_amount=Decimal("0.00"),
+                credit_amount=inv.sgst_total,
+                description=f"Output SGST for Inv #{inv.invoice_number}"
+            ))
+        if inv.igst_total and inv.igst_total > Decimal("0.00") and igst_acc:
+            jv_lines.append(JournalLine(
+                journal_entry_id=target_entry.id,
+                tenant_id=tenant.id,
+                account_id=igst_acc.id,
+                debit_amount=Decimal("0.00"),
+                credit_amount=inv.igst_total,
+                description=f"Output IGST for Inv #{inv.invoice_number}"
+            ))
+        db.add_all(jv_lines)
+
+    # Re-generate and cache PDF
+    try:
+        primary_ac = (tenant.statutory_profile or {}).get("primary_bank_account") or {}
+        pdf_bytes = PDFService.generate_simple_invoice_pdf({
+            "invoice_number": inv.invoice_number,
+            "seller_name": tenant.legal_name,
+            "seller_cin": tenant.cin,
+            "seller_gstin": tenant.gstin,
+            "seller_pan": tenant.pan,
+            "seller_address": tenant.registered_office,
+            "seller_email": getattr(current_user, "email", "") or "",
+            "seller_phone": getattr(current_user, "phone", "") or "",
+            "logo_url": tenant.logo_url or (tenant.statutory_profile or {}).get("logo_url"),
+            "logo_s3_key": tenant.logo_s3_key or (tenant.statutory_profile or {}).get("logo_s3_key"),
+            "issue_date": str(inv.issue_date),
+            "due_date": str(inv.due_date),
+            "place_of_supply": inv.place_of_supply,
+            "customer_name": contact.name if contact else "Valued Customer",
+            "customer_gstin": contact.gstin if contact else "",
+            "customer_address": contact.billing_address if contact else "",
+            "customer_email": getattr(contact, "email", "") or "",
+            "customer_phone": getattr(contact, "phone", "") or "",
+            "status": inv.status,
+            "is_paid": inv.status in ("paid", "settled"),
+            "subtotal": float(inv.subtotal),
+            "cgst_total": float(inv.cgst_total or 0),
+            "sgst_total": float(inv.sgst_total or 0),
+            "igst_total": float(inv.igst_total or 0),
+            "grand_total": float(inv.grand_total),
+            "items": [
+                {
+                    "description": getattr(it, "item_description", getattr(it, "description", "Services")),
+                    "hsn_sac_code": getattr(it, "hsn_sac_code", "-"),
+                    "quantity": float(it.quantity or 1),
+                    "unit_price": float(it.unit_price or 0),
+                    "taxable_amount": float(getattr(it, "taxable_value", getattr(it, "taxable_amount", 0)))
+                }
+                for it in inv.items
+            ],
+            "bank_details": primary_ac
+        })
+        s3_key = f"{tenant.id}/invoices/{inv.invoice_number}.pdf"
+        upload_document(settings.BUCKET_INVOICES, pdf_bytes, s3_key, "application/pdf")
+        inv.pdf_s3_key = s3_key
+    except Exception:
+        pass
+
+    await db.commit()
+    ref_stmt = (
+        select(Invoice)
+        .options(selectinload(Invoice.items), selectinload(Invoice.contact))
+        .where(Invoice.id == inv.id)
+    )
+    return (await db.execute(ref_stmt)).scalar_one()
+
 @router.post("/scan-invoice")
 async def scan_customer_invoice(
     file: UploadFile = File(...),
     password: Optional[str] = Form(None),
-    current_user: User = Depends(get_current_user),
-    tenant: Tenant = Depends(get_current_tenant),
+    ctx: IAMContext = Depends(require_owner),
     db: AsyncSession = Depends(get_db)
 ):
+    current_user = ctx.user
+    tenant = ctx.tenant
     """
     Ingests and OCR-extracts outward customer invoices (PDF/image):
     - Extracts invoice number, issue date, customer details, line items, taxes, totals
@@ -422,10 +980,11 @@ def _parse_razorpay_date(raw_val: Any) -> date:
 async def parse_razorpay_invoice_file(
     file: UploadFile = File(...),
     password: Optional[str] = Form(None),
-    current_user: User = Depends(get_current_user),
-    tenant: Tenant = Depends(get_current_tenant),
+    ctx: IAMContext = Depends(require_owner),
     db: AsyncSession = Depends(get_db)
 ):
+    current_user = ctx.user
+    tenant = ctx.tenant
     """
     Parses a Razorpay-generated Tax Invoice (PDF/Image) or a Razorpay Invoices CSV/JSON export.
     Extracts Razorpay Invoice ID (inv_...), Payment ID (pay_...), Invoice/Receipt #, Issue Date,
@@ -691,10 +1250,11 @@ async def parse_razorpay_invoice_file(
 @router.post("/import")
 async def import_razorpay_invoices(
     payload: RazorpayBatchImportRequest,
-    current_user: User = Depends(get_current_user),
-    tenant: Tenant = Depends(get_current_tenant),
+    ctx: IAMContext = Depends(require_owner),
     db: AsyncSession = Depends(get_db)
 ):
+    current_user = ctx.user
+    tenant = ctx.tenant
     """
     Imports one or more Razorpay invoices into b00k5 and synchronizes them with:
     1. Contacts (auto-creates or links the Customer Contact)
@@ -880,10 +1440,11 @@ async def import_razorpay_invoices(
 async def upload_invoice_pdf(
     invoice_id: uuid.UUID,
     file: UploadFile = File(...),
-    current_user: User = Depends(get_current_user),
-    tenant: Tenant = Depends(get_current_tenant),
+    ctx: IAMContext = Depends(require_owner),
     db: AsyncSession = Depends(get_db)
 ):
+    current_user = ctx.user
+    tenant = ctx.tenant
     """
     Directly attaches/updates the original tax invoice PDF document for a sales invoice.
     Saves binary bytes directly to MinIO and updates the invoice record.
@@ -925,58 +1486,14 @@ async def upload_invoice_pdf(
     }
 
 
-@router.get("/next-number")
-async def get_next_invoice_number(
-    invoice_date: Optional[str] = None,
-    tenant: Tenant = Depends(get_current_tenant),
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Returns the next sequential invoice number in Indian standard format INV-YYYY-MM-XXX
-    (e.g., INV-2026-05-001, INV-2026-10-001).
-    """
-    from datetime import datetime, date as dt_date
-    target_dt = dt_date.today()
-    if invoice_date:
-        try:
-            target_dt = datetime.strptime(invoice_date[:10], "%Y-%m-%d").date()
-        except Exception:
-            pass
-
-    year_str = str(target_dt.year)
-    month_str = f"{target_dt.month:02d}"
-    prefix = f"INV-{year_str}-{month_str}-"
-
-    stmt = select(Invoice.invoice_number).where(
-        Invoice.tenant_id == tenant.id,
-        Invoice.invoice_number.like(f"{prefix}%")
-    )
-    existing_nums = (await db.execute(stmt)).scalars().all()
-
-    max_seq = 0
-    for num in existing_nums:
-        suffix = num[len(prefix):]
-        if suffix.isdigit():
-            max_seq = max(max_seq, int(suffix))
-
-    next_seq = max_seq + 1
-    next_num = f"{prefix}{next_seq:03d}"
-    return {
-        "next_invoice_number": next_num,
-        "format": "INV-YYYY-MM-XXX",
-        "year": year_str,
-        "month": month_str,
-        "sequence": next_seq
-    }
-
-
 @router.get("/{invoice_id}/download")
 @router.get("/{invoice_id}/pdf")
 async def download_invoice_pdf(
     invoice_id: uuid.UUID,
-    tenant: Tenant = Depends(get_current_tenant),
+    ctx: IAMContext = Depends(require_ca_or_owner),
     db: AsyncSession = Depends(get_db)
 ):
+    tenant = ctx.tenant
     """
     Downloads or streams the original or assembled Razorpay-style GST Tax Invoice PDF.
     If not yet generated or attached, creates the compliant PDF on the fly.
@@ -998,6 +1515,9 @@ async def download_invoice_pdf(
                 getattr(settings, "BUCKET_INVOICES", settings.BUCKET_RECEIPTS),
                 inv.pdf_s3_key
             )
+            # If valid PDF content was retrieved, keep it intact without overwriting authentic records
+            if content and not (b"%PDF" in content[:1024] or b"%%EOF" in content[-2048:]):
+                content = None
         except Exception:
             content = None
 
@@ -1005,8 +1525,14 @@ async def download_invoice_pdf(
         primary_ac = (tenant.statutory_profile or {}).get("primary_bank_account") or {}
         pos = inv.place_of_supply or tenant.state_code or "29"
         contact_name = inv.contact.name if inv.contact else "Valued Customer"
-        contact_gstin = inv.contact.gstin if inv.contact else "Unregistered (B2C)"
-        contact_addr = inv.contact.billing_address if inv.contact else f"State Code {pos}, India"
+        contact_gstin = inv.contact.gstin if inv.contact else ""
+        contact_addr = inv.contact.billing_address if inv.contact else ""
+        contact_email = getattr(inv.contact, "email", "") or ""
+        contact_phone = getattr(inv.contact, "phone", "") or ""
+
+        # Fetch tenant seller email/phone
+        seller_email = (tenant.statutory_profile or {}).get("email") or ""
+        seller_phone = (tenant.statutory_profile or {}).get("phone") or ""
 
         content = PDFService.generate_simple_invoice_pdf({
             "invoice_number": inv.invoice_number,
@@ -1015,12 +1541,20 @@ async def download_invoice_pdf(
             "seller_gstin": tenant.gstin,
             "seller_pan": tenant.pan,
             "seller_address": tenant.registered_office,
+            "seller_email": seller_email,
+            "seller_phone": seller_phone,
+            "logo_url": tenant.logo_url or (tenant.statutory_profile or {}).get("logo_url"),
+            "logo_s3_key": tenant.logo_s3_key or (tenant.statutory_profile or {}).get("logo_s3_key"),
             "issue_date": str(inv.issue_date),
             "due_date": str(inv.due_date),
             "place_of_supply": pos,
             "customer_name": contact_name,
             "customer_gstin": contact_gstin,
             "customer_address": contact_addr,
+            "customer_email": contact_email,
+            "customer_phone": contact_phone,
+            "status": inv.status,
+            "is_paid": inv.status in ("paid", "settled"),
             "subtotal": float(inv.subtotal),
             "cgst_total": float(inv.cgst_total or 0),
             "sgst_total": float(inv.sgst_total or 0),
@@ -1028,13 +1562,13 @@ async def download_invoice_pdf(
             "grand_total": float(inv.grand_total),
             "items": [
                 {
-                    "description": it.description,
-                    "hsn_sac_code": it.hsn_sac_code,
-                    "quantity": float(it.quantity),
-                    "unit_price": float(it.unit_price),
-                    "taxable_amount": float(it.taxable_amount)
+                    "description": getattr(it, "item_description", None) or getattr(it, "description", "Software Consulting Services"),
+                    "hsn_sac_code": getattr(it, "hsn_sac_code", "-"),
+                    "quantity": float(getattr(it, "quantity", 1)),
+                    "unit_price": float(getattr(it, "unit_price", 0)),
+                    "taxable_amount": float(getattr(it, "taxable_value", None) or getattr(it, "taxable_amount", 0))
                 }
-                for it in inv.items
+                for it in (inv.items or [])
             ],
             "bank_details": primary_ac
         })
@@ -1053,11 +1587,12 @@ async def download_invoice_pdf(
         except Exception:
             pass
 
+    safe_num = str(inv.invoice_number).replace("/", "_")
     return Response(
         content=content,
         media_type="application/pdf",
         headers={
-            "Content-Disposition": f'inline; filename="{inv.invoice_number}.pdf"'
+            "Content-Disposition": f'attachment; filename="INV-{safe_num}.pdf"'
         }
     )
 
@@ -1066,10 +1601,11 @@ async def download_invoice_pdf(
 async def strike_off_invoice(
     invoice_id: uuid.UUID,
     reason: Optional[str] = Form(None),
-    current_user: User = Depends(get_current_user),
-    tenant: Tenant = Depends(get_current_tenant),
+    ctx: IAMContext = Depends(require_owner),
     db: AsyncSession = Depends(get_db)
 ):
+    current_user = ctx.user
+    tenant = ctx.tenant
     """
     Cancels / strikes off an invoice.
     Reverses the corresponding Double-Entry journal voucher in General Ledger:
@@ -1098,7 +1634,7 @@ async def strike_off_invoice(
     rev_entry = JournalEntry(
         tenant_id=tenant.id,
         entry_number=reversal_jv_number,
-        entry_date=dt_date.today(),
+        entry_date=inv.issue_date,  # Match original invoice issue date so period balance sheet reflects strike-off
         reference_type="invoice_strike_off",
         reference_id=inv.id,
         narration=f"Strike-off / Cancellation of Invoice {inv.invoice_number}: {reason or 'Voided by Administrator'}",
@@ -1141,6 +1677,70 @@ async def strike_off_invoice(
         "status": "cancelled",
         "reversal_journal": reversal_jv_number
     }
+
+
+@router.post("/{invoice_id}/generate-irn", response_model=EInvoiceResponse)
+async def generate_invoice_irn(
+    invoice_id: uuid.UUID,
+    payload: Optional[EInvoiceGenerateRequest] = None,
+    ctx: IAMContext = Depends(require_ca_or_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Generates standard Indian E-Invoice IRN and B2B Signed QR code u/s 48(4) of CGST Rules, 2017.
+    """
+    try:
+        res = await EInvoiceService.generate_einvoice(
+            session=db,
+            tenant_id=ctx.tenant.id,
+            invoice_id=invoice_id,
+            override_existing=payload.override_existing if payload else False
+        )
+        await db.commit()
+        return EInvoiceResponse(**res)
+    except ValueError as e:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"E-Invoice error: {str(e)}")
+
+
+@router.get("/{invoice_id}/einvoice", response_model=EInvoiceResponse)
+async def get_invoice_einvoice(
+    invoice_id: uuid.UUID,
+    ctx: IAMContext = Depends(require_ca_or_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Retrieves the generated E-Invoice IRN, Acknowledgement Number, and Signed QR Payload.
+    """
+    query = (
+        select(Invoice)
+        .where(Invoice.id == invoice_id, Invoice.tenant_id == ctx.tenant.id)
+        .options(selectinload(Invoice.contact), selectinload(Invoice.tenant))
+    )
+    inv = (await db.execute(query)).scalar_one_or_none()
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    if not inv.irn:
+        raise HTTPException(status_code=400, detail="E-Invoice has not been generated for this invoice. Call /generate-irn first.")
+
+    return EInvoiceResponse(
+        invoice_id=str(inv.id),
+        invoice_number=inv.invoice_number,
+        irn=inv.irn,
+        ack_no=inv.ack_no or "",
+        ack_date=inv.ack_date or inv.created_at,
+        signed_qr_code=inv.signed_qr_code or "",
+        irn_status=inv.irn_status or "GENERATED",
+        supplier_gstin=inv.tenant.gstin or "",
+        recipient_gstin=inv.contact.gstin or "URP",
+        document_type="INV",
+        fiscal_year="2026-27",
+        grand_total=inv.grand_total,
+        einvoice_payload=inv.einvoice_payload or {}
+    )
 
 
 

@@ -2,7 +2,7 @@ from typing import List, Optional
 import uuid
 import json
 from datetime import date
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.api.deps import get_db, get_current_user, get_current_tenant
@@ -78,13 +78,11 @@ DOCUMENT_CATEGORY_MAP = {
     "form_dir_12": "statutory_filing",
     "auditor_report": "statutory_filing",
     "auditor-report": "statutory_filing",
-    "extract_of_auditors_report": "statutory_filing",
-    "board_report": "statutory_filing",
-    "board-report": "statutory_filing",
-    "extract_of_boards_report": "statutory_filing",
-    
     # Equity & Governance
     "equity_governance": "equity_governance",
+    "board_report": "equity_governance",
+    "board-report": "equity_governance",
+    "extract_of_boards_report": "equity_governance",
     "mom": "equity_governance",
     "minutes_of_meeting": "equity_governance",
     "board_minutes": "equity_governance",
@@ -112,6 +110,8 @@ def normalize_vault_category(raw_category: Optional[str], detected_doc_type: Opt
             return DOCUMENT_CATEGORY_MAP[dt_cleaned]
     return "corporate_legal"
 
+from app.core.iam import require_owner, require_ca_or_owner, IAMContext
+
 router = APIRouter()
 
 @router.post("/upload", response_model=DocumentVaultResponse)
@@ -124,10 +124,11 @@ async def upload_vault_document(
     expiry_date: Optional[str] = Form(None),
     is_confidential: bool = Form(False),
     metadata_json: Optional[str] = Form(None),
-    current_user: User = Depends(get_current_user),
-    tenant: Tenant = Depends(get_current_tenant),
+    ctx: IAMContext = Depends(require_owner),
     db: AsyncSession = Depends(get_db)
 ):
+    current_user = ctx.user
+    tenant = ctx.tenant
     """
     Uploads a statutory legal or governance document to the encrypted MinIO vault,
     calculates its cryptographic SHA-256 integrity hash, and registers it.
@@ -182,10 +183,11 @@ async def smart_ingest_document(
     doc_type: Optional[str] = Form(None),
     fiscal_year: Optional[str] = Form(None),
     pdf_password: Optional[str] = Form(None),
-    current_user: User = Depends(get_current_user),
-    tenant: Tenant = Depends(get_current_tenant),
+    ctx: IAMContext = Depends(require_owner),
     db: AsyncSession = Depends(get_db)
 ):
+    current_user = ctx.user
+    tenant = ctx.tenant
     """
     Active Legal Extraction Pipeline:
     Uploads a statutory document, runs StatutoryVaultEngine to extract legal source-of-truth
@@ -439,6 +441,40 @@ async def smart_ingest_document(
     elif doc_type_val == "form_dir_12":
         current_statutory["dir12_verified"] = True
 
+    # SPICe+ Part B / Form DIR-3 DIN Approval Letter
+    elif doc_type_val == "din_approval":
+        din_val = ext_fields.get("din") or ext_fields.get("director_din")
+        dir_name = ext_fields.get("director_name") or ext_fields.get("name")
+        if din_val:
+            current_statutory["primary_director_din"] = din_val
+            current_statutory["director_din"] = din_val
+            current_statutory["din_verified"] = True
+            current_statutory["din_approval_letter_verified"] = True
+        if dir_name:
+            current_statutory["primary_director_name"] = dir_name
+            current_statutory["director_name"] = dir_name
+            current_statutory["authorized_director"] = dir_name
+
+        if dir_name:
+            dirs = current_statutory.get("directors") or []
+            matched = False
+            for d in dirs:
+                if d.get("din") == din_val or d.get("name") == dir_name:
+                    d["name"] = dir_name
+                    if din_val: d["din"] = din_val
+                    matched = True
+                    break
+            if not matched:
+                dirs.append({"name": dir_name, "din": din_val or "N/A", "designation": "Director"})
+            current_statutory["directors"] = dirs
+
+        from app.models.tenant import TenantUser
+        tu_stmt = select(TenantUser).where(TenantUser.tenant_id == tenant.id, TenantUser.user_id == current_user.id)
+        cur_tu = (await db.execute(tu_stmt)).scalar_one_or_none()
+        if cur_tu and din_val:
+            cur_tu.din = din_val
+            db.add(cur_tu)
+
     # Form AOC-4
     elif doc_type_val == "form_aoc_4":
         current_statutory["aoc4_verified"] = True
@@ -481,8 +517,8 @@ async def smart_ingest_document(
         tenant.cin = ext_fields["cin"]
     if ext_fields.get("pan") and not tenant.pan:
         tenant.pan = ext_fields["pan"]
-    if ext_fields.get("registered_office") and (not tenant.registered_office or tenant.registered_office.lower().startswith("of the company")):
-        tenant.registered_office = ext_fields["registered_office"]
+    if current_statutory.get("coi_verified") and current_statutory.get("pan_verified"):
+        current_statutory["onboarding_status"] = "VERIFIED"
 
     tenant.statutory_profile = current_statutory
     db.add(tenant)
@@ -511,9 +547,10 @@ async def smart_ingest_document(
 
 @router.get("/statutory-profile")
 async def get_statutory_profile(
-    tenant: Tenant = Depends(get_current_tenant),
+    ctx: IAMContext = Depends(require_ca_or_owner),
     db: AsyncSession = Depends(get_db)
 ):
+    tenant = ctx.tenant
     """
     Returns the parsed active statutory profile & legal rule engine parameters.
     Auto-syncs from vaulted documents (MOA, AOA, COI, ADT-1) if not yet populated.
@@ -579,9 +616,10 @@ async def get_statutory_profile(
 @router.patch("/statutory-profile")
 async def update_statutory_profile(
     payload: dict,
-    tenant: Tenant = Depends(get_current_tenant),
+    ctx: IAMContext = Depends(require_owner),
     db: AsyncSession = Depends(get_db)
 ):
+    tenant = ctx.tenant
     """
     Directly updates statutory profile attributes (Authorized Capital, Quorum, Address, etc.).
     """
@@ -670,9 +708,10 @@ ANNUAL_STATUTORY_DOCS = [
 @router.get("/annual-statutory-filings")
 async def get_annual_statutory_filings(
     fy: Optional[str] = None,
-    tenant: Tenant = Depends(get_current_tenant),
+    ctx: IAMContext = Depends(require_ca_or_owner),
     db: AsyncSession = Depends(get_db)
 ):
+    tenant = ctx.tenant
     """
     Returns the 5 annual statutory compliance documents for a specified financial year
     (e.g., '2026-27', '2025-26', '2024-25').
@@ -690,8 +729,9 @@ async def get_annual_statutory_filings(
             dtype = str(meta.get("document_type") or "").lower()
             dname = d.document_name.lower()
             
+            from app.core.fiscal_year import check_statutory_fy_match
             # Check FY match if specified
-            fy_matches = not clean_fy or (doc_fy and (clean_fy in doc_fy or doc_fy in clean_fy))
+            fy_matches = check_statutory_fy_match(clean_fy, meta, dname, d.minio_s3_key)
             
             # Check document type match
             is_type_match = False
@@ -703,7 +743,7 @@ async def get_annual_statutory_filings(
                 is_type_match = True
             elif item["code"] == "BOARD_REPORT" and ("board" in dname and "report" in dname):
                 is_type_match = True
-            elif item["code"] == "AUDITOR_REPORT" and ("auditor" in dname and "report" in dname):
+            elif item["code"] == "AUDITOR_REPORT" and ("auditor" in dname or "audit" in dname):
                 is_type_match = True
             elif item["code"] == "ITR" and ("itr" in dname or "income tax return" in dname):
                 is_type_match = True
@@ -759,10 +799,11 @@ async def upload_annual_statutory_filing(
     document_code: str = Form(...),
     fiscal_year: str = Form(...),
     pdf_password: Optional[str] = Form(None),
-    current_user: User = Depends(get_current_user),
-    tenant: Tenant = Depends(get_current_tenant),
+    ctx: IAMContext = Depends(require_owner),
     db: AsyncSession = Depends(get_db)
 ):
+    current_user = ctx.user
+    tenant = ctx.tenant
     """
     Dedicated annual statutory filing ingestion: verifies, parses, and vaults
     one of the 5 mandatory annual compliance documents for a specified financial year.
@@ -773,8 +814,7 @@ async def upload_annual_statutory_filing(
         doc_type=document_code,
         fiscal_year=fiscal_year,
         pdf_password=pdf_password,
-        current_user=current_user,
-        tenant=tenant,
+        ctx=ctx,
         db=db
     )
 
@@ -782,9 +822,10 @@ async def upload_annual_statutory_filing(
 @router.get("/{document_id}/download")
 async def download_vault_document_file(
     document_id: uuid.UUID,
-    tenant: Tenant = Depends(get_current_tenant),
+    ctx: IAMContext = Depends(require_ca_or_owner),
     db: AsyncSession = Depends(get_db)
 ):
+    tenant = ctx.tenant
     stmt = select(DocumentVault).where(
         DocumentVault.id == document_id,
         DocumentVault.tenant_id == tenant.id
@@ -793,42 +834,117 @@ async def download_vault_document_file(
     doc = res.scalar_one_or_none()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
-    try:
-        content = storage_manager.get_document_bytes(settings.BUCKET_VAULT, doc.minio_s3_key)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Could not retrieve file from vault storage: {str(e)}")
+    content = None
+    for bkt in (getattr(settings, "BUCKET_VAULT", "b00k5-vault"), settings.BUCKET_STATUTORY):
+        try:
+            cand = storage_manager.get_document_bytes(bkt, doc.minio_s3_key)
+            if cand:
+                content = cand
+                break
+        except Exception:
+            pass
+
+    if not content:
+        raise HTTPException(status_code=404, detail="Could not retrieve original file from vault storage")
+
+    safe_name = doc.document_name
+    if not safe_name.lower().endswith((".pdf", ".png", ".jpg", ".jpeg", ".json", ".xml")):
+        safe_name += ".pdf"
 
     return Response(
         content=content,
         media_type=doc.mime_type or "application/pdf",
         headers={
-            "Content-Disposition": f'inline; filename="{doc.document_name}"'
+            "Content-Disposition": f'attachment; filename="{safe_name}"'
         }
     )
 
 
+@router.get("", response_model=List[DocumentVaultResponse])
 @router.get("/", response_model=List[DocumentVaultResponse])
+@router.get("/documents", response_model=List[DocumentVaultResponse])
 async def list_vault_documents(
     category: Optional[str] = None,
-    tenant: Tenant = Depends(get_current_tenant),
+    fy: Optional[str] = None,
+    ctx: IAMContext = Depends(require_ca_or_owner),
     db: AsyncSession = Depends(get_db)
 ):
-    stmt = select(DocumentVault).where(DocumentVault.tenant_id == tenant.id)
+    """
+    Lists statutory documents in the vault, with optional category and FY/AY grouping filters.
+    Organizes statutory filings by Financial Year / Assessment Year.
+    """
+    stmt = select(DocumentVault).where(DocumentVault.tenant_id == ctx.tenant.id)
     if category and category != 'all':
         stmt = stmt.where(DocumentVault.category == normalize_vault_category(category))
     stmt = stmt.order_by(DocumentVault.created_at.desc())
     res = await db.execute(stmt)
-    return res.scalars().all()
+    docs = list(res.scalars().all())
+
+    if fy and fy != 'all':
+        from app.core.fiscal_year import check_statutory_fy_match
+        if fy == 'permanent':
+            docs = [
+                d for d in docs
+                if d.category in ['corporate_legal', 'tax_registration', 'operational_license']
+                and not check_statutory_fy_match('2025-26', d.metadata_json or {}, d.document_name, d.minio_s3_key or '')
+                and not check_statutory_fy_match('2026-27', d.metadata_json or {}, d.document_name, d.minio_s3_key or '')
+            ]
+        else:
+            clean_target_fy = fy.replace("FY", "").strip()
+            docs = [
+                d for d in docs
+                if check_statutory_fy_match(clean_target_fy, d.metadata_json or {}, d.document_name, d.minio_s3_key or '')
+            ]
+
+    return docs
+
+import io
+import zipfile
+import hashlib
+from datetime import datetime
+from fastapi.responses import Response
+from app.core.s3 import storage_manager
+
+from app.services.auditor_dossier_service import AuditorDossierService
+
+@router.get("/export-auditor-pack/download")
+@router.get("/export-auditor-pack")
+async def export_auditor_pack(
+    fy: Optional[str] = None,
+    unit: str = Query("auto", pattern="^(auto|hundreds|whole|thousands|lakhs|crores)$"),
+    ctx: IAMContext = Depends(require_ca_or_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Statutory External Auditor Dossier & MCA Close Pack:
+    Generates a certified, indexed, cryptographically verified ZIP archive strictly
+    scoped to the current Financial Year, containing permanent records, current FY invoices,
+    bills & expenses, bank statements, current annual MCA/Tax returns, and Schedule III financials
+    formatted according to statutory Schedule III Clause 4 rounding rules (default: nearest hundreds).
+    """
+    zip_bytes, filename = await AuditorDossierService.generate_auditor_dossier(
+        db=db,
+        tenant=ctx.tenant,
+        fy=fy,
+        unit=unit
+    )
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"'
+        }
+    )
 
 @router.get("/{document_id}", response_model=DocumentVaultResponse)
 async def get_vault_document(
     document_id: uuid.UUID,
-    tenant: Tenant = Depends(get_current_tenant),
+    ctx: IAMContext = Depends(require_ca_or_owner),
     db: AsyncSession = Depends(get_db)
 ):
     stmt = select(DocumentVault).where(
         DocumentVault.id == document_id,
-        DocumentVault.tenant_id == tenant.id
+        DocumentVault.tenant_id == ctx.tenant.id
     )
     res = await db.execute(stmt)
     doc = res.scalar_one_or_none()
@@ -836,93 +952,3 @@ async def get_vault_document(
         raise HTTPException(status_code=404, detail="Document not found")
     return doc
 
-import zipfile
-from datetime import datetime
-from fastapi.responses import Response
-from app.core.s3 import storage_manager
-
-@router.get("/export-auditor-pack/download")
-@router.get("/export-auditor-pack")
-async def export_auditor_pack(
-    tenant: Tenant = Depends(get_current_tenant),
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    1-Click Auditor Permanent Audit File & Current Year Audit Pack:
-    Creates an indexed, cryptographically verified ZIP archive for statutory auditors (CA),
-    containing:
-    - 01_Permanent_Audit_File: COI, MOA, AOA, PAN, GST, MSME, Statutory Profile
-    - 02_Current_Audit_File_FY2025-26: Trial Balance, General Ledger, Bank Reconciliations
-    - AUDIT_AUTHENTICITY_MANIFEST_SHA256.txt
-    """
-    zip_buffer = io.BytesIO()
-    manifest_lines = [
-        f"================================================================================",
-        f"STATUTORY AUDITOR PERMANENT & CURRENT AUDIT FILE MANIFEST",
-        f"ENTITY: {tenant.legal_name}",
-        f"CIN: {tenant.cin} | PAN: {tenant.pan} | GSTIN: {tenant.gstin}",
-        f"AUDIT REGIME: Companies Act 2013 / ICAI Standards on Auditing",
-        f"GENERATION TIMESTAMP: {datetime.utcnow().isoformat()} UTC",
-        f"================================================================================\n",
-        f"FILE PATH IN ARCHIVE                                    | SHA-256 INTEGRITY DIGEST                                         | SIZE",
-        f"-------------------------------------------------------------------------------------------------------------------------"
-    ]
-
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        # 1. Fetch vault documents
-        stmt = select(DocumentVault).where(DocumentVault.tenant_id == tenant.id)
-        docs = (await db.execute(stmt)).scalars().all()
-
-        for doc in docs:
-            folder = "01_Permanent_Audit_File" if doc.category in ('corporate_legal', 'tax_registration', 'operational_license') else "02_Current_Audit_File_FY2025-26"
-            safe_name = f"{doc.document_name.replace(' ', '_')}.pdf" if not doc.document_name.endswith('.pdf') else doc.document_name.replace(' ', '_')
-            arc_path = f"{folder}/{safe_name}"
-
-            try:
-                b = storage_manager.get_document_bytes(settings.BUCKET_VAULT, doc.minio_s3_key)
-            except Exception:
-                b = f"Document: {doc.document_name}\nRef: {doc.document_number}\nSHA-256: {doc.sha256_hash}\n".encode()
-
-            zf.writestr(arc_path, b)
-            h = hashlib.sha256(b).hexdigest()
-            manifest_lines.append(f"{arc_path:<55} | {h} | {len(b)} bytes")
-
-        # 2. Add Statutory Profile Rules JSON
-        sp_data = json.dumps({
-            "legal_name": tenant.legal_name,
-            "cin": tenant.cin,
-            "pan": tenant.pan,
-            "gstin": tenant.gstin,
-            "registered_office": tenant.registered_office,
-            "statutory_profile": tenant.statutory_profile or {}
-        }, indent=2).encode('utf-8')
-        zf.writestr("01_Permanent_Audit_File/Statutory_Governance_Profile.json", sp_data)
-        manifest_lines.append(f"{'01_Permanent_Audit_File/Statutory_Governance_Profile.json':<55} | {hashlib.sha256(sp_data).hexdigest()} | {len(sp_data)} bytes")
-
-        # 3. Add General Ledger Trial Balance (Schedule III)
-        tb_csv = (
-            "Account Code,Account Name,Schedule III Classification,Debit (INR),Credit (INR)\n"
-            "1010,Equity Share Capital,Share Capital,0.00,1000000.00\n"
-            "2010,Current Account HDFC,Cash and Cash Equivalents,850000.00,0.00\n"
-            "2099,Suspense Clearing Account,Other Current Assets,0.00,0.00\n"
-            "3010,Software Consultancy Revenue,Revenue from Operations,0.00,250000.00\n"
-            "4010,Cloud Infrastructure Expenses,Other Expenses,45000.00,0.00\n"
-            "4030,Legal & Statutory Audit Fees,Other Expenses,35000.00,0.00\n"
-            "TOTAL,,,1250000.00,1250000.00\n"
-        ).encode('utf-8')
-        zf.writestr("02_Current_Audit_File_FY2025-26/Schedule_III_Trial_Balance.csv", tb_csv)
-        manifest_lines.append(f"{'02_Current_Audit_File_FY2025-26/Schedule_III_Trial_Balance.csv':<55} | {hashlib.sha256(tb_csv).hexdigest()} | {len(tb_csv)} bytes")
-
-        # 4. Write manifest
-        manifest_data = "\n".join(manifest_lines).encode('utf-8')
-        zf.writestr("AUDIT_AUTHENTICITY_MANIFEST_SHA256.txt", manifest_data)
-
-    zip_bytes = zip_buffer.getvalue()
-    clean_company = tenant.legal_name.replace(" ", "_")
-    return Response(
-        content=zip_bytes,
-        media_type="application/zip",
-        headers={
-            "Content-Disposition": f'attachment; filename="Auditor_Pack_{clean_company}_FY2025-26.zip"'
-        }
-    )

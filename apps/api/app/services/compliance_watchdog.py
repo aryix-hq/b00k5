@@ -9,16 +9,117 @@ class ComplianceWatchdogService:
     async def seed_initial_statutory_milestones(
         session,
         tenant_id: uuid.UUID,
-        incorporation_date: Optional[date] = None
+        incorporation_date: Optional[date] = None,
+        entity_type: str = "private_limited"
     ):
         """
-        Seeds standard Indian statutory compliance obligations under the Companies Act 2013 and GST Act.
+        Seeds standard Indian statutory compliance obligations under Companies Act 2013, LLP Act 2008, and GST Act.
         """
         from app.models.compliance import ComplianceEvent
         today = date.today()
         inc_date = incorporation_date or today
+        norm_entity = (entity_type or "private_limited").lower().strip()
+        current_year = today.year
         events = []
 
+        # Branch for Limited Liability Partnerships (LLPs)
+        if norm_entity in ("llp", "limited_liability_partnership"):
+            # 1. Partner Meeting (LLP Agreement)
+            pm_due = inc_date + timedelta(days=90)
+            events.append(ComplianceEvent(
+                tenant_id=tenant_id,
+                category="partner_meeting",
+                title="Statutory Meeting of Designated Partners",
+                description="Governed by the LLP Agreement and ICSI Secretarial Standards on Partners Meetings.",
+                due_date=pm_due,
+                statutory_reference="LLP Act 2008 & LLP Agreement",
+                fine_per_day_inr=Decimal("0.00"),
+                status="upcoming" if pm_due >= today else "overdue"
+            ))
+
+            # 2. Form 11: Annual Return of LLP (Due May 30)
+            f11_due = date(current_year, 5, 30)
+            if f11_due < today:
+                f11_due = date(current_year + 1, 5, 30)
+            events.append(ComplianceEvent(
+                tenant_id=tenant_id,
+                category="llp_form_11",
+                title="Form 11: Annual Return of LLP",
+                description="Filing of Annual Return under Rule 25(1) within 60 days of financial year close. Accrues ₹100/day fine.",
+                due_date=f11_due,
+                statutory_reference="Rule 25(1) of LLP Rules 2009 & Sec 35 LLP Act 2008",
+                fine_per_day_inr=Decimal("100.00"),
+                status="upcoming"
+            ))
+
+            # 3. Form 8: Statement of Account & Solvency (Due October 30)
+            f8_due = date(current_year, 10, 30)
+            if f8_due < today:
+                f8_due = date(current_year + 1, 10, 30)
+            events.append(ComplianceEvent(
+                tenant_id=tenant_id,
+                category="llp_form_8",
+                title="Form 8: Statement of Account & Solvency",
+                description="Filing of Statement of Solvency & Financial Statement under Rule 24. Accrues ₹100/day fine.",
+                due_date=f8_due,
+                statutory_reference="Rule 24 of LLP Rules 2009 & Sec 34(2) LLP Act 2008",
+                fine_per_day_inr=Decimal("100.00"),
+                status="upcoming"
+            ))
+
+            # 4. Form ITR-5: Annual LLP Tax Return (Due July 31 / Oct 31)
+            itr_due = date(current_year, 7, 31)
+            if itr_due < today:
+                itr_due = date(current_year + 1, 7, 31)
+            events.append(ComplianceEvent(
+                tenant_id=tenant_id,
+                category="itr_filing",
+                title="Form ITR-5: Partnership & LLP Income Tax Return",
+                description="Annual Income Tax Return under Section 139(1) of the Income-tax Act, 1961.",
+                due_date=itr_due,
+                statutory_reference="Income Tax Act 1961 Sec 139(1)",
+                fine_per_day_inr=Decimal("50.00"),
+                status="upcoming"
+            ))
+
+            # 5. DIR-3 KYC for Designated Partners (Due September 30)
+            kyc_due = date(current_year, 9, 30)
+            if kyc_due < today:
+                kyc_due = date(current_year + 1, 9, 30)
+            events.append(ComplianceEvent(
+                tenant_id=tenant_id,
+                category="dir3_kyc",
+                title="Form DIR-3 KYC (Designated Partner KYC)",
+                description="Annual verification of Designated Partner DPIN credentials.",
+                due_date=kyc_due,
+                statutory_reference="Rule 12A of Companies Rules & LLP Act 2008",
+                fine_per_day_inr=Decimal("50.00"),
+                status="upcoming"
+            ))
+
+            # 6. GSTR-3B: Monthly Summary Return
+            if today.day <= 20:
+                gst_due = date(today.year, today.month, 20)
+            else:
+                next_month = today.month + 1 if today.month < 12 else 1
+                next_year = today.year if today.month < 12 else today.year + 1
+                gst_due = date(next_year, next_month, 20)
+            events.append(ComplianceEvent(
+                tenant_id=tenant_id,
+                category="gstr_3b",
+                title="GSTR-3B Monthly Return & Tax Payment",
+                description="Summary of outward supplies, input tax credit claimed, and net GST liability deposited.",
+                due_date=gst_due,
+                statutory_reference="CGST Act 2017 Sec 39",
+                fine_per_day_inr=Decimal("50.00"),
+                status="upcoming"
+            ))
+
+            session.add_all(events)
+            await session.flush()
+            return events
+
+        # Standard Corporate (Pvt Ltd / OPC / Public Ltd) Obligations
         # 1. INC-20A: Declaration for Commencement of Business (within 180 days of incorporation)
         inc20a_due = inc_date + timedelta(days=180)
         events.append(ComplianceEvent(
@@ -147,6 +248,34 @@ class ComplianceWatchdogService:
             status = "upcoming"
             accumulated_penalty = Decimal("0.00")
 
+        meta = getattr(event, "metadata_json", None) or {}
+        event_fy = meta.get("fiscal_year")
+        event_ay = meta.get("assessment_year")
+
+        if not event_fy and event.due_date:
+            d = event.due_date
+            cat = str(getattr(event, "category", ""))
+            # Annual MCA and Tax filings (AOC-4, MGT-7, ITR-6, Form 11, Form 8, DIR-3 KYC)
+            if cat in ("aoc_4", "mgt_7", "itr_filing", "llp_form_11", "llp_form_8", "dir3_kyc"):
+                if d.month >= 4:
+                    event_fy = f"{d.year - 1}-{str(d.year)[-2:]}"
+                    event_ay = f"{d.year}-{str(d.year + 1)[-2:]}"
+                else:
+                    event_fy = f"{d.year - 2}-{str(d.year - 1)[-2:]}"
+                    event_ay = f"{d.year - 1}-{str(d.year)[-2:]}"
+            else:
+                if d.month >= 4:
+                    event_fy = f"{d.year}-{str(d.year + 1)[-2:]}"
+                    event_ay = f"{d.year + 1}-{str(d.year + 2)[-2:]}"
+                else:
+                    event_fy = f"{d.year - 1}-{str(d.year)[-2:]}"
+                    event_ay = f"{d.year}-{str(d.year + 1)[-2:]}"
+        elif not event_ay and event_fy:
+            parts = event_fy.split('-')
+            s_yr = int(parts[0])
+            e_yr = s_yr + 1 if len(parts[1]) == 2 else int(parts[1])
+            event_ay = f"{e_yr}-{str(e_yr + 1)[-2:]}"
+
         return {
             "id": event.id,
             "tenant_id": event.tenant_id,
@@ -161,7 +290,9 @@ class ComplianceWatchdogService:
             "status": status,
             "completed_at": event.completed_at,
             "document_id": event.document_id,
-            "created_at": event.created_at
+            "created_at": event.created_at,
+            "fiscal_year": event_fy,
+            "assessment_year": event_ay
         }
 
     @staticmethod
@@ -183,6 +314,23 @@ class ComplianceWatchdogService:
         """
         curr_date = today or date.today()
         norm_entity = (entity_type or "private_limited").lower().strip()
+
+        # 0. LLP Governance (Governed by LLP Act 2008 & LLP Agreement, not Section 173 Companies Act 2013)
+        if norm_entity in ("llp", "limited_liability_partnership"):
+            ref_date = last_meeting_date or incorporation_date or curr_date
+            gap_days = (curr_date - ref_date).days
+            return {
+                "status": "llp_partner_governance",
+                "entity_type": "llp",
+                "days_elapsed": gap_days,
+                "days_remaining": max(0, 180 - gap_days),
+                "is_violation": False,
+                "warning_level": "COMPLIANT",
+                "penalty_inr": Decimal("0.00"),
+                "rule_version": "LLP-ACT-2008-RULES-2009-V2026.1",
+                "statutory_reference": "Limited Liability Partnership Act 2008 & LLP Agreement",
+                "message": "LLP Governance Active: Governed by the Limited Liability Partnership Agreement and ICSI Secretarial Standards for Partners Meetings. Annual filings: Form 11 (May 30) and Form 8 (Oct 30)."
+            }
 
         # 1. OPC with single director exemption (Section 173(5) Proviso)
         if norm_entity in ("opc", "opc_single_director") and director_count == 1:
@@ -506,6 +654,178 @@ class ComplianceWatchdogService:
             "disallowed_amount": cash_total if is_disallowed else Decimal("0.00"),
             "rule_6dd_exempt": False,
             "statutory_reference": "Income-tax Act Sec 40A(3) / IT Act 2025 Equivalent"
+        }
+
+    @staticmethod
+    async def check_sec40a3_daily_cash_limit_async(
+        db,
+        tenant_id: uuid.UUID,
+        expense_date: date,
+        payee_name: str,
+        new_cash_amount: Decimal,
+        is_goods_carriage: bool = False,
+        rule_6dd_exemption: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Real-time Section 40A(3) Watchdog against live database:
+        Aggregates candidate cash payment with prior cash payments made to the same payee on that date.
+        Flags immediate statutory tax disallowance if total > ₹10,000 (or ₹35,000 for goods carriages).
+        """
+        from app.models.expense import Expense
+        from sqlalchemy import select
+
+        norm_payee = (payee_name or "").strip().lower()
+        threshold = Decimal("35000.00") if is_goods_carriage else Decimal("10000.00")
+        valid_6dd = {"government_tax_challan", "rbi_scheduled_bank", "agricultural_produce", "bank_holiday"}
+
+        stmt = (
+            select(Expense)
+            .where(
+                Expense.tenant_id == tenant_id,
+                Expense.expense_date == expense_date,
+                Expense.status != "struck_off"
+            )
+        )
+        res = await db.execute(stmt)
+        existing_expenses = res.scalars().all()
+
+        existing_cash_total = Decimal("0.00")
+        cash_modes = {"cash", "bearer_cheque", "crossed_cheque_non_account_payee", "personal_cash"}
+
+        for exp in existing_expenses:
+            mode = (exp.payment_mode or "cash").lower()
+            exp_payee = (exp.merchant_name or "").strip().lower()
+            if mode in cash_modes and (exp_payee == norm_payee or (norm_payee and norm_payee in exp_payee)):
+                existing_cash_total += Decimal(str(exp.total_amount or "0.00"))
+
+        aggregate_cash = existing_cash_total + Decimal(str(new_cash_amount or "0.00"))
+
+        if rule_6dd_exemption and rule_6dd_exemption.lower() in valid_6dd:
+            return {
+                "aggregate_cash_in_day": aggregate_cash,
+                "prior_cash_in_day": existing_cash_total,
+                "new_cash_amount": Decimal(str(new_cash_amount)),
+                "threshold_limit": threshold,
+                "is_disallowed": False,
+                "disallowed_amount": Decimal("0.00"),
+                "rule_6dd_exempt": True,
+                "statutory_reference": f"Income Tax Act Sec 40A(3) / Rule 6DD ({rule_6dd_exemption})",
+                "message": f"Cash payment of ₹{new_cash_amount} covered under statutory Rule 6DD exemption ({rule_6dd_exemption})."
+            }
+
+        is_disallowed = aggregate_cash > threshold
+        disallowed_amt = aggregate_cash if is_disallowed else Decimal("0.00")
+
+        return {
+            "aggregate_cash_in_day": aggregate_cash,
+            "prior_cash_in_day": existing_cash_total,
+            "new_cash_amount": Decimal(str(new_cash_amount)),
+            "threshold_limit": threshold,
+            "is_disallowed": is_disallowed,
+            "disallowed_amount": disallowed_amt,
+            "rule_6dd_exempt": False,
+            "statutory_reference": "Income Tax Act 1961 Section 40A(3)",
+            "message": (
+                f"STATUTORY DISALLOWANCE WARNING [Sec 40A(3)]: Aggregate cash payments to '{payee_name}' "
+                f"on {expense_date} total ₹{aggregate_cash:.2f}, exceeding the ₹{threshold:,.2f} statutory daily limit. "
+                f"This entire expenditure will be 100% disallowed in corporate tax computation unless covered under Rule 6DD."
+                if is_disallowed else
+                f"Compliant: Aggregate cash payments of ₹{aggregate_cash:.2f} within ₹{threshold:,.2f} daily threshold."
+            )
+        }
+
+    @staticmethod
+    async def audit_sec40a3_fiscal_year(
+        db,
+        tenant_id: uuid.UUID,
+        fy: str = "2025-26"
+    ) -> Dict[str, Any]:
+        """
+        Comprehensive Tax Audit Engine for Form 3CD Clause 21(d):
+        Scans all expenditures in the fiscal year and compiles daily aggregate cash payments per payee.
+        Identifies disallowances under Section 40A(3).
+        """
+        from app.models.expense import Expense
+        from app.core.fiscal_year import get_fy_date_bounds
+        from collections import defaultdict
+        from sqlalchemy import select
+
+        start_date, end_date = get_fy_date_bounds(fy)
+        stmt = (
+            select(Expense)
+            .where(
+                Expense.tenant_id == tenant_id,
+                Expense.expense_date >= start_date,
+                Expense.expense_date <= end_date,
+                Expense.status != "struck_off"
+            )
+        )
+        res = await db.execute(stmt)
+        expenses = res.scalars().all()
+
+        cash_modes = {"cash", "bearer_cheque", "crossed_cheque_non_account_payee", "personal_cash"}
+        daily_payee_map = defaultdict(lambda: {"total": Decimal("0.00"), "expenses": [], "exempt_6dd": None})
+
+        for exp in expenses:
+            mode = (exp.payment_mode or "").lower()
+            if mode in cash_modes:
+                payee = (exp.merchant_name or "Unknown Payee").strip()
+                k = (payee, exp.expense_date)
+                amt = Decimal(str(exp.total_amount or "0.00"))
+                daily_payee_map[k]["total"] += amt
+                daily_payee_map[k]["expenses"].append({
+                    "expense_id": str(exp.id),
+                    "amount": amt,
+                    "category": exp.category,
+                    "notes": exp.notes or ""
+                })
+                if exp.notes and "6dd" in exp.notes.lower():
+                    daily_payee_map[k]["exempt_6dd"] = "Rule 6DD claim noted"
+
+        disallowances = []
+        compliant_cash_transactions = []
+        total_disallowed_inr = Decimal("0.00")
+
+        for (payee, exp_date), data in daily_payee_map.items():
+            tot = data["total"]
+            is_transport = any(w in payee.lower() for w in ["transport", "carriage", "freight", "lorry", "truck"])
+            threshold = Decimal("35000.00") if is_transport else Decimal("10000.00")
+
+            if tot > threshold and not data["exempt_6dd"]:
+                disallowances.append({
+                    "payee_name": payee,
+                    "date": str(exp_date),
+                    "aggregate_cash_amount": tot,
+                    "threshold_limit": threshold,
+                    "disallowed_amount": tot,
+                    "voucher_count": len(data["expenses"]),
+                    "vouchers": data["expenses"],
+                    "statutory_risk": "Section 40A(3) Disallowance in Form 3CD Clause 21(d)"
+                })
+                total_disallowed_inr += tot
+            else:
+                compliant_cash_transactions.append({
+                    "payee_name": payee,
+                    "date": str(exp_date),
+                    "aggregate_cash_amount": tot,
+                    "threshold_limit": threshold,
+                    "rule_6dd_exempt": bool(data["exempt_6dd"])
+                })
+
+        return {
+            "financial_year": fy,
+            "statutory_form": "Form 3CD Clause 21(d) Tax Audit Report",
+            "statutory_reference": "Section 40A(3) & 40A(3A) of Income-tax Act, 1961",
+            "total_disallowed_amount_inr": total_disallowed_inr,
+            "total_violations_count": len(disallowances),
+            "disallowed_items": disallowances,
+            "compliant_cash_transactions_count": len(compliant_cash_transactions),
+            "audit_certification_note": (
+                f"During FY {fy}, {len(disallowances)} daily aggregate cash payment(s) exceeded statutory thresholds, "
+                f"resulting in ₹{total_disallowed_inr:.2f} reportable disallowance under Section 40A(3)."
+                if disallowances else
+                f"Zero cash payment disallowances found for FY {fy}. All daily cash expenditures complied with Section 40A(3) limits."
+            )
         }
 
     @staticmethod

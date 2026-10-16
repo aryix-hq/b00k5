@@ -60,13 +60,27 @@ function GeneralLedgerContent() {
   const [isBalanced, setIsBalanced] = useState<boolean>(true);
   const [searchTerm, setSearchTerm] = useState<string>(entryFilterParam);
   const [loading, setLoading] = useState<boolean>(true);
+  const [selectedFY, setSelectedFY] = useState<string>('2026-27');
+  const [compactMode, setCompactMode] = useState<boolean>(false);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.altKey && (e.key === 't' || e.key === 'T')) {
+        e.preventDefault();
+        setCompactMode((prev) => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   async function loadLedgerData() {
     setLoading(true);
     try {
+      const fyQuery = selectedFY && selectedFY !== 'all' ? `?fy=${encodeURIComponent(selectedFY)}` : '';
       const [tbRes, jRes] = await Promise.all([
-        fetchApi('/api/v1/ledger/trial-balance').catch(() => null),
-        fetchApi('/api/v1/ledger/journals').catch(() => [])
+        fetchApi(`/api/v1/ledger/trial-balance${fyQuery}`).catch(() => null),
+        fetchApi(`/api/v1/ledger/journals${fyQuery}`).catch(() => [])
       ]);
 
       let loadedAccounts: LedgerAccountSummary[] = [];
@@ -114,7 +128,7 @@ function GeneralLedgerContent() {
 
   useEffect(() => {
     loadLedgerData();
-  }, []);
+  }, [selectedFY]);
 
   useEffect(() => {
     if (entryFilterParam) {
@@ -187,6 +201,24 @@ function GeneralLedgerContent() {
                 <ArrowRight className="w-4 h-4" />
               </Link>
             </div>
+          </div>
+
+          {/* Financial Year Switcher Tabs */}
+          <div className="flex items-center gap-2 border-b border-slate-800 pb-3 overflow-x-auto">
+            <span className="text-xs text-slate-400 font-medium">Financial Year:</span>
+            {['2026-27', '2025-26', '2024-25', 'all'].map((fy) => (
+              <button
+                key={fy}
+                onClick={() => setSelectedFY(fy)}
+                className={`px-3 py-1 rounded-lg text-xs font-mono transition ${
+                  selectedFY === fy
+                    ? 'bg-sky-500/20 text-sky-400 border border-sky-500/40 font-semibold'
+                    : 'bg-slate-900 text-slate-400 border border-slate-800 hover:text-slate-200'
+                }`}
+              >
+                {fy === 'all' ? 'All Fiscal Years' : `FY ${fy}`}
+              </button>
+            ))}
           </div>
 
           {/* Founder Executive Financial Metrics */}
@@ -308,23 +340,40 @@ function GeneralLedgerContent() {
               </button>
             </div>
 
-            <div className="relative w-full sm:w-72">
-              <Search className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
-              <input
-                type="text"
-                placeholder={activeTab === 'journals' ? 'Search JV number, merchant, narration...' : 'Search account code or name...'}
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full bg-slate-900 border border-slate-800 rounded-lg pl-9 pr-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-500"
-              />
-              {searchTerm && (
-                <button
-                  onClick={() => setSearchTerm('')}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white text-xs"
-                >
-                  ✕
-                </button>
-              )}
+            <div className="flex items-center gap-3 w-full sm:w-auto">
+              <button
+                type="button"
+                onClick={() => setCompactMode(!compactMode)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-mono flex items-center gap-1.5 border transition ${
+                  compactMode
+                    ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 shadow-sm font-semibold'
+                    : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200'
+                }`}
+                title="Toggle Tally-Speed Compact Spreadsheet Mode (Alt+T)"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5" />
+                <span>Compact Mode {compactMode ? 'ON' : 'OFF'}</span>
+                <span className="text-[10px] opacity-75 ml-0.5 px-1 py-0.2 bg-black/30 rounded border border-white/10">Alt+T</span>
+              </button>
+
+              <div className="relative w-full sm:w-72">
+                <Search className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  placeholder={activeTab === 'journals' ? 'Search JV number, merchant, narration...' : 'Search account code or name...'}
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="w-full bg-slate-900 border border-slate-800 rounded-lg pl-9 pr-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-500"
+                />
+                {searchTerm && (
+                  <button
+                    onClick={() => setSearchTerm('')}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white text-xs"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
             </div>
           </div>
 
@@ -358,12 +407,12 @@ function GeneralLedgerContent() {
                         }`}
                       >
                         {/* Voucher Header */}
-                        <div className="px-5 py-3.5 bg-slate-950/60 border-b border-slate-800/80 flex flex-wrap items-center justify-between gap-3 text-xs">
-                          <div className="flex items-center gap-2.5">
+                        <div className={`${compactMode ? 'px-3 py-1.5' : 'px-5 py-3.5'} bg-slate-950/60 border-b border-slate-800/80 flex flex-wrap items-center justify-between gap-2 text-xs`}>
+                          <div className="flex items-center gap-2">
                             <span className="font-mono font-bold text-sky-400 bg-sky-950/80 border border-sky-800/60 px-2 py-0.5 rounded text-[11px]">
                               {je.entry_number}
                             </span>
-                            <span className="text-slate-400 font-mono">{je.entry_date}</span>
+                            <span className="text-slate-400 font-mono text-[11px]">{je.entry_date}</span>
                             <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded bg-slate-800 text-slate-300">
                               {je.reference_type}
                             </span>
@@ -385,33 +434,33 @@ function GeneralLedgerContent() {
                         </div>
 
                         {/* Narration */}
-                        <div className="px-5 py-2 text-xs text-slate-300 bg-slate-900/40 border-b border-slate-800/40">
-                          <span className="text-slate-500 font-mono mr-1">Narration:</span>
-                          {je.narration}
+                        <div className={`${compactMode ? 'px-3 py-1' : 'px-5 py-2'} text-xs text-slate-300 bg-slate-900/40 border-b border-slate-800/40`}>
+                          <span className="text-slate-500 font-mono mr-1 text-[11px]">Narration:</span>
+                          <span className={compactMode ? 'text-[11px]' : ''}>{je.narration}</span>
                         </div>
 
                         {/* Journal Lines Table */}
                         <div className="overflow-x-auto">
                           <table className="w-full text-left text-xs text-slate-300">
-                            <thead className="bg-slate-950/30 text-slate-400 font-mono uppercase text-[10px] border-b border-slate-800/60">
+                            <thead className={`bg-slate-950/30 text-slate-400 font-mono uppercase text-[10px] border-b border-slate-800/60 ${compactMode ? 'sticky top-0' : ''}`}>
                               <tr>
-                                <th className="py-2 px-5">Description</th>
-                                <th className="py-2 px-4 text-right">Debit (₹)</th>
-                                <th className="py-2 px-5 text-right">Credit (₹)</th>
+                                <th className={`${compactMode ? 'py-1 px-3' : 'py-2 px-5'}`}>Description</th>
+                                <th className={`${compactMode ? 'py-1 px-3' : 'py-2 px-4'} text-right`}>Debit (₹)</th>
+                                <th className={`${compactMode ? 'py-1 px-3' : 'py-2 px-5'} text-right`}>Credit (₹)</th>
                               </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-800/40 font-mono text-[11px]">
                               {je.lines.map((line) => (
-                                <tr key={line.id} className="hover:bg-slate-800/20">
-                                  <td className="py-2.5 px-5 font-sans text-slate-200">
+                                <tr key={line.id} className={`hover:bg-slate-800/20 ${compactMode ? 'h-7 leading-tight' : ''}`}>
+                                  <td className={`${compactMode ? 'py-1 px-3 text-[11px]' : 'py-2.5 px-5'} font-sans text-slate-200`}>
                                     {line.description}
                                   </td>
-                                  <td className="py-2.5 px-4 text-right font-semibold text-slate-100">
+                                  <td className={`${compactMode ? 'py-1 px-3 text-[11px]' : 'py-2.5 px-4'} text-right font-semibold text-slate-100`}>
                                     {line.debit_amount > 0
                                       ? `₹${line.debit_amount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`
                                       : '—'}
                                   </td>
-                                  <td className="py-2.5 px-5 text-right font-semibold text-amber-400">
+                                  <td className={`${compactMode ? 'py-1 px-3 text-[11px]' : 'py-2.5 px-5'} text-right font-semibold text-amber-400`}>
                                     {line.credit_amount > 0
                                       ? `₹${line.credit_amount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`
                                       : '—'}
@@ -431,31 +480,31 @@ function GeneralLedgerContent() {
 
           {/* Tab 2: Trial Balance Summary */}
           {activeTab === 'trial_balance' && (
-            <div className="p-6 rounded-2xl bg-slate-900/60 border border-slate-800 space-y-4">
+            <div className={`rounded-2xl bg-slate-900/60 border border-slate-800 space-y-4 ${compactMode ? 'p-3' : 'p-6'}`}>
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs text-slate-300">
-                  <thead className="bg-slate-950 text-slate-400 font-mono uppercase text-[11px] border-b border-slate-800">
+                  <thead className={`bg-slate-950 text-slate-400 font-mono uppercase text-[11px] border-b border-slate-800 ${compactMode ? 'sticky top-0' : ''}`}>
                     <tr>
-                      <th className="py-3 px-4">Account Code</th>
-                      <th className="py-3 px-4">Account Name</th>
-                      <th className="py-3 px-4">Classification</th>
-                      <th className="py-3 px-4 text-right">Debit Balance (₹)</th>
-                      <th className="py-3 px-4 text-right">Credit Balance (₹)</th>
+                      <th className={`${compactMode ? 'py-1.5 px-3' : 'py-3 px-4'}`}>Account Code</th>
+                      <th className={`${compactMode ? 'py-1.5 px-3' : 'py-3 px-4'}`}>Account Name</th>
+                      <th className={`${compactMode ? 'py-1.5 px-3' : 'py-3 px-4'}`}>Classification</th>
+                      <th className={`${compactMode ? 'py-1.5 px-3' : 'py-3 px-4'} text-right`}>Debit Balance (₹)</th>
+                      <th className={`${compactMode ? 'py-1.5 px-3' : 'py-3 px-4'} text-right`}>Credit Balance (₹)</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/60 font-mono">
                     {filteredAccounts.map((acc) => (
-                      <tr key={acc.code} className="hover:bg-slate-800/30">
-                        <td className="py-3.5 px-4 font-bold text-sky-400">{acc.code}</td>
-                        <td className="py-3.5 px-4 font-sans font-medium text-white" id={`acc-name-${acc.code}`}>
+                      <tr key={acc.code} className={`hover:bg-slate-800/30 ${compactMode ? 'h-7 leading-tight' : ''}`}>
+                        <td className={`${compactMode ? 'py-1 px-3 text-[11px]' : 'py-3.5 px-4'} font-bold text-sky-400`}>{acc.code}</td>
+                        <td className={`${compactMode ? 'py-1 px-3 text-[11px]' : 'py-3.5 px-4'} font-sans font-medium text-white whitespace-nowrap`} id={`acc-name-${acc.code}`}>
                           {acc.name}
                         </td>
-                        <td className="py-3.5 px-4 text-slate-400 capitalize">{acc.type}</td>
-                        <td className="py-3.5 px-4 text-right text-slate-200">
+                        <td className={`${compactMode ? 'py-1 px-3 text-[10px]' : 'py-3.5 px-4'} text-slate-400 capitalize`}>{acc.type}</td>
+                        <td className={`${compactMode ? 'py-1 px-3 text-[11px]' : 'py-3.5 px-4'} text-right text-slate-200`}>
                           {acc.debit_balance > 0 ? `₹${acc.debit_balance.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
                         </td>
                         <td
-                          className={`py-3.5 px-4 text-right font-bold ${
+                          className={`${compactMode ? 'py-1 px-3 text-[11px]' : 'py-3.5 px-4'} text-right font-bold ${
                             acc.credit_balance > 0 ? 'text-amber-400' : 'text-slate-400'
                           }`}
                           id={`acc-credit-${acc.code}`}
@@ -467,11 +516,11 @@ function GeneralLedgerContent() {
                   </tbody>
                   <tfoot className="bg-slate-950 font-mono border-t-2 border-slate-700 text-xs font-bold">
                     <tr>
-                      <td colSpan={3} className="py-3 px-4 uppercase text-slate-300">Total Balance Sum</td>
-                      <td className="py-3 px-4 text-right text-white">
+                      <td colSpan={3} className={`${compactMode ? 'py-2 px-3' : 'py-3 px-4'} uppercase text-slate-300`}>Total Balance Sum</td>
+                      <td className={`${compactMode ? 'py-2 px-3' : 'py-3 px-4'} text-right text-white`}>
                         ₹{totalDebits.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                       </td>
-                      <td className="py-3 px-4 text-right text-amber-400">
+                      <td className={`${compactMode ? 'py-2 px-3' : 'py-3 px-4'} text-right text-amber-400`}>
                         ₹{totalCredits.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                       </td>
                     </tr>

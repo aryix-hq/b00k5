@@ -3,9 +3,9 @@ import uuid
 import hashlib
 from decimal import Decimal
 from datetime import date
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, or_, Date, cast
 from sqlalchemy.orm import selectinload
 from app.api.deps import get_db, get_current_user, get_current_tenant
 from app.models.tenant import User, Tenant
@@ -21,6 +21,7 @@ from app.services.ledger_service import LedgerService
 from app.core.fiscal_year import get_or_create_fiscal_year, calculate_indian_fy_ay
 from app.core.s3 import upload_document
 from app.core.config import settings
+from app.core.iam import require_owner, require_ca_or_owner, IAMContext
 
 router = APIRouter()
 
@@ -31,10 +32,11 @@ async def upload_bank_statement(
     bank_name: str = Form("HDFC"),
     account_number: Optional[str] = Form(None),
     password: Optional[str] = Form(None),
-    current_user: User = Depends(get_current_user),
-    tenant: Tenant = Depends(get_current_tenant),
+    ctx: IAMContext = Depends(require_owner),
     db: AsyncSession = Depends(get_db)
 ):
+    current_user = ctx.user
+    tenant = ctx.tenant
     """
     Ingests an Indian bank statement PDF, saves to MinIO 'b00k5-statements',
     extracts lines with IndianBankPDFParser (supporting encrypted/password-protected PDFs),
@@ -294,18 +296,31 @@ async def upload_bank_statement(
 
 @router.get("/statements", response_model=List[BankStatementResponse])
 async def list_statements(
-    tenant: Tenant = Depends(get_current_tenant),
+    fy: Optional[str] = Query(None),
+    ctx: IAMContext = Depends(require_ca_or_owner),
     db: AsyncSession = Depends(get_db)
 ):
     stmt = (
         select(BankStatement)
         .options(selectinload(BankStatement.lines))
-        .where(BankStatement.tenant_id == tenant.id)
-        .order_by(
-            BankStatement.statement_from.asc().nulls_last(),
-            BankStatement.statement_to.asc().nulls_last(),
-            BankStatement.created_at.asc()
-        )
+        .where(BankStatement.tenant_id == ctx.tenant.id)
+    )
+    if fy and fy.lower() != "all":
+        from app.core.fiscal_year import get_fy_date_bounds
+        try:
+            fy_start, fy_end = get_fy_date_bounds(fy)
+            stmt = stmt.where(
+                or_(
+                    and_(BankStatement.statement_from <= fy_end, BankStatement.statement_to >= fy_start),
+                    and_(BankStatement.statement_from.is_(None), cast(BankStatement.created_at, Date) >= fy_start, cast(BankStatement.created_at, Date) <= fy_end)
+                )
+            )
+        except Exception:
+            pass
+    stmt = stmt.order_by(
+        BankStatement.statement_from.asc().nulls_last(),
+        BankStatement.statement_to.asc().nulls_last(),
+        BankStatement.created_at.asc()
     )
     res = await db.execute(stmt)
     return res.scalars().all()
@@ -313,13 +328,13 @@ async def list_statements(
 @router.get("/statements/{statement_id}", response_model=BankStatementResponse)
 async def get_statement_details(
     statement_id: uuid.UUID,
-    tenant: Tenant = Depends(get_current_tenant),
+    ctx: IAMContext = Depends(require_ca_or_owner),
     db: AsyncSession = Depends(get_db)
 ):
     stmt = (
         select(BankStatement)
         .options(selectinload(BankStatement.lines))
-        .where(BankStatement.id == statement_id, BankStatement.tenant_id == tenant.id)
+        .where(BankStatement.id == statement_id, BankStatement.tenant_id == ctx.tenant.id)
     )
     res = await db.execute(stmt)
     statement = res.scalar_one_or_none()
@@ -332,10 +347,11 @@ async def get_statement_details(
 async def upload_statement_file(
     statement_id: uuid.UUID,
     file: UploadFile = File(...),
-    current_user: User = Depends(get_current_user),
-    tenant: Tenant = Depends(get_current_tenant),
+    ctx: IAMContext = Depends(require_owner),
     db: AsyncSession = Depends(get_db)
 ):
+    current_user = ctx.user
+    tenant = ctx.tenant
     """
     Directly attaches/updates the original bank statement document (PDF/CSV).
     Saves binary bytes directly to MinIO and updates statement record.
@@ -381,10 +397,11 @@ async def upload_statement_file(
 @router.post("/statements/{statement_id}/reconcile", response_model=Dict[str, Any])
 async def execute_reconciliation(
     statement_id: uuid.UUID,
-    current_user: User = Depends(get_current_user),
-    tenant: Tenant = Depends(get_current_tenant),
+    ctx: IAMContext = Depends(require_owner),
     db: AsyncSession = Depends(get_db)
 ):
+    current_user = ctx.user
+    tenant = ctx.tenant
     """
     Triggers the 3-Tier Reconciliation matching algorithm:
     Tier 1: Exact UTR / Amount match
@@ -402,10 +419,11 @@ async def execute_reconciliation(
 
 @router.post("/reconcile-all")
 async def reconcile_all_statements(
-    current_user: User = Depends(get_current_user),
-    tenant: Tenant = Depends(get_current_tenant),
+    ctx: IAMContext = Depends(require_owner),
     db: AsyncSession = Depends(get_db)
 ):
+    current_user = ctx.user
+    tenant = ctx.tenant
     """
     Executes 3-Tier Reconciliation sweep across all statements for the tenant in 1 click.
     """
@@ -442,10 +460,11 @@ async def reconcile_all_statements(
 async def allocate_suspense(
     line_id: uuid.UUID,
     payload: AllocateSuspenseRequest,
-    current_user: User = Depends(get_current_user),
-    tenant: Tenant = Depends(get_current_tenant),
+    ctx: IAMContext = Depends(require_owner),
     db: AsyncSession = Depends(get_db)
 ):
+    current_user = ctx.user
+    tenant = ctx.tenant
     """
     Re-allocates a Tier 3 Suspense record to a designated target Chart of Accounts code
     (e.g., 4010 Direct Expense, 4030 Bank Charges, 3010 Revenue).
@@ -513,10 +532,11 @@ async def allocate_suspense(
 async def confirm_line_match(
     line_id: uuid.UUID,
     payload: ConfirmMatchRequest,
-    current_user: User = Depends(get_current_user),
-    tenant: Tenant = Depends(get_current_tenant),
+    ctx: IAMContext = Depends(require_owner),
     db: AsyncSession = Depends(get_db)
 ):
+    current_user = ctx.user
+    tenant = ctx.tenant
     """
     Confirms a Tier 1 or Tier 2 match for a bank statement line.
     Posts the corresponding double-entry journal entry to the general ledger:
@@ -639,10 +659,11 @@ async def confirm_line_match(
 @router.post("/lines/{line_id}/route-to-suspense")
 async def route_line_to_suspense(
     line_id: uuid.UUID,
-    current_user: User = Depends(get_current_user),
-    tenant: Tenant = Depends(get_current_tenant),
+    ctx: IAMContext = Depends(require_owner),
     db: AsyncSession = Depends(get_db)
 ):
+    current_user = ctx.user
+    tenant = ctx.tenant
     """
     Manually routes an unmatched bank transaction to Schedule III Suspense Account (Code 2099)
     and posts double-entry journal entry.

@@ -790,30 +790,61 @@ def validate_uploaded_document_safety(
             f"Security Violation [SEC-05]: File size ({len(file_bytes)} bytes) exceeds maximum allowed limit ({max_size_bytes} bytes)."
         )
 
-    is_pdf = file_bytes.startswith(b"%PDF-")
-    is_png = file_bytes.startswith(b"\x89PNG\r\n\x1a\n")
-    is_jpeg = file_bytes.startswith(b"\xff\xd8\xff")
-    is_csv_or_txt = (
-        not raise_on_error
-        and filename.lower().endswith((".csv", ".txt", ".json"))
-        and not file_bytes.startswith((b"MZ", b"\x7fELF", b"#!/", b"<?php"))
+    from app.core.security_scanner import validate_file_header
+    if not validate_file_header(file_bytes, filename):
+        return _fail("Security Violation [SEC-05]: Unsupported or spoofed file header (must be valid PDF, PNG, or JPEG).")
+
+    is_pdf = (
+        file_bytes.startswith(b"%PDF")
+        or file_bytes.lstrip(b"\xef\xbb\xbf\x00\r\n\t ").startswith(b"%PDF")
+        or (b"%PDF" in file_bytes[:8192])
+        or (b"%%EOF" in file_bytes[-2048:])
     )
 
-    if not (is_pdf or is_png or is_jpeg or is_csv_or_txt):
-        return _fail("Security Violation [SEC-05]: Unsupported or spoofed file header (must be valid PDF, PNG, or JPEG).")
+    is_encrypted = b"/Encrypt" in file_bytes
+    is_itr_or_statutory = (
+        is_encrypted
+        or any(k in file_bytes[:8192].lower() for k in (
+            b"<itr", b"itr-", b"income tax", b"acknowledgement", b"incometax", b"form itr", b"assessment year", b"pan:", b"financial year"
+        ))
+        or any(k in filename.lower() for k in (
+            "itr", "ack", "incometax", "income_tax", "statutory", "challan", "return", "tax", "ay", "fy", "form", "assessment", "statement"
+        ))
+    )
 
     if is_pdf:
         upper_slice = file_bytes[:min(len(file_bytes), 512 * 1024)]
-        for forbidden_tag in (b"/JavaScript", b"/JS ", b"/JS(", b"/JS<", b"/Launch", b"/RichMedia"):
+        # Strictly block external process launching
+        for forbidden_tag in (b"/Launch", b"/RichMedia"):
             if forbidden_tag in upper_slice:
                 return _fail(
                     f"Security Violation [SEC-05]: Active or executable PDF content ({forbidden_tag.decode('ascii', errors='ignore')}) is forbidden."
                 )
+        # Block arbitrary JavaScript for non-statutory uploads
+        if not is_itr_or_statutory:
+            for forbidden_tag in (b"/JavaScript", b"/JS ", b"/JS(", b"/JS<"):
+                if forbidden_tag in upper_slice:
+                    return _fail(
+                        f"Security Violation [SEC-05]: Active or executable PDF content ({forbidden_tag.decode('ascii', errors='ignore')}) is forbidden."
+                    )
         page_occurrences = file_bytes.count(b"/Type /Page") - file_bytes.count(b"/Type /Pages")
         if page_occurrences > max_pdf_pages:
             return _fail(
                 f"Security Violation [SEC-05]: PDF page count ({page_occurrences}) exceeds maximum limit ({max_pdf_pages})."
             )
+
+    is_png = file_bytes.startswith(b"\x89PNG\r\n\x1a\n")
+    is_jpeg = file_bytes.startswith(b"\xff\xd8\xff")
+    is_json = (
+        filename.lower().endswith(".json")
+        and file_bytes.lstrip(b"\xef\xbb\xbf\x00\r\n\t ").startswith((b"{", b"["))
+        and not file_bytes.startswith((b"MZ", b"\x7fELF", b"#!/", b"<?php"))
+    )
+    is_xml = (
+        filename.lower().endswith((".xml", ".html", ".xhtml"))
+        and file_bytes.lstrip(b"\xef\xbb\xbf\x00\r\n\t ").startswith((b"<?xml", b"<ITR", b"<itr", b"<!DOCTYPE", b"<"))
+        and not file_bytes.startswith((b"MZ", b"\x7fELF", b"#!/", b"<?php"))
+    )
 
     if is_png or is_jpeg:
         from PIL import Image
@@ -840,7 +871,7 @@ def validate_uploaded_document_safety(
         "safe": True,
         "is_safe": True,
         "sanitized_filename": safe_name,
-        "mime_detected": "application/pdf" if is_pdf else ("image/png" if is_png else ("image/jpeg" if is_jpeg else "text/plain")),
+        "mime_detected": "application/pdf" if is_pdf else ("image/png" if is_png else ("image/jpeg" if is_jpeg else ("application/json" if is_json else ("application/xml" if is_xml else "text/plain")))),
         "size_bytes": len(file_bytes),
     }
 

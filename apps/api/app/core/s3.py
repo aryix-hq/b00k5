@@ -62,6 +62,10 @@ class StorageManager:
                 self._client = None
         return self._client
 
+    @property
+    def s3_client(self):
+        return self.client
+
     @staticmethod
     def calculate_sha256(data: bytes) -> str:
         """Computes SHA-256 hex digest of given payload."""
@@ -124,6 +128,16 @@ class StorageManager:
 
         return object_name, sha256_hash, file_size
 
+    def upload_document_bytes(
+        self,
+        bucket_name: str,
+        object_name: str,
+        file_bytes: bytes,
+        content_type: str = "application/pdf"
+    ) -> Tuple[str, str, int]:
+        """Alias for save_document for consistent naming across endpoints."""
+        return self.save_document(bucket_name, object_name, file_bytes, content_type)
+
     def get_document_bytes(self, bucket_name: str, object_name: str) -> bytes:
         """Retrieves raw document bytes from storage."""
         if self.client:
@@ -166,6 +180,29 @@ class StorageManager:
 
         return deleted
 
+    def upload_bytes(
+        self,
+        s3_key: str,
+        file_bytes: bytes,
+        content_type: str = "application/pdf"
+    ) -> Tuple[str, str, int]:
+        """Convenience method accepting composite or relative s3_key."""
+        bucket = settings.BUCKET_STATUTORY
+        return self.save_document(bucket, s3_key, file_bytes, content_type)
+
+    def get_bytes(self, s3_key: str) -> bytes:
+        """Convenience method retrieving bytes by s3_key with multi-bucket fallback."""
+        bucket = settings.BUCKET_STATUTORY
+        try:
+            return self.get_document_bytes(bucket, s3_key)
+        except Exception:
+            for b in [settings.BUCKET_STATUTORY, settings.BUCKET_RECEIPTS, settings.BUCKET_STATEMENTS]:
+                try:
+                    return self.get_document_bytes(b, s3_key)
+                except Exception:
+                    continue
+            return b""
+
     def generate_presigned_url(
         self,
         bucket_name: str,
@@ -189,6 +226,7 @@ class StorageManager:
 
 # Default singleton instance
 storage_manager = StorageManager()
+storage = storage_manager
 
 # Legacy functional aliases for backward compatibility
 def get_minio_client():

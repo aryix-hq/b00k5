@@ -1,15 +1,58 @@
 import uuid
 from datetime import timedelta
 from typing import List, Any, Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.api.deps import get_db, get_current_user, oauth2_scheme
-from app.core.security import verify_password, get_password_hash, create_access_token, revoke_token
+from app.core.security import verify_password, get_password_hash, create_access_token, revoke_token, get_redis_client
 from app.models.tenant import User, TenantUser, Tenant
 from app.schemas.auth import LoginRequest, GoogleLoginRequest, Token, UserResponse
 
 router = APIRouter()
+
+def check_login_rate_limit(client_ip: str, email: str, max_attempts: int = 5, window_seconds: int = 60) -> None:
+    """
+    Redis-backed token-bucket rate limiter enforcing max attempts per IP and email.
+    Raises HTTPException(429) if threshold exceeded (DEF-34).
+    """
+    r = get_redis_client()
+    if not r:
+        return
+    try:
+        clean_email = email.strip().lower()
+        key_ip = f"rate_limit:login:ip:{client_ip}"
+        key_user = f"rate_limit:login:user:{clean_email}"
+
+        ip_count = r.incr(key_ip)
+        if ip_count == 1:
+            r.expire(key_ip, window_seconds)
+
+        user_count = r.incr(key_user)
+        if user_count == 1:
+            r.expire(key_user, window_seconds)
+
+        if ip_count > max_attempts or user_count > max_attempts:
+            ttl = max(r.ttl(key_ip), r.ttl(key_user), 1)
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Too many failed login attempts. Please wait {ttl} seconds before trying again.",
+                headers={"Retry-After": str(ttl)}
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+
+def clear_login_rate_limit(client_ip: str, email: str) -> None:
+    r = get_redis_client()
+    if r:
+        try:
+            clean_email = email.strip().lower()
+            r.delete(f"rate_limit:login:ip:{client_ip}")
+            r.delete(f"rate_limit:login:user:{clean_email}")
+        except Exception:
+            pass
 
 @router.post("/google/login", response_model=Token)
 async def google_login(payload: GoogleLoginRequest, db: AsyncSession = Depends(get_db)):
@@ -96,11 +139,13 @@ async def google_login(payload: GoogleLoginRequest, db: AsyncSession = Depends(g
     tenant_id_str = str(membership.tenant_id) if membership else None
     role_str = membership.role.value if hasattr(membership.role, "value") else str(membership.role)
 
+    is_super = bool(getattr(user, "is_super_admin", False))
     token_data = {
         "sub": str(user.id),
         "email": user.email,
         "tenant_id": tenant_id_str,
-        "role": role_str
+        "role": role_str,
+        "is_super_admin": is_super
     }
     access_token = create_access_token(data=token_data)
 
@@ -110,11 +155,15 @@ async def google_login(payload: GoogleLoginRequest, db: AsyncSession = Depends(g
         "user_id": str(user.id),
         "email": user.email,
         "tenant_id": tenant_id_str,
-        "role": role_str
+        "role": role_str,
+        "is_super_admin": is_super
     }
 
 @router.post("/login", response_model=Token)
-async def login(credentials: LoginRequest, db: AsyncSession = Depends(get_db)):
+async def login(credentials: LoginRequest, request: Request, db: AsyncSession = Depends(get_db)):
+    client_ip = request.client.host if request.client else "127.0.0.1"
+    check_login_rate_limit(client_ip, credentials.email)
+
     result = await db.execute(select(User).where(User.email == credentials.email))
     user = result.scalar_one_or_none()
     if not user or not verify_password(credentials.password, user.password_hash):
@@ -123,6 +172,9 @@ async def login(credentials: LoginRequest, db: AsyncSession = Depends(get_db)):
             detail="Incorrect email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    # Clear failed rate limit counter on successful authentication
+    clear_login_rate_limit(client_ip, credentials.email)
 
     # Fetch user's primary tenant membership
     tu_stmt = select(TenantUser).where(TenantUser.user_id == user.id)
@@ -140,11 +192,13 @@ async def login(credentials: LoginRequest, db: AsyncSession = Depends(get_db)):
     tenant_id_str = str(membership.tenant_id) if membership else None
     role_str = (membership.role.value if hasattr(membership.role, "value") else str(membership.role)) if membership else None
 
+    is_super = bool(getattr(user, "is_super_admin", False))
     token_data = {
         "sub": str(user.id),
         "email": user.email,
         "tenant_id": tenant_id_str,
-        "role": role_str
+        "role": role_str,
+        "is_super_admin": is_super
     }
     access_token = create_access_token(data=token_data)
 
@@ -154,7 +208,8 @@ async def login(credentials: LoginRequest, db: AsyncSession = Depends(get_db)):
         "user_id": str(user.id),
         "email": user.email,
         "tenant_id": tenant_id_str,
-        "role": role_str
+        "role": role_str,
+        "is_super_admin": is_super
     }
 
 @router.get("/me")
@@ -184,6 +239,7 @@ async def get_me(current_user: User = Depends(get_current_user), db: AsyncSessio
         "first_name": current_user.first_name,
         "last_name": current_user.last_name,
         "is_active": current_user.is_active,
+        "is_super_admin": bool(getattr(current_user, "is_super_admin", False)),
         "tenants": tenants
     }
 
@@ -203,3 +259,17 @@ async def logout(
         "status": "logged_out",
         "message": "Successfully logged out and session revoked server-side."
     }
+
+from app.api.v1.tenant_iam import switch_tenant_context, SwitchTenantRequest, SwitchTenantResponse
+
+@router.post("/switch-tenant", response_model=SwitchTenantResponse)
+async def auth_switch_tenant(
+    payload: SwitchTenantRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Switches active company context and returns an updated JWT with the target company's claims.
+    """
+    return await switch_tenant_context(payload, current_user, db)
+

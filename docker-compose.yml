@@ -128,6 +128,7 @@ services:
       - ./apps/api/app:/app/apps/api/app
       - ./tests:/app/tests
       - ./seed_data.py:/app/seed_data.py
+      - ./scripts:/app/scripts
     networks:
       b00k5-net:
         aliases:

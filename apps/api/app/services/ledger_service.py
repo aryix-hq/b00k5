@@ -3,7 +3,7 @@ from datetime import date
 from typing import Dict, Any, List, Optional
 import uuid
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, and_
 from app.models.ledger import ChartOfAccounts, JournalEntry, JournalLine
 from app.models.invoice import Invoice
 
@@ -36,8 +36,7 @@ class LedgerService:
                 name=name,
                 type=acc_type,
                 sub_type=sub_type,
-                normal_balance=normal_balance,
-                is_system_account=True
+                normal_balance=normal_balance
             )
             session.add(acc)
             await session.flush()
@@ -285,10 +284,28 @@ class LedgerService:
         return entry
 
     @staticmethod
-    async def get_trial_balance(session: AsyncSession, tenant_id: uuid.UUID) -> Dict[str, Any]:
+    async def get_trial_balance(
+        session: AsyncSession,
+        tenant_id: uuid.UUID,
+        as_of_date: Optional[date] = None,
+        fy: Optional[str] = None
+    ) -> Dict[str, Any]:
         """
         Calculates the complete Trial Balance report by summing journal lines.
+        Optionally scoped to a specific Financial Year (fy) or as_of_date.
         """
+        target_date = as_of_date
+        fy_start = None
+        fy_end = None
+        if fy and fy.lower() != "all":
+            from app.core.fiscal_year import get_fy_date_bounds
+            try:
+                fy_start, fy_end = get_fy_date_bounds(fy)
+                target_date = target_date or fy_end
+            except Exception:
+                pass
+        target_date = target_date or date.today()
+
         # Fetch all accounts for tenant
         acc_stmt = select(ChartOfAccounts).where(
             ChartOfAccounts.tenant_id == tenant_id,
@@ -302,13 +319,19 @@ class LedgerService:
         total_credits = Decimal("0.00")
 
         for acc in accounts:
+            conds = [
+                JournalLine.tenant_id == tenant_id,
+                JournalLine.account_id == acc.id,
+                JournalEntry.status == "posted",
+                JournalEntry.entry_date <= target_date
+            ]
+            if fy_start and acc.type in ("revenue", "expense"):
+                conds.append(JournalEntry.entry_date >= fy_start)
+
             sum_stmt = select(
                 func.coalesce(func.sum(JournalLine.debit_amount), Decimal("0.00")).label("total_debits"),
                 func.coalesce(func.sum(JournalLine.credit_amount), Decimal("0.00")).label("total_credits")
-            ).where(
-                JournalLine.tenant_id == tenant_id,
-                JournalLine.account_id == acc.id
-            )
+            ).join(JournalEntry, JournalLine.journal_entry_id == JournalEntry.id).where(and_(*conds))
             res = await session.execute(sum_stmt)
             row = res.one()
             d_sum = row.total_debits
@@ -338,7 +361,7 @@ class LedgerService:
 
         return {
             "tenant_id": tenant_id,
-            "as_of_date": date.today(),
+            "as_of_date": target_date,
             "items": items,
             "total_debits": total_debits,
             "total_credits": total_credits,

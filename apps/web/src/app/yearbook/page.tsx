@@ -24,10 +24,13 @@ import {
   Download,
   Shield,
   FileCheck,
-  RefreshCw
+  RefreshCw,
+  Ban,
+  Loader2
 } from 'lucide-react';
 import { fetchApi } from '@/lib/api';
 import Link from 'next/link';
+import { ScheduleIIIViewer } from '@/components/yearbook/ScheduleIIIViewer';
 
 interface ExpenseItem {
   id: string;
@@ -57,7 +60,7 @@ export default function YearBookPage() {
   };
 
   const [selectedFY, setSelectedFY] = useState(currentDefaultFY);
-  const [activeTab, setActiveTab] = useState<'statements' | 'bills' | 'invoices' | 'close'>('statements');
+  const [activeTab, setActiveTab] = useState<'statements' | 'bills' | 'invoices' | 'schedule_iii' | 'close'>('statements');
 
   // Dynamic available periods (e.g. Current FY, past 5 years)
   const availableFYs: string[] = [];
@@ -81,6 +84,10 @@ export default function YearBookPage() {
 
   // Invoices State
   const [invoices, setInvoices] = useState<any[]>([]);
+  const [invoiceFilter, setInvoiceFilter] = useState<'all' | 'active' | 'struck_off'>('all');
+  const [downloadingInvId, setDownloadingInvId] = useState<string | null>(null);
+  const [strikingOffInvId, setStrikingOffInvId] = useState<string | null>(null);
+  const [invoiceActionBanner, setInvoiceActionBanner] = useState<string | null>(null);
 
   // Annual Statutory Filings State (5 documents)
   const [statutoryFilings, setStatutoryFilings] = useState<any[]>([]);
@@ -133,14 +140,122 @@ export default function YearBookPage() {
   };
 
   const handleSelectFY = (fy: string) => {
-    setSelectedFY(fy);
-    const startY = parseInt(fy.split('-')[0]);
+    const match = (fy || '').match(/(\d{4})/);
+    const startY = match ? parseInt(match[1]) : currentCalendarYr;
+    const cleanShort = `${startY}-${String(startY + 1).slice(-2)}`;
+    const fullDisplay = `FY ${cleanShort}`;
+
+    setSelectedFY(cleanShort);
     if (typeof window !== 'undefined') {
-      const full = `FY ${startY}-${startY + 1}`;
-      localStorage.setItem('b00k5_selected_fy', full);
-      window.dispatchEvent(new CustomEvent('b00k5_fy_changed', { detail: full }));
+      localStorage.setItem('b00k5_selected_fy', fullDisplay);
+      localStorage.setItem('b00k5_selected_fy_clean', cleanShort);
+      window.dispatchEvent(new CustomEvent('b00k5_fy_changed', { detail: fullDisplay }));
+      window.dispatchEvent(new CustomEvent('b00k5_fy_obj_changed', { detail: { full: fullDisplay, short: cleanShort, startYear: startY } }));
+      window.dispatchEvent(new Event('storage'));
     }
-    loadAnnualStatutoryFilings(fy);
+    loadAnnualStatutoryFilings(cleanShort);
+  };
+
+  const isStruckOffInvoice = (inv: any) => {
+    const st = String(inv.status || inv.payment_status || '').toLowerCase();
+    return st === 'cancelled' || st === 'struck_off' || st === 'void';
+  };
+
+  const loadData = async (targetFY?: string) => {
+    try {
+      const activeFY = targetFY !== undefined ? targetFY : selectedFY;
+      const fyParam = activeFY && activeFY !== 'all' ? activeFY.replace('FY', '').trim() : '';
+      const stmtUrl = fyParam ? `/api/v1/reconciliation/statements?fy=${encodeURIComponent(fyParam)}` : '/api/v1/reconciliation/statements';
+      const invUrl = fyParam ? `/api/v1/invoices/?fy=${encodeURIComponent(fyParam)}` : '/api/v1/invoices/';
+      const expUrl = fyParam ? `/api/v1/expenses/?fy=${encodeURIComponent(fyParam)}` : '/api/v1/expenses/';
+
+      const [stmtRes, invRes, expRes] = await Promise.all([
+        fetchApi(stmtUrl).catch(() => []),
+        fetchApi(invUrl).catch(() => []),
+        fetchApi(expUrl).catch(() => [])
+      ]);
+
+      if (Array.isArray(stmtRes)) setStatements(stmtRes);
+      if (Array.isArray(invRes)) setInvoices(invRes);
+
+      if (Array.isArray(expRes)) {
+        const mapped: ExpenseItem[] = expRes
+          .filter((exp: any) => exp.status !== 'struck_off' && exp.status !== 'rejected')
+          .map((exp: any) => {
+            const total = parseFloat(exp.total_amount || '0');
+            const cgst = parseFloat(exp.cgst_amount || '0');
+            const sgst = parseFloat(exp.sgst_amount || '0');
+            const igst = parseFloat(exp.igst_amount || '0');
+            const taxTotal = cgst + sgst + igst;
+            const taxable = total - taxTotal;
+            return {
+              id: exp.id,
+              vendor_name: exp.merchant_name || 'Vendor',
+              date: exp.expense_date ? String(exp.expense_date).slice(0, 10) : '',
+              amount: total,
+              gstin: exp.merchant_gstin || '',
+              taxable_amount: taxable > 0 ? taxable : total,
+              gst_amount: taxTotal,
+              category: exp.category || 'Direct Expense',
+              schedule_iii_head: exp.category || '4010 Direct Operational Expense',
+              itc_eligible: Boolean(exp.itc_eligible || taxTotal > 0)
+            };
+          });
+        setExpenses(mapped);
+      }
+    } catch (e) {
+      console.error('Error loading yearbook data:', e);
+    }
+  };
+
+  const handleStrikeOffInvoice = async (invId: string, invNum: string) => {
+    if (!window.confirm(`Are you sure you want to strike off Invoice ${invNum}?\n\nThis will reverse the Double-Entry journal entries (Sales & Receivables) in your General Ledger and void the invoice.`)) {
+      return;
+    }
+    setStrikingOffInvId(invId);
+    try {
+      const res = await fetchApi(`/api/v1/invoices/${invId}/strike-off`, {
+        method: 'POST'
+      });
+      setInvoiceActionBanner(`Invoice ${invNum} successfully struck off and reversed in ledger (${res.reversal_journal || 'Reversal JV posted'}). Outward revenue updated.`);
+      await loadData();
+    } catch (err: any) {
+      alert(err.message || 'Failed to strike off invoice');
+    } finally {
+      setStrikingOffInvId(null);
+    }
+  };
+
+  const handleDownloadInvoicePdf = async (invId: string, invNum: string) => {
+    setDownloadingInvId(invId);
+    try {
+      const token = typeof window !== 'undefined' ? (localStorage.getItem('b00k5_token') || localStorage.getItem('token')) : null;
+      const tenantId = typeof window !== 'undefined' ? (localStorage.getItem('b00k5_active_tenant_id') || localStorage.getItem('b00k5_tenant_id') || localStorage.getItem('tenant_id')) : null;
+      const headers: Record<string, string> = {};
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      if (tenantId) headers['X-Tenant-ID'] = tenantId;
+
+      const url = `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/invoices/${invId}/download${token ? `?token=${encodeURIComponent(token)}` : ''}${tenantId ? `&tenant_id=${encodeURIComponent(tenantId)}` : ''}`;
+      const res = await fetch(url, { headers });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to download invoice PDF');
+      }
+
+      const blob = await res.blob();
+      const blobUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = `${invNum || 'Tax_Invoice'}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(blobUrl);
+    } catch (err: any) {
+      alert(err.message || 'Error downloading invoice PDF');
+    } finally {
+      setDownloadingInvId(null);
+    }
   };
 
   // Load existing records and URL parameters
@@ -165,12 +280,12 @@ export default function YearBookPage() {
           loadAnnualStatutoryFilings(currentDefaultFY);
         }
       }
-      if (tab && ['statements', 'bills', 'invoices', 'close'].includes(tab)) {
+      if (tab && ['statements', 'bills', 'invoices', 'schedule_iii', 'close'].includes(tab)) {
         setActiveTab(tab as any);
       }
 
       const onFY = (e: any) => {
-        const val = e.detail || '';
+        const val = typeof e.detail === 'string' ? e.detail : (e.detail?.full || e.detail?.short || '');
         if (val) {
           const parsed = parseFYString(val);
           setSelectedFY(parsed);
@@ -178,50 +293,14 @@ export default function YearBookPage() {
         }
       };
       window.addEventListener('b00k5_fy_changed', onFY);
-      cleanup = () => window.removeEventListener('b00k5_fy_changed', onFY);
+      window.addEventListener('b00k5_fy_obj_changed', onFY);
+      cleanup = () => {
+        window.removeEventListener('b00k5_fy_changed', onFY);
+        window.removeEventListener('b00k5_fy_obj_changed', onFY);
+      };
     }
 
-    async function loadData() {
-      try {
-        const [stmtRes, invRes, expRes] = await Promise.all([
-          fetchApi('/api/v1/reconciliation/statements').catch(() => []),
-          fetchApi('/api/v1/invoices/').catch(() => []),
-          fetchApi('/api/v1/expenses/').catch(() => [])
-        ]);
-
-        if (Array.isArray(stmtRes)) setStatements(stmtRes);
-        if (Array.isArray(invRes)) setInvoices(invRes);
-
-        if (Array.isArray(expRes)) {
-          const mapped: ExpenseItem[] = expRes
-            .filter((exp: any) => exp.status !== 'struck_off' && exp.status !== 'rejected')
-            .map((exp: any) => {
-              const total = parseFloat(exp.total_amount || '0');
-              const cgst = parseFloat(exp.cgst_amount || '0');
-              const sgst = parseFloat(exp.sgst_amount || '0');
-              const igst = parseFloat(exp.igst_amount || '0');
-              const taxTotal = cgst + sgst + igst;
-              const taxable = total - taxTotal;
-              return {
-                id: exp.id,
-                vendor_name: exp.merchant_name || 'Vendor',
-                date: exp.expense_date ? String(exp.expense_date).slice(0, 10) : '',
-                amount: total,
-                gstin: exp.merchant_gstin || '',
-                taxable_amount: taxable > 0 ? taxable : total,
-                gst_amount: taxTotal,
-                category: exp.category || 'Direct Expense',
-                schedule_iii_head: exp.category || '4010 Direct Operational Expense',
-                itc_eligible: Boolean(exp.itc_eligible || taxTotal > 0)
-              };
-            });
-          setExpenses(mapped);
-        }
-      } catch (e) {
-        console.error('Error loading yearbook data:', e);
-      }
-    }
-    loadData();
+    loadData(selectedFY);
 
     return cleanup;
   }, [selectedFY]);
@@ -459,6 +538,15 @@ export default function YearBookPage() {
     return d.startsWith(targetYM);
   });
 
+  const activeInvoices = displayedInvoices.filter(i => !isStruckOffInvoice(i));
+  const struckOffInvoices = displayedInvoices.filter(i => isStruckOffInvoice(i));
+
+  const filteredInvoicesForTable = displayedInvoices.filter(i => {
+    if (invoiceFilter === 'active') return !isStruckOffInvoice(i);
+    if (invoiceFilter === 'struck_off') return isStruckOffInvoice(i);
+    return true;
+  });
+
   const displayedStatements = statements
     .filter(s => {
       const from = (s.statement_from || '').slice(0, 10);
@@ -476,7 +564,8 @@ export default function YearBookPage() {
   // KPI metrics correctly scoped to selected financial year and period
   const totalBillsAmount = displayedExpenses.reduce((acc, e) => acc + e.amount, 0);
   const totalITCClaimable = displayedExpenses.reduce((acc, e) => acc + (e.itc_eligible ? e.gst_amount : 0), 0);
-  const totalInvoiceAmount = displayedInvoices.reduce((acc, i) => acc + parseFloat(i.subtotal ?? i.subtotal_amount ?? i.grand_total ?? i.total_amount ?? '0'), 0);
+  // Outward Revenue strictly reflects ACTIVE invoices (reversals/cancellations deduct 100% of revenue)
+  const totalInvoiceAmount = activeInvoices.reduce((acc, i) => acc + parseFloat(i.subtotal ?? i.subtotal_amount ?? i.grand_total ?? i.total_amount ?? '0'), 0);
 
   return (
     <div className="flex h-screen bg-slate-950 text-slate-100 overflow-hidden">
@@ -543,7 +632,12 @@ export default function YearBookPage() {
               <div className="text-2xl font-bold text-emerald-400 font-mono">
                 ₹{totalInvoiceAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
               </div>
-              <p className="text-[11px] text-slate-500">{displayedInvoices.length} Registered Outward Invoices</p>
+              <p className="text-[11px] text-slate-500">
+                {activeInvoices.length} Active Outward Invoices
+                {struckOffInvoices.length > 0 && (
+                  <span className="text-rose-400/90 ml-1.5">• {struckOffInvoices.length} Struck Off</span>
+                )}
+              </p>
             </div>
 
             <div className="p-5 bg-slate-900 border border-slate-800 rounded-xl space-y-1">
@@ -621,7 +715,14 @@ export default function YearBookPage() {
                 const monthDateStr = `${mYear}-${m.key}`;
                 const mStart = `${monthDateStr}-01`;
                 const mEnd = `${monthDateStr}-31`;
-                const monthInvoices = invoices.filter(inv => String(inv.issue_date || '').slice(0, 10).startsWith(monthDateStr));
+                const monthActiveInvoices = invoices.filter(inv => {
+                  const d = String(inv.issue_date || '').slice(0, 10);
+                  return !isStruckOffInvoice(inv) && d.startsWith(monthDateStr);
+                });
+                const monthStruckOffCount = invoices.filter(inv => {
+                  const d = String(inv.issue_date || '').slice(0, 10);
+                  return isStruckOffInvoice(inv) && d.startsWith(monthDateStr);
+                }).length;
                 const monthExpenses = expenses.filter(exp => exp.date?.startsWith(monthDateStr));
                 const hasStatement = statements.some(s => {
                   const from = String(s.statement_from || '').slice(0, 10);
@@ -665,7 +766,12 @@ export default function YearBookPage() {
                       </div>
                       <div className="flex items-center justify-between text-slate-400">
                         <span>Sales:</span>
-                        <span className="font-mono text-slate-200">{monthInvoices.length}</span>
+                        <span className="font-mono text-slate-200">
+                          {monthActiveInvoices.length}
+                          {monthStruckOffCount > 0 && (
+                            <span className="text-rose-400 text-[10px] ml-1">({monthStruckOffCount} void)</span>
+                          )}
+                        </span>
                       </div>
                     </div>
 
@@ -717,6 +823,16 @@ export default function YearBookPage() {
               }`}
             >
               <ArrowUpRight className="w-4 h-4 text-emerald-400" /> Income & Outward Invoices
+            </button>
+            <button
+              onClick={() => setActiveTab('schedule_iii')}
+              className={`pb-3 px-3 font-semibold border-b-2 flex items-center gap-2 transition-all ${
+                activeTab === 'schedule_iii'
+                  ? 'border-amber-400 text-amber-400'
+                  : 'border-transparent text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <FileText className="w-4 h-4 text-amber-400" /> Schedule III Balance Sheet & P&L
             </button>
             <button
               onClick={() => setActiveTab('close')}
@@ -895,26 +1011,66 @@ export default function YearBookPage() {
           {/* TAB 3: INVOICES & INCOME */}
           {activeTab === 'invoices' && (
             <div className="space-y-6">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div>
                   <h3 className="text-sm font-semibold text-white">Outward Tax Invoices &amp; Revenue (FY {selectedFY})</h3>
                   <p className="text-xs text-slate-400">
                     B2B and B2C sales invoices with auto-calculated CGST, SGST, and IGST components.
                   </p>
                 </div>
-                <Link
-                  href="/invoices"
-                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-lg flex items-center gap-2 shadow-sm transition-all"
-                >
-                  <Plus className="w-4 h-4" /> Create Outward Invoice
-                </Link>
+                <div className="flex items-center gap-3 flex-wrap">
+                  {/* Status Filter Tabs */}
+                  <div className="flex items-center bg-slate-900 border border-slate-800 rounded-lg p-1 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => setInvoiceFilter('all')}
+                      className={`px-2.5 py-1 rounded font-medium transition ${
+                        invoiceFilter === 'all' ? 'bg-slate-800 text-white font-bold' : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      All ({displayedInvoices.length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setInvoiceFilter('active')}
+                      className={`px-2.5 py-1 rounded font-medium transition ${
+                        invoiceFilter === 'active' ? 'bg-emerald-500/20 text-emerald-300 font-bold' : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      Active ({activeInvoices.length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setInvoiceFilter('struck_off')}
+                      className={`px-2.5 py-1 rounded font-medium transition ${
+                        invoiceFilter === 'struck_off' ? 'bg-rose-500/20 text-rose-300 font-bold' : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      Struck Off ({struckOffInvoices.length})
+                    </button>
+                  </div>
+
+                  <Link
+                    href="/invoices"
+                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-lg flex items-center gap-2 shadow-sm transition-all"
+                  >
+                    <Plus className="w-4 h-4" /> Create Outward Invoice
+                  </Link>
+                </div>
               </div>
 
-              {displayedInvoices.length === 0 ? (
+              {invoiceActionBanner && (
+                <div className="p-3 bg-slate-900 border border-emerald-500/30 rounded-xl text-emerald-300 text-xs flex items-center justify-between">
+                  <span>{invoiceActionBanner}</span>
+                  <button onClick={() => setInvoiceActionBanner(null)} className="text-slate-400 hover:text-white text-xs font-bold">✕</button>
+                </div>
+              )}
+
+              {filteredInvoicesForTable.length === 0 ? (
                 <div className="p-12 text-center bg-slate-900 border border-slate-800 rounded-xl space-y-3">
                   <Receipt className="w-12 h-12 text-slate-600 mx-auto" />
                   <h4 className="text-sm font-semibold text-slate-300">
-                    No Invoices Recorded {selectedMonth !== 'all' ? `for Month ${selectedMonth}` : `for FY ${selectedFY}`}
+                    No {invoiceFilter === 'struck_off' ? 'Struck Off' : invoiceFilter === 'active' ? 'Active' : ''} Invoices Recorded {selectedMonth !== 'all' ? `for Month ${selectedMonth}` : `for FY ${selectedFY}`}
                   </h4>
                   <p className="text-xs text-slate-500 max-w-md mx-auto">
                     Generate compliant GST tax invoices with dynamic company letterheads, QR codes, and digital signatures.
@@ -932,37 +1088,104 @@ export default function YearBookPage() {
                         <th className="p-4 text-right">Tax Amount</th>
                         <th className="p-4 text-right">Total (INR)</th>
                         <th className="p-4 text-center">Status</th>
+                        <th className="p-4 text-right">Actions</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-800/60 font-mono">
-                      {displayedInvoices.map((inv) => {
+                      {filteredInvoicesForTable.map((inv) => {
                         const subAmt = parseFloat(inv.subtotal ?? inv.subtotal_amount ?? '0');
                         const taxAmt = (parseFloat(inv.cgst_total || '0') + parseFloat(inv.sgst_total || '0') + parseFloat(inv.igst_total || '0')) || parseFloat(inv.tax_amount || '0');
                         const totalAmt = parseFloat(inv.grand_total ?? inv.total_amount ?? '0');
+                        const isStruck = isStruckOffInvoice(inv);
                         const rawStatus = String(inv.status || inv.payment_status || 'unpaid').toLowerCase();
                         const isPaid = rawStatus === 'paid';
                         return (
-                          <tr key={inv.id} className="hover:bg-slate-800/40">
-                            <td className="p-4 font-semibold text-sky-400">{inv.invoice_number}</td>
-                            <td className="p-4 font-sans text-white">{inv.contact?.name || inv.customer_name || 'Customer'}</td>
+                          <tr
+                            key={inv.id}
+                            className={`transition-colors ${
+                              isStruck
+                                ? 'bg-rose-950/15 hover:bg-rose-950/25 text-slate-400'
+                                : 'hover:bg-slate-800/40 text-slate-200'
+                            }`}
+                          >
+                            <td className="p-4">
+                              <span className={`font-semibold ${isStruck ? 'line-through text-rose-400/80' : 'text-sky-400'}`}>
+                                {inv.invoice_number}
+                              </span>
+                            </td>
+                            <td className="p-4 font-sans text-white">
+                              {inv.contact?.name || inv.customer_name || 'Customer'}
+                            </td>
                             <td className="p-4 font-sans text-slate-400">{inv.issue_date}</td>
                             <td className="p-4 text-right text-slate-300">
-                              ₹{subAmt.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                              <span className={isStruck ? 'line-through text-slate-500' : ''}>
+                                ₹{subAmt.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                              </span>
                             </td>
                             <td className="p-4 text-right text-slate-400">
-                              ₹{taxAmt.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                              <span className={isStruck ? 'line-through text-slate-500' : ''}>
+                                ₹{taxAmt.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                              </span>
                             </td>
-                            <td className="p-4 text-right font-bold text-emerald-400">
+                            <td className={`p-4 text-right font-bold ${isStruck ? 'line-through text-slate-500' : 'text-emerald-400'}`}>
                               ₹{totalAmt.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                             </td>
                             <td className="p-4 text-center">
-                              <span className={`px-2 py-0.5 rounded font-sans text-[10px] capitalize border ${
-                                isPaid
-                                  ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
-                                  : 'bg-amber-500/10 text-amber-400 border-amber-500/20'
-                              }`}>
-                                {isPaid ? 'Paid' : rawStatus === 'partially_paid' ? 'Partially Paid' : 'Unpaid'}
-                              </span>
+                              {isStruck ? (
+                                <span className="px-2 py-0.5 rounded font-sans text-[10px] font-semibold border bg-rose-500/15 text-rose-300 border-rose-500/30">
+                                  Struck Off
+                                </span>
+                              ) : isPaid ? (
+                                <span className="px-2 py-0.5 rounded font-sans text-[10px] font-semibold border bg-emerald-500/15 text-emerald-400 border-emerald-500/30">
+                                  Paid
+                                </span>
+                              ) : rawStatus === 'partially_paid' ? (
+                                <span className="px-2 py-0.5 rounded font-sans text-[10px] font-semibold border bg-amber-500/10 text-amber-400 border-amber-500/20">
+                                  Partially Paid
+                                </span>
+                              ) : (
+                                <span className="px-2 py-0.5 rounded font-sans text-[10px] font-semibold border bg-sky-500/10 text-sky-400 border-sky-500/20">
+                                  Unpaid
+                                </span>
+                              )}
+                            </td>
+                            <td className="p-4 text-right">
+                              <div className="flex items-center justify-end gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => handleDownloadInvoicePdf(inv.id, inv.invoice_number)}
+                                  disabled={downloadingInvId === inv.id}
+                                  className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-sky-400 hover:text-sky-300 border border-slate-700 text-[10px] font-semibold inline-flex items-center gap-1 transition"
+                                  title="Download PDF"
+                                >
+                                  {downloadingInvId === inv.id ? (
+                                    <Loader2 className="w-3 h-3 animate-spin" />
+                                  ) : (
+                                    <Download className="w-3 h-3" />
+                                  )}
+                                  <span>PDF</span>
+                                </button>
+                                {!isStruck ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleStrikeOffInvoice(inv.id, inv.invoice_number)}
+                                    disabled={strikingOffInvId === inv.id}
+                                    className="px-2 py-1 rounded bg-rose-950/40 hover:bg-rose-900 border border-rose-800/60 text-rose-300 hover:text-white text-[10px] font-semibold inline-flex items-center gap-1 transition"
+                                    title="Strike off / void invoice and reverse in General Ledger"
+                                  >
+                                    {strikingOffInvId === inv.id ? (
+                                      <Loader2 className="w-3 h-3 animate-spin" />
+                                    ) : (
+                                      <Ban className="w-3 h-3" />
+                                    )}
+                                    <span>Strike Off</span>
+                                  </button>
+                                ) : (
+                                  <span className="text-[10px] text-rose-400/80 font-mono italic">
+                                    Reversed in GL
+                                  </span>
+                                )}
+                              </div>
                             </td>
                           </tr>
                         );
@@ -1209,6 +1432,11 @@ export default function YearBookPage() {
               </div>
             </div>
           )}
+
+          {/* TAB 5: SCHEDULE III BALANCE SHEET & P&L */}
+          {activeTab === 'schedule_iii' && (
+            <ScheduleIIIViewer selectedFY={selectedFY} />
+          )}
         </main>
       </div>
 
@@ -1264,11 +1492,11 @@ export default function YearBookPage() {
 
             <div className="space-y-3 text-xs">
               <div className="space-y-1.5">
-                <label className="text-slate-300 font-medium">Select Signed PDF Document</label>
+                <label className="text-slate-300 font-medium">Select Signed PDF, JSON, or XML Document</label>
                 <input
                   type="file"
                   required
-                  accept=".pdf"
+                  accept=".pdf,.json,.xml,.txt,.png,.jpeg,.jpg"
                   onChange={(e) => setSelectedFilingFile(e.target.files?.[0] || null)}
                   className="w-full text-xs text-slate-400 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-slate-800 file:text-slate-200 hover:file:bg-slate-700 bg-slate-950 border border-slate-800 rounded-lg p-1.5 cursor-pointer"
                 />

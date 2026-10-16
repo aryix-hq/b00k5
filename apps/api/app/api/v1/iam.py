@@ -2,7 +2,7 @@ import uuid
 from typing import List, Optional
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -20,12 +20,15 @@ class InviteUserRequest(BaseModel):
     role: str # owner, auditor_ca, finance_manager, employee
     password: str
     din: Optional[str] = None # For Director / Owner
+    tenant_id: Optional[uuid.UUID] = None # Target organization for Super Admin
 
 class UpdateRoleRequest(BaseModel):
     role: str
     din: Optional[str] = None
 
 class IAMUserResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     membership_id: uuid.UUID
     user_id: uuid.UUID
     email: str
@@ -35,9 +38,6 @@ class IAMUserResponse(BaseModel):
     din: Optional[str] = None
     is_primary: bool
     created_at: datetime
-
-    class Config:
-        from_attributes = True
 
 @router.get("/users", response_model=List[IAMUserResponse])
 async def list_organization_users(
@@ -107,9 +107,17 @@ async def invite_user_to_organization(
         db.add(user)
         await db.flush()
 
+    target_tenant_id = tenant.id
+    if current_user.is_super_admin and payload.tenant_id:
+        t_stmt = select(Tenant).where(Tenant.id == payload.tenant_id)
+        t_res = await db.execute(t_stmt)
+        matched_tenant = t_res.scalar_one_or_none()
+        if matched_tenant:
+            target_tenant_id = matched_tenant.id
+
     # Check if already a member of this tenant
     m_stmt = select(TenantUser).where(
-        TenantUser.tenant_id == tenant.id,
+        TenantUser.tenant_id == target_tenant_id,
         TenantUser.user_id == user.id
     )
     m_res = await db.execute(m_stmt)
@@ -122,7 +130,7 @@ async def invite_user_to_organization(
         )
 
     membership = TenantUser(
-        tenant_id=tenant.id,
+        tenant_id=target_tenant_id,
         user_id=user.id,
         role=payload.role,
         din=payload.din if payload.role == 'owner' else None,

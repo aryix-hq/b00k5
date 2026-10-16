@@ -1,0 +1,36 @@
+# b00k5 - Local Development Compose Overlay
+# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+# Enables Next.js fast-refresh hot-reloading and FastAPI live code reloading.
+
+version: '3.8'
+
+services:
+  b00k5_api:
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    environment:
+      - APP_ENV=development
+      - DEBUG=true
+    volumes:
+      - ./apps/api/app:/app/apps/api/app
+      - ./tests:/app/tests
+      - ./scripts:/app/scripts
+      - ./seed_data.py:/app/seed_data.py
+
+  b00k5_web:
+    command: npm run dev
+    environment:
+      - NODE_ENV=development
+      - WATCHPACK_POLLING=true
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - NEXT_PUBLIC_BRIDGE_URL=http://localhost:28045
+    volumes:
+      - ./apps/web/src:/app/src
+      - ./apps/web/public:/app/public
+      - ./apps/web/package.json:/app/package.json
+      - ./apps/web/tsconfig.json:/app/tsconfig.json
+      - ./apps/web/tailwind.config.js:/app/tailwind.config.js
+      - ./apps/web/postcss.config.js:/app/postcss.config.js
+      - ./apps/web/next.config.js:/app/next.config.js
+    ports:
+      - "3000:3000"
+

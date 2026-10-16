@@ -1,6 +1,7 @@
 from typing import List, Optional
+from datetime import date, datetime
 import uuid
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -13,57 +14,85 @@ from app.schemas.ledger import (
 )
 from app.services.ledger_service import LedgerService
 
+from app.core.iam import require_owner, require_ca_or_owner, IAMContext
+
 router = APIRouter()
 
 @router.post("/entries", response_model=JournalEntryResponse)
 async def create_journal_entry(
     payload: JournalEntryCreate,
-    current_user: User = Depends(get_current_user),
-    tenant: Tenant = Depends(get_current_tenant),
+    ctx: IAMContext = Depends(require_owner),
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Creates an inviolable, balanced Schedule III double-entry journal entry.
+    (Company Owner only) Creates an inviolable, balanced Schedule III double-entry journal entry.
     Requires: Sum(Debits) - Sum(Credits) = 0.
     """
     try:
         entry = await LedgerService.create_journal_entry(
             session=db,
-            tenant_id=tenant.id,
+            tenant_id=ctx.tenant.id,
             payload=payload,
-            created_by_user_id=current_user.id
+            created_by_user_id=ctx.user.id
         )
         await db.commit()
-        await db.refresh(entry)
-        return entry
+        stmt = select(JournalEntry).options(selectinload(JournalEntry.lines)).where(JournalEntry.id == entry.id)
+        return (await db.execute(stmt)).scalar_one()
+    except ValueError as ve:
+        await db.rollback()
+        raise HTTPException(status_code=422, detail=str(ve))
+
+@router.post("/entries/audit-adjustment", response_model=JournalEntryResponse)
+async def create_audit_adjustment_entry(
+    payload: JournalEntryCreate,
+    ctx: IAMContext = Depends(require_ca_or_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    (CA / Statutory Auditor & Owner) Posts a statutory audit adjustment journal voucher.
+    Used during year-end audit verification for provisions, depreciation adjustments, and tax reconciliations.
+    """
+    try:
+        if not payload.entry_number or not payload.entry_number.startswith("JV-AUDIT-ADJ"):
+            payload.entry_number = f"JV-AUDIT-ADJ-{uuid.uuid4().hex[:6].upper()}"
+        payload.reference_type = "audit_adjustment"
+        entry = await LedgerService.create_journal_entry(
+            session=db,
+            tenant_id=ctx.tenant.id,
+            payload=payload,
+            created_by_user_id=ctx.user.id
+        )
+        await db.commit()
+        stmt = select(JournalEntry).options(selectinload(JournalEntry.lines)).where(JournalEntry.id == entry.id)
+        return (await db.execute(stmt)).scalar_one()
     except ValueError as ve:
         await db.rollback()
         raise HTTPException(status_code=422, detail=str(ve))
 
 @router.get("/accounts", response_model=List[AccountResponse])
 async def list_accounts(
-    tenant: Tenant = Depends(get_current_tenant),
+    ctx: IAMContext = Depends(require_ca_or_owner),
     db: AsyncSession = Depends(get_db)
 ):
-    stmt = select(ChartOfAccounts).where(ChartOfAccounts.tenant_id == tenant.id).order_by(ChartOfAccounts.code)
+    stmt = select(ChartOfAccounts).where(ChartOfAccounts.tenant_id == ctx.tenant.id).order_by(ChartOfAccounts.code)
     res = await db.execute(stmt)
     return res.scalars().all()
 
 @router.post("/accounts", response_model=AccountResponse)
 async def create_account(
     payload: AccountCreate,
-    tenant: Tenant = Depends(get_current_tenant),
+    ctx: IAMContext = Depends(require_owner),
     db: AsyncSession = Depends(get_db)
 ):
     # Check duplicate code
     existing = await db.execute(
-        select(ChartOfAccounts).where(ChartOfAccounts.tenant_id == tenant.id, ChartOfAccounts.code == payload.code)
+        select(ChartOfAccounts).where(ChartOfAccounts.tenant_id == ctx.tenant.id, ChartOfAccounts.code == payload.code)
     )
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=400, detail=f"Account code {payload.code} already exists.")
 
     acc = ChartOfAccounts(
-        tenant_id=tenant.id,
+        tenant_id=ctx.tenant.id,
         code=payload.code,
         name=payload.name,
         type=payload.type,
@@ -78,15 +107,24 @@ async def create_account(
 
 @router.get("/journals", response_model=List[JournalEntryResponse])
 async def list_journal_entries(
-    tenant: Tenant = Depends(get_current_tenant),
+    fy: Optional[str] = Query(None),
+    ctx: IAMContext = Depends(require_ca_or_owner),
     db: AsyncSession = Depends(get_db)
 ):
     stmt = (
         select(JournalEntry)
         .options(selectinload(JournalEntry.lines).selectinload(JournalLine.account))
-        .where(JournalEntry.tenant_id == tenant.id)
-        .order_by(JournalEntry.entry_date.desc(), JournalEntry.created_at.desc())
+        .where(JournalEntry.tenant_id == ctx.tenant.id)
     )
+    if fy and fy.lower() != "all":
+        from app.core.fiscal_year import get_fy_date_bounds
+        try:
+            fy_start, fy_end = get_fy_date_bounds(fy)
+            stmt = stmt.where(JournalEntry.entry_date >= fy_start, JournalEntry.entry_date <= fy_end)
+        except Exception:
+            pass
+
+    stmt = stmt.order_by(JournalEntry.entry_date.desc(), JournalEntry.created_at.desc())
     res = await db.execute(stmt)
     entries = res.scalars().all()
     
@@ -119,31 +157,54 @@ async def list_journal_entries(
 
 @router.get("/trial-balance", response_model=TrialBalanceReport)
 async def get_trial_balance(
-    tenant: Tenant = Depends(get_current_tenant),
+    fy: Optional[str] = Query(None),
+    as_of_date: Optional[date] = None,
+    ctx: IAMContext = Depends(require_ca_or_owner),
     db: AsyncSession = Depends(get_db)
 ):
     """
     Computes an auditor-ready, balanced Trial Balance statement.
     """
-    report = await LedgerService.get_trial_balance(db, tenant.id)
+    report = await LedgerService.get_trial_balance(db, ctx.tenant.id, as_of_date=as_of_date, fy=fy)
     return report
+
+@router.get("/reports/schedule-iii-balance-sheet")
+async def get_ledger_schedule_iii_report(
+    as_of_date: Optional[date] = None,
+    fy: Optional[str] = Query(None),
+    ctx: IAMContext = Depends(require_ca_or_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    from app.services.schedule_iii_service import ScheduleIIIService
+    return await ScheduleIIIService.get_schedule_iii_summary(
+        session=db,
+        tenant=ctx.tenant,
+        as_of_date=as_of_date,
+        fy=fy
+    )
 
 from pydantic import BaseModel
 from datetime import date, datetime
 from decimal import Decimal
 from sqlalchemy import func
 
+def get_current_indian_fy() -> str:
+    today = date.today()
+    start_yr = today.year if today.month >= 4 else today.year - 1
+    return f"{start_yr}-{str(start_yr + 1)[-2:]}"
+
 class YearEndCloseRequest(BaseModel):
-    fiscal_year: str = "2025-26"
+    fiscal_year: Optional[str] = None
     closing_date: Optional[date] = None
 
 @router.post("/year-end-close")
 async def run_year_end_close(
     payload: YearEndCloseRequest,
-    current_user: User = Depends(get_current_user),
-    tenant: Tenant = Depends(get_current_tenant),
+    ctx: IAMContext = Depends(require_owner),
     db: AsyncSession = Depends(get_db)
 ):
+    current_user = ctx.user
+    tenant = ctx.tenant
     """
     Journey 6: Multi-Year Rollover & Year-End Closing Run
     - Calculates total revenue (Class 3000) and total expenses (Class 4000) for the fiscal year
@@ -152,14 +213,15 @@ async def run_year_end_close(
     - Sets is_closed = TRUE and locks the fiscal year
     - Establishes Real/Personal accounts as Opening Balances for the next fiscal year
     """
-    fy = payload.fiscal_year
+    fy = payload.fiscal_year or get_current_indian_fy()
     parts = fy.split("-")
     if len(parts) == 2:
         start_year = int(parts[0])
         end_year = int("20" + parts[1]) if len(parts[1]) == 2 else int(parts[1])
     else:
-        start_year = 2025
-        end_year = 2026
+        today = date.today()
+        start_year = today.year if today.month >= 4 else today.year - 1
+        end_year = start_year + 1
 
     start_date = date(start_year, 4, 1)
     end_date = payload.closing_date or date(end_year, 3, 31)
@@ -359,26 +421,27 @@ async def run_year_end_close(
 
 @router.get("/fiscal-years")
 async def list_fiscal_years(
-    tenant: Tenant = Depends(get_current_tenant)
+    ctx: IAMContext = Depends(require_ca_or_owner)
 ):
+    tenant = ctx.tenant
     """
     Returns list of fiscal years, lock status, and closing metadata.
     """
     statutory_profile = tenant.statutory_profile or {}
     closed_fys = statutory_profile.get("closed_fiscal_years", {})
+    cur_fy = get_current_indian_fy()
+    today = date.today()
+    cur_start = today.year if today.month >= 4 else today.year - 1
+    avail_years = []
+    for y in range(cur_start, cur_start - 4, -1):
+        fy_str = f"{y}-{str(y + 1)[-2:]}"
+        avail_years.append({
+            "fiscal_year": fy_str,
+            "is_closed": closed_fys.get(fy_str, {}).get("is_closed", False),
+            "details": closed_fys.get(fy_str)
+        })
     return {
-        "current_active_year": "2025-26",
-        "available_years": [
-            {
-                "fiscal_year": "2025-26",
-                "is_closed": closed_fys.get("2025-26", {}).get("is_closed", False),
-                "details": closed_fys.get("2025-26")
-            },
-            {
-                "fiscal_year": "2026-27",
-                "is_closed": closed_fys.get("2026-27", {}).get("is_closed", False),
-                "details": closed_fys.get("2026-27")
-            }
-        ]
+        "current_active_year": cur_fy,
+        "available_years": avail_years
     }
 

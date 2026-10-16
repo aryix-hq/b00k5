@@ -10,7 +10,9 @@ engine = create_async_engine(
     echo=False,
     future=True,
     pool_size=10,
-    max_overflow=20
+    max_overflow=20,
+    pool_pre_ping=True,
+    pool_recycle=300
 )
 
 AsyncSessionLocal = async_sessionmaker(
@@ -32,15 +34,31 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
 
 get_db = get_db_session
 
-async def set_tenant_context(session: AsyncSession, tenant_id: str | uuid.UUID) -> None:
+async def set_tenant_context(
+    session: AsyncSession,
+    tenant_id: str | uuid.UUID,
+    user_id: Optional[str | uuid.UUID] = None,
+    role: Optional[str] = None
+) -> None:
     """
     Enforces PostgreSQL Row-Level Security (RLS) for the current session transaction.
-    Switches to the non-superuser role `b00k5_app` (NOBYPASSRLS) and sets `app.current_tenant`
-    using transaction-scoped SET LOCAL so pooled connections never leak tenant state.
+    Switches to the non-superuser role `b00k5_app` (NOBYPASSRLS) and sets:
+      app.current_tenant
+      app.current_user_id
+      app.current_user_role
+    using transaction-scoped SET LOCAL so pooled connections never leak state.
     """
     tenant_str = str(tenant_id)
     # Validate UUID format to prevent SQL injection in session setting
     uuid.UUID(tenant_str)
     await session.execute(text("SET LOCAL ROLE b00k5_app"))
     await session.execute(text(f"SET LOCAL app.current_tenant = '{tenant_str}'"))
+    if user_id:
+        u_str = str(user_id)
+        uuid.UUID(u_str)
+        await session.execute(text(f"SET LOCAL app.current_user_id = '{u_str}'"))
+    if role:
+        r_str = str(role).lower().replace("'", "").strip()
+        await session.execute(text(f"SET LOCAL app.current_user_role = '{r_str}'"))
+
 

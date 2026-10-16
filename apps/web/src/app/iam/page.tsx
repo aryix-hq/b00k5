@@ -18,7 +18,8 @@ import {
   CheckCircle2,
   AlertCircle,
   HelpCircle,
-  Hash
+  Hash,
+  UploadCloud
 } from 'lucide-react';
 import { fetchApi } from '@/lib/api';
 
@@ -39,6 +40,14 @@ export default function IAMPage() {
   const [rolesMatrix, setRolesMatrix] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
+  // Active Tenant & Multi-Tenant Scoping State
+  const [activeTenantName, setActiveTenantName] = useState<string>('');
+  const [activeCin, setActiveCin] = useState<string>('');
+  const [activeTenantId, setActiveTenantId] = useState<string>('');
+  const [isSuperAdmin, setIsSuperAdmin] = useState<boolean>(false);
+  const [availableTenants, setAvailableTenants] = useState<any[]>([]);
+  const [selectedTenantId, setSelectedTenantId] = useState<string>('');
+
   // Invite Modal
   const [inviteModalOpen, setInviteModalOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -53,9 +62,60 @@ export default function IAMPage() {
     password: '',
     din: ''
   });
+  const [uploadingDinDoc, setUploadingDinDoc] = useState(false);
+
+  const handleUploadDinDoc = async (file: File) => {
+    setUploadingDinDoc(true);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('doc_type', 'din_approval');
+      const token = typeof window !== 'undefined' ? localStorage.getItem('b00k5_token') : null;
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/setup/verify-document`, {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: fd
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const ext = data.extracted_entity || {};
+        if (ext.din) {
+          setNewUser(prev => ({ ...prev, din: ext.din }));
+        } else {
+          alert('No 8-digit DIN found in uploaded document.');
+        }
+      } else {
+        alert('Could not verify DIN approval letter.');
+      }
+    } catch (e: any) {
+      alert(e.message || 'Upload error');
+    } finally {
+      setUploadingDinDoc(false);
+    }
+  };
 
   async function loadUsers() {
     try {
+      if (typeof window !== 'undefined') {
+        const tName = localStorage.getItem('b00k5_legal_name') || 'Current Organization';
+        const tCin = localStorage.getItem('b00k5_cin') || '';
+        const tId = localStorage.getItem('b00k5_active_tenant_id') || localStorage.getItem('b00k5_tenant_id') || '';
+        const isSuper = localStorage.getItem('b00k5_is_super_admin') === 'true';
+
+        setActiveTenantName(tName);
+        setActiveCin(tCin);
+        setActiveTenantId(tId);
+        setIsSuperAdmin(isSuper);
+        if (!selectedTenantId && tId) setSelectedTenantId(tId);
+
+        if (isSuper) {
+          try {
+            const tList = await fetchApi('/api/v1/tenants/admin/list-tenants');
+            if (Array.isArray(tList)) setAvailableTenants(tList);
+          } catch (_) {}
+        }
+      }
+
       const data = await fetchApi('/api/v1/iam/users');
       if (Array.isArray(data)) setUsers(data);
 
@@ -79,32 +139,29 @@ export default function IAMPage() {
     setSuccessMsg('');
 
     try {
-      const token = localStorage.getItem('b00k5_token');
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/iam/users`, {
+      const payload: any = { ...newUser };
+      if (payload.role !== 'owner') {
+        delete payload.din;
+      }
+      if (selectedTenantId) {
+        payload.tenant_id = selectedTenantId;
+      }
+      await fetchApi('/api/v1/iam/users', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
-        },
-        body: JSON.stringify(newUser)
+        body: JSON.stringify(payload)
       });
 
-      if (res.ok) {
-        setSuccessMsg(`User ${newUser.email} added with role ${newUser.role}!`);
-        setInviteModalOpen(false);
-        setNewUser({
-          email: '',
-          first_name: '',
-          last_name: '',
-          role: 'finance_manager',
-          password: '',
-          din: ''
-        });
-        loadUsers();
-      } else {
-        const err = await res.json();
-        setErrorMsg(err.detail || 'Failed to add user.');
-      }
+      setSuccessMsg(`User ${newUser.email} successfully scoped to ${activeTenantName} with role ${newUser.role}!`);
+      setInviteModalOpen(false);
+      setNewUser({
+        email: '',
+        first_name: '',
+        last_name: '',
+        role: 'finance_manager',
+        password: '',
+        din: ''
+      });
+      loadUsers();
     } catch (e: any) {
       setErrorMsg(e.message || 'Error creating user');
     } finally {
@@ -116,18 +173,10 @@ export default function IAMPage() {
     if (!confirm('Are you sure you want to revoke this user access from your organization?')) return;
 
     try {
-      const token = localStorage.getItem('b00k5_token');
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/iam/users/${membershipId}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${token}` }
+      await fetchApi(`/api/v1/iam/users/${membershipId}`, {
+        method: 'DELETE'
       });
-
-      if (res.ok) {
-        loadUsers();
-      } else {
-        const err = await res.json();
-        alert(err.detail || 'Failed to revoke access.');
-      }
+      loadUsers();
     } catch (e: any) {
       alert(e.message || 'Error revoking access');
     }
@@ -168,22 +217,24 @@ export default function IAMPage() {
       <div className="flex-1 flex flex-col min-w-0 overflow-y-auto">
         <Navbar />
 
-        <main className="p-8 space-y-8 max-w-7xl mx-auto w-full">
+        <main className="p-4 sm:p-6 md:p-8 space-y-6 md:space-y-8 max-w-7xl mx-auto w-full">
           {/* Header */}
-          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-slate-800 pb-6">
-            <div>
+          <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800 pb-6">
+            <div className="min-w-0 flex-1">
               <h2 className="text-xl font-bold text-white flex items-center gap-2">
-                <Users className="w-6 h-6 text-sky-400" />
-                Identity & Access Management (IAM)
+                <Users className="w-6 h-6 text-sky-400 shrink-0" />
+                <span>Identity &amp; Access Management (IAM)</span>
               </h2>
-              <p className="text-xs text-slate-400 mt-0.5">
+              <p className="text-xs text-slate-400 mt-1 max-w-2xl">
                 Statutory role-based access control for Directors (DIN / DSC signing), Statutory Auditors (CA read-only file), and Finance Managers.
               </p>
             </div>
 
             <button
+              id="add-member-modal-btn"
+              data-testid="add-member-modal-btn"
               onClick={() => setInviteModalOpen(true)}
-              className="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold rounded-lg flex items-center gap-2 shadow-sm transition-all"
+              className="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold rounded-lg flex items-center gap-2 shadow-sm transition-all shrink-0"
             >
               <UserPlus className="w-4 h-4" /> Add Team Member / Auditor
             </button>
@@ -335,6 +386,51 @@ export default function IAMPage() {
               </button>
             </div>
 
+            {/* Target Organization Scope Badge */}
+            <div className="p-3.5 bg-slate-950/80 border border-sky-500/30 rounded-xl space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-mono uppercase tracking-wider text-sky-400 font-semibold flex items-center gap-1.5">
+                  <Building2 className="w-3.5 h-3.5" /> Target Organization Scope
+                </span>
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-sky-500/10 text-sky-300 border border-sky-500/30 flex items-center gap-1">
+                  <ShieldCheck className="w-3 h-3 text-sky-400" /> Scoped Workspace
+                </span>
+              </div>
+
+              {isSuperAdmin && availableTenants.length > 0 ? (
+                <div>
+                  <label className="block text-[11px] text-slate-400 mb-1">Select Target Entity (Super Admin)</label>
+                  <select
+                    value={selectedTenantId}
+                    onChange={(e) => {
+                      setSelectedTenantId(e.target.value);
+                      const t = availableTenants.find((item: any) => item.id === e.target.value);
+                      if (t) {
+                        setActiveTenantName(t.legal_name);
+                        setActiveCin(t.cin || '');
+                      }
+                    }}
+                    className="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-white text-xs font-medium focus:outline-none focus:border-sky-500"
+                  >
+                    {availableTenants.map((t: any) => (
+                      <option key={t.id} value={t.id}>
+                        {t.legal_name} {t.cin ? `(${t.cin})` : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : (
+                <div>
+                  <div className="font-bold text-white text-xs flex items-center gap-1.5">
+                    <span>{activeTenantName || 'Current Organization'}</span>
+                  </div>
+                  <div className="text-[11px] text-slate-400 font-mono mt-0.5">
+                    {activeCin ? `CIN: ${activeCin}` : 'Sovereign Corporate Workspace'} • ID: {activeTenantId ? activeTenantId.slice(0, 8) + '...' : 'Active'}
+                  </div>
+                </div>
+              )}
+            </div>
+
             {errorMsg && (
               <div className="p-3 bg-rose-500/10 border border-rose-500/20 rounded-lg text-xs text-rose-400">
                 {errorMsg}
@@ -345,6 +441,8 @@ export default function IAMPage() {
               <div className="space-y-1">
                 <label className="text-slate-300 font-medium">First Name</label>
                 <input
+                  id="invite-member-first-name"
+                  data-testid="invite-member-first-name"
                   type="text"
                   required
                   value={newUser.first_name}
@@ -357,6 +455,8 @@ export default function IAMPage() {
               <div className="space-y-1">
                 <label className="text-slate-300 font-medium">Last Name</label>
                 <input
+                  id="invite-member-last-name"
+                  data-testid="invite-member-last-name"
                   type="text"
                   required
                   value={newUser.last_name}
@@ -369,6 +469,8 @@ export default function IAMPage() {
               <div className="col-span-2 space-y-1">
                 <label className="text-slate-300 font-medium">Email Address</label>
                 <input
+                  id="invite-member-email"
+                  data-testid="invite-member-email"
                   type="email"
                   required
                   value={newUser.email}
@@ -381,6 +483,8 @@ export default function IAMPage() {
               <div className="col-span-2 space-y-1">
                 <label className="text-slate-300 font-medium">Designated Role</label>
                 <select
+                  id="invite-member-role"
+                  data-testid="invite-member-role"
                   value={newUser.role}
                   onChange={(e) => setNewUser({ ...newUser, role: e.target.value as any })}
                   className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-white"
@@ -394,20 +498,40 @@ export default function IAMPage() {
 
               {newUser.role === 'owner' && (
                 <div className="col-span-2 space-y-1">
-                  <label className="text-slate-300 font-medium">Director Identification Number (DIN)</label>
-                  <input
-                    type="text"
-                    value={newUser.din}
-                    onChange={(e) => setNewUser({ ...newUser, din: e.target.value })}
-                    placeholder="8-digit DIN (e.g. 09876543)"
-                    className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-white font-mono"
-                  />
+                  <label className="text-slate-300 font-medium flex items-center justify-between">
+                    <span>Director Identification Number (DIN)</span>
+                    <span className={`text-[10px] font-mono ${newUser.din ? 'text-emerald-400 font-semibold' : 'text-slate-400'}`}>
+                      {newUser.din ? '✓ Verified via DIR-3' : '🔒 Upload DIR-3 to verify'}
+                    </span>
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={newUser.din}
+                      readOnly
+                      placeholder="Upload DIN Approval Letter"
+                      className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-white font-mono cursor-not-allowed opacity-90"
+                    />
+                    <label className="cursor-pointer px-3 py-2 bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 shrink-0 transition">
+                      <UploadCloud className="w-3.5 h-3.5" />
+                      <span>{uploadingDinDoc ? 'Extracting...' : 'Upload DIR-3'}</span>
+                      <input
+                        type="file"
+                        accept=".pdf,.png,.jpg,.jpeg"
+                        className="hidden"
+                        onChange={(e) => e.target.files?.[0] && handleUploadDinDoc(e.target.files[0])}
+                        disabled={uploadingDinDoc}
+                      />
+                    </label>
+                  </div>
                 </div>
               )}
 
               <div className="col-span-2 space-y-1">
                 <label className="text-slate-300 font-medium">Temporary Password</label>
                 <input
+                  id="invite-member-password"
+                  data-testid="invite-member-password"
                   type="password"
                   required
                   value={newUser.password}
@@ -427,6 +551,8 @@ export default function IAMPage() {
                 Cancel
               </button>
               <button
+                id="invite-member-submit-btn"
+                data-testid="invite-member-submit-btn"
                 type="submit"
                 disabled={submitting}
                 className="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold rounded-lg"

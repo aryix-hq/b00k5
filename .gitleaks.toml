@@ -1,0 +1,47 @@
+# Gitleaks Configuration for b00k5 Open-Source Repository
+# Prevents accidental commits of private credentials, signing keys, and real PII
+
+title = "b00k5 Secret & PII Detection Rules"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Global Allowlist for synthetic test fixtures and documentation"
+paths = [
+    '''tests/.*''',
+    '''seed_data\.py''',
+    '''\.env\.example''',
+    '''docker-compose.*\.yml''',
+    '''init_schema\.sql''',
+    '''docs/.*'''
+]
+regexes = [
+    '''b00k5_secure_vault_password_2026''',
+    '''minio_storage_secret_key_2026''',
+    '''b00k5_default_dev_jwt_secret_key_change_in_prod_2026''',
+    '''U72900KA2026PTC123456''',
+    '''AABCS1429B'''
+]
+
+# Rule 1: High-Entropy Private JWT Signing Keys
+[[rules]]
+id = "generic-private-key"
+description = "Detected potential private RSA/EC/HMAC cryptographic signing key"
+regex = '''-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----'''
+tags = ["key", "cryptography", "ciso"]
+
+# Rule 2: Unmasked Indian Aadhaar Number
+[[rules]]
+id = "indian-aadhaar-number"
+description = "Detected potential unmasked 12-digit Indian Aadhaar Number"
+regex = '''\b[2-9]{1}[0-9]{3}\s[0-9]{4}\s[0-9]{4}\b'''
+tags = ["pii", "aadhaar", "india-statutory"]
+
+# Rule 3: AWS / S3 Secret Access Keys
+[[rules]]
+id = "aws-secret-access-key"
+description = "Detected potential AWS/MinIO production secret key"
+regex = '''(?i)(?:aws_secret_access_key|minio_secret_key|minio_root_password)\s*[:=]\s*["']([A-Za-z0-9/+=]{40})["']'''
+tags = ["cloud", "storage", "ciso"]
+

@@ -81,3 +81,4 @@ sequenceDiagram
 - [ ] Customer tax invoices and MCA minutes have **0 vendor watermarks**.
 - [ ] Automated zero-mock tests pass completely against Docker.
 - [ ] Commit signed off with DCO (`git commit -s`).
+

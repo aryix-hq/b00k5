@@ -70,3 +70,4 @@ This registry documents all core business capabilities, statutory compliance eng
 | :--- | :--- | :--- | :--- |
 | `FEAT-DR-01` | AES-256-GCM Dual-Layer Backup | CA 2013 §128(5) | Automated database and S3 backup drills achieving RTO < 30s with zero ledger drift. |
 | `FEAT-SRE-01` | Branch Deploy Automation Script | DevOps Invariant | One-command deploy of any git branch to isolated test environment (`scripts/branch_deploy.sh`). |
+

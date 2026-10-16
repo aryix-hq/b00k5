@@ -20,11 +20,16 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Gitleaks Secret Scrubber & Credential Scanner
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        continue-on-error: false
+      - name: Install & Run Official Open-Source Gitleaks CLI
+        run: |
+          GITLEAKS_VERSION="8.18.4"
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" | sudo tar -xz -C /usr/local/bin gitleaks
+          gitleaks detect --source . -v --config .gitleaks.toml
+
+      - name: Run Sovereign Indian Statutory Secret & PII Scanner
+        run: |
+          chmod +x scripts/scan_secrets_and_pii.sh
+          ./scripts/scan_secrets_and_pii.sh
 
       - name: Setup Node.js 20 LTS
         uses: actions/setup-node@v4

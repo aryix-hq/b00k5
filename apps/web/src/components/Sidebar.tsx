@@ -95,6 +95,7 @@ export function Sidebar() {
           { name: 'Tax Invoices & AR', href: '/invoices', icon: Receipt },
           { name: 'Record Vendor Bill', href: '/expenses/new', icon: Receipt },
           { name: 'Expenses & Reimbursements', href: '/expenses', icon: Wallet },
+          { name: 'Payroll & Salaries', href: '/payroll', icon: Users, badge: 'Sovereign' },
           { name: 'Bank Feeds & Reconciliation', href: '/reconciliation', icon: FileSpreadsheet },
           { name: 'Year Book & Schedule III', href: '/yearbook', icon: BookOpen },
         ],
@@ -131,6 +132,7 @@ export function Sidebar() {
         title: 'Audit & Financial Statements',
         items: [
           { name: 'Audit Dashboard', href: '/dashboard', icon: LayoutDashboard },
+          { name: 'Payroll & Salaries', href: '/payroll', icon: Users, badge: 'Sec 192' },
           { name: 'Year Book & Filings', href: '/yearbook', icon: BookOpen },
           { name: 'Schedule III Balance Sheet', href: '/yearbook?tab=schedule_iii', icon: FileText, badge: 'ICAI' },
           { name: 'General Ledger & Journals', href: '/reports/general-ledger', icon: FileSpreadsheet },
@@ -160,6 +162,7 @@ export function Sidebar() {
       {
         title: 'My Workspace',
         items: [
+          { name: 'My Payslips & Form 16', href: '/payroll?tab=payslips', icon: FileText, badge: 'New' },
           { name: 'Submit Out-of-Pocket Bill', href: '/expenses/new', icon: Receipt },
           { name: 'My Expense Claims', href: '/expenses', icon: Wallet },
         ],
@@ -183,6 +186,7 @@ export function Sidebar() {
           { name: 'Tax Invoices & AR', href: '/invoices', icon: Receipt },
           { name: 'Record Vendor Bill', href: '/expenses/new', icon: Receipt },
           { name: 'Expenses & Reimbursements', href: '/expenses', icon: Wallet },
+          { name: 'Payroll & Salaries', href: '/payroll', icon: Users, badge: 'Sovereign' },
           { name: 'Bank Feeds & Reconciliation', href: '/reconciliation', icon: FileSpreadsheet },
           { name: 'Year Book & Schedule III', href: '/yearbook', icon: BookOpen },
         ],

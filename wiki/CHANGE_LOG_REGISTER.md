@@ -18,7 +18,9 @@ This log provides an auditable, chronological record of all architectural modifi
      - **Leg 2 (Salary Disbursement):** Dr. Net Salary Payable (2070) vs Cr. Bank Account (1010).
   4. **Schedule III Integration:** Mapped payroll liability accounts `2070-2077` into Note 7 (Other Current Liabilities) and expense accounts `4020-4023` into Note 17 (Employee Benefits Expense).
   5. **FastAPI Endpoints:** Created `/api/v1/payroll` endpoints for employees, salary structures, payroll runs, calculate, lock/post-accrual, post-disbursement, payslips, and tax declarations.
-  6. **Comprehensive Automated Tests:** Implemented unit and live Postgres E2E tests in `apps/api/tests/test_payroll_ledger_inviolability.py` (6/6 passing).
+  6. **Comprehensive Automated Tests:** Implemented unit and live Postgres E2E tests in `apps/api/tests/test_payroll_ledger_inviolability.py` and `apps/api/tests/test_payroll_api_e2e.py` (50/50 test cases passing).
+  7. **Sovereign Payroll Web UI:** Built dedicated Next.js App Router interface (`apps/web/src/app/payroll/page.tsx`) with monthly run lifecycle management (Calculate, Leg 1 Accrual, Leg 2 Disbursement), Employee Onboarding modal with CTC structures, itemized payslip viewer, and Schedule III P&L / Balance Sheet statutory mapping.
+  8. **Sidebar Integration:** Integrated "Payroll & Salaries" navigation links across Company Owner, CA / Auditor, Platform Super Admin, and Employee workspace roles in `apps/web/src/components/Sidebar.tsx`.
 
 ---
 

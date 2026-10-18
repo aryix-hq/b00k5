@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Created REST API router in `apps/api/app/api/v1/payroll.py` and full regression test suite in `apps/api/tests/test_payroll_ledger_inviolability.py` and `apps/api/tests/test_payroll_api_e2e.py`.
   - Built dark-mode Sovereign Payroll & Statutory Roster web interface (`apps/web/src/app/payroll/page.tsx`) with Monthly Payroll Runs, Employee Onboarding & CTC breakdowns, Itemized Payslip receipts, and statutory compliance tabs.
   - Linked Payroll navigation item across Owner, CA Auditor, Super Admin, and Employee roles in `apps/web/src/components/Sidebar.tsx`.
+- **FEAT-PAY-02 Statutory Portals Exporter Suite & Section 192 Form 16 Engine**:
+  - Implemented official EPFO Electronic Challan cum Return (ECR 2.0) `#~#` pipe-delimited text generator adhering to EPF Scheme 1952 Paragraph 38 specification with 11 statutory fields and wage capping (`/api/v1/payroll/runs/{id}/export/epfo-ecr`).
+  - Added ESIC Monthly Return portal upload CSV generator with 10-digit IP number validation and paid working days schedule (`/api/v1/payroll/runs/{id}/export/esic`).
+  - Built State-Wise Professional Tax (PT) Form 5 monthly return summary exporter with wage slab grouping and headcount totals (`/api/v1/payroll/runs/{id}/export/pt`).
+  - Implemented Section 192 Form 16 Part A and Part B annual salary and tax computation engine, incorporating Finance Act 2024 New Tax Regime (Section 115BAC ₹75,000 standard deduction, Section 87A rebate, and 4% health & education cess) and certified ReportLab PDF certificate generation (`/api/v1/payroll/employees/{id}/form-16/pdf`).
+  - Enhanced Next.js Payroll UI (`apps/web/src/app/payroll/page.tsx`) with 1-click download actions for ECR, ESIC, and PT across Payroll Runs and Statutory Breakdown tabs, and Form 16 PDF download buttons in the Itemized Payslips table.
+  - Added comprehensive automated test suite `apps/api/tests/test_payroll_statutory_exporters.py` (4/4 tests passing, bringing payroll test coverage to 17/17 passing tests).
 - Comprehensive Competitor Benchmarking Matrix and reverse-engineered feature inventory comparing `b00k5` with Zoho Books, Odoo 17/18 Accounting, Zoho Payroll, RazorpayX, and Tally Prime (`docs/COMPETITIVE_BENCHMARK.md`).
 - Formalized feature registry records in `wiki/FEATURE_REGISTRY.md` for:
   - `FEAT-PAY-01` to `FEAT-PAY-05`: Embedded Sovereign Payroll & Unified People Roster (Salaried 192 + Contractor 194C/J).

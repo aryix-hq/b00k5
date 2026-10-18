@@ -207,3 +207,31 @@ class EmployeeTaxDeclarationResponse(EmployeeTaxDeclarationBase):
 
     model_config = ConfigDict(from_attributes=True)
 
+
+class Form16Response(BaseModel):
+    employee_id: uuid.UUID
+    employee_name: str
+    employee_code: str
+    pan_number: str
+    designation: str
+    tenant_name: str
+    tenant_pan: Optional[str] = None
+    tenant_tan: Optional[str] = None
+    tenant_address: Optional[str] = None
+    fiscal_year: str
+    assessment_year: str
+    tax_regime: str
+    gross_salary: Decimal
+    standard_deduction: Decimal
+    professional_tax: Decimal
+    net_salary_under_sec_16: Decimal
+    deductions_chapter_vi_a: Decimal
+    total_taxable_income: Decimal
+    tax_on_total_income: Decimal
+    rebate_87a: Decimal
+    health_and_education_cess: Decimal
+    total_tax_payable: Decimal
+    total_tax_deducted: Decimal
+    quarterly_tds_summary: List[dict] = []
+
+

@@ -136,6 +136,7 @@ export default function PayrollPage() {
   const [showDisburseModal, setShowDisburseModal] = useState<boolean>(false);
   const [showPayslipModal, setShowPayslipModal] = useState<boolean>(false);
   const [selectedPayslip, setSelectedPayslip] = useState<Payslip | null>(null);
+  const [downloadingFile, setDownloadingFile] = useState<string | null>(null);
 
   // New Employee Form State
   const [empCode, setEmpCode] = useState('');
@@ -350,6 +351,37 @@ export default function PayrollPage() {
       loadPayslipsForRun(selectedRun.id);
     } catch (err: any) {
       setErrorMsg(err.message || 'Failed to post salary disbursement.');
+    }
+  };
+
+  const handleDownloadFile = async (endpoint: string, defaultFilename: string) => {
+    try {
+      setDownloadingFile(defaultFilename);
+      const token = typeof window !== 'undefined' ? (localStorage.getItem('token') || sessionStorage.getItem('token') || '') : '';
+      const tenantId = typeof window !== 'undefined' ? (localStorage.getItem('active_tenant_id') || '') : '';
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}${endpoint}`, {
+        headers: {
+          Authorization: token ? `Bearer ${token}` : '',
+          'X-Tenant-ID': tenantId
+        }
+      });
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(errJson.detail || 'Failed to download statutory export');
+      }
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = defaultFilename;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+    } catch (err: any) {
+      alert(err.message || 'Error downloading file');
+    } finally {
+      setDownloadingFile(null);
     }
   };
 
@@ -631,6 +663,41 @@ export default function PayrollPage() {
                             >
                               Slips →
                             </button>
+
+                            {run.status !== 'draft' && (
+                              <span className="inline-flex items-center gap-1 ml-1 border-l border-slate-800 pl-2">
+                                <button
+                                  onClick={e => {
+                                    e.stopPropagation();
+                                    handleDownloadFile(`/api/v1/payroll/runs/${run.id}/export/epfo-ecr`, `ECR_${run.run_number}_${run.month}_${run.year}.txt`);
+                                  }}
+                                  className="px-2 py-0.5 text-[10px] font-mono rounded bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700"
+                                  title="Download EPFO ECR 2.0 Text Return"
+                                >
+                                  ECR
+                                </button>
+                                <button
+                                  onClick={e => {
+                                    e.stopPropagation();
+                                    handleDownloadFile(`/api/v1/payroll/runs/${run.id}/export/esic`, `ESIC_${run.run_number}_${run.month}_${run.year}.csv`);
+                                  }}
+                                  className="px-2 py-0.5 text-[10px] font-mono rounded bg-slate-800 hover:bg-slate-700 text-amber-400 border border-slate-700"
+                                  title="Download ESIC Monthly Return CSV"
+                                >
+                                  ESI
+                                </button>
+                                <button
+                                  onClick={e => {
+                                    e.stopPropagation();
+                                    handleDownloadFile(`/api/v1/payroll/runs/${run.id}/export/pt`, `PT_${run.run_number}_${run.month}_${run.year}.csv`);
+                                  }}
+                                  className="px-2 py-0.5 text-[10px] font-mono rounded bg-slate-800 hover:bg-slate-700 text-indigo-400 border border-slate-700"
+                                  title="Download Professional Tax Return CSV"
+                                >
+                                  PT
+                                </button>
+                              </span>
+                            )}
                           </td>
                         </tr>
                       ))
@@ -829,7 +896,7 @@ export default function PayrollPage() {
                                 </span>
                               )}
                             </td>
-                            <td className="py-3 px-3 text-center">
+                            <td className="py-3 px-3 text-center whitespace-nowrap">
                               <button
                                 onClick={() => {
                                   setSelectedPayslip(ps);
@@ -838,6 +905,18 @@ export default function PayrollPage() {
                                 className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-2xs font-medium"
                               >
                                 View
+                              </button>
+                              <button
+                                onClick={() => {
+                                  handleDownloadFile(
+                                    `/api/v1/payroll/employees/${ps.employee_id}/form-16/pdf?financial_year=${selectedRun?.fiscal_year || '2026-27'}`,
+                                    `Form16_${emp?.employee_code || ps.employee_id}_${(selectedRun?.fiscal_year || '2026-27').replace('/', '-')}.pdf`
+                                  );
+                                }}
+                                className="ml-1 px-2 py-1 rounded bg-indigo-950/60 hover:bg-indigo-900 border border-indigo-700/50 text-indigo-300 text-2xs font-medium"
+                                title="Download Section 192 Form 16 PDF"
+                              >
+                                Form 16
                               </button>
                             </td>
                           </tr>
@@ -937,19 +1016,69 @@ export default function PayrollPage() {
                 </div>
               </div>
 
-              {/* Statutory Due Dates Banner */}
+              {/* Statutory Due Dates & Exporters Banner */}
               <div className="p-4 rounded-xl bg-slate-900/40 border border-slate-800 grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
-                <div className="space-y-1">
-                  <div className="font-semibold text-slate-300">EPFO Electronic Challan (ECR)</div>
-                  <div className="text-slate-400">Due 15th of following month. Section 6 compliance.</div>
+                <div className="space-y-2 p-3 rounded-lg bg-slate-800/40 border border-slate-800/80 flex flex-col justify-between">
+                  <div>
+                    <div className="font-semibold text-slate-200 flex items-center justify-between">
+                      <span>EPFO ECR 2.0 Return</span>
+                      <span className="text-[10px] text-sky-400">Due 15th</span>
+                    </div>
+                    <div className="text-slate-400 text-[11px] mt-1">EPF Scheme Paragraph 38 official text return file.</div>
+                  </div>
+                  <button
+                    disabled={!selectedRun || selectedRun.status === 'draft'}
+                    onClick={() => {
+                      if (!selectedRun) return;
+                      handleDownloadFile(`/api/v1/payroll/runs/${selectedRun.id}/export/epfo-ecr`, `ECR_${selectedRun.run_number}_${selectedRun.month}_${selectedRun.year}.txt`);
+                    }}
+                    className="w-full mt-2 px-2.5 py-1.5 rounded bg-sky-950/60 hover:bg-sky-900 border border-sky-800/50 text-sky-300 text-xs font-medium flex items-center justify-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed transition"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    Download EPFO ECR (.txt)
+                  </button>
                 </div>
-                <div className="space-y-1">
-                  <div className="font-semibold text-slate-300">ESIC Monthly Remittance</div>
-                  <div className="text-slate-400">Due 15th of following month. Portal challan match.</div>
+
+                <div className="space-y-2 p-3 rounded-lg bg-slate-800/40 border border-slate-800/80 flex flex-col justify-between">
+                  <div>
+                    <div className="font-semibold text-slate-200 flex items-center justify-between">
+                      <span>ESIC Monthly Return</span>
+                      <span className="text-[10px] text-amber-400">Due 15th</span>
+                    </div>
+                    <div className="text-slate-400 text-[11px] mt-1">Monthly wage contribution sheet for ESIC IP portal.</div>
+                  </div>
+                  <button
+                    disabled={!selectedRun || selectedRun.status === 'draft'}
+                    onClick={() => {
+                      if (!selectedRun) return;
+                      handleDownloadFile(`/api/v1/payroll/runs/${selectedRun.id}/export/esic`, `ESIC_${selectedRun.run_number}_${selectedRun.month}_${selectedRun.year}.csv`);
+                    }}
+                    className="w-full mt-2 px-2.5 py-1.5 rounded bg-amber-950/60 hover:bg-amber-900 border border-amber-800/50 text-amber-300 text-xs font-medium flex items-center justify-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed transition"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    Download ESIC Return (.csv)
+                  </button>
                 </div>
-                <div className="space-y-1">
-                  <div className="font-semibold text-slate-300">Section 192 TDS Challan 281</div>
-                  <div className="text-slate-400">Due 7th of following month (30th April for March).</div>
+
+                <div className="space-y-2 p-3 rounded-lg bg-slate-800/40 border border-slate-800/80 flex flex-col justify-between">
+                  <div>
+                    <div className="font-semibold text-slate-200 flex items-center justify-between">
+                      <span>Professional Tax (PT) Form 5</span>
+                      <span className="text-[10px] text-indigo-400">Due 20th</span>
+                    </div>
+                    <div className="text-slate-400 text-[11px] mt-1">State-wise slab distribution and liability schedule.</div>
+                  </div>
+                  <button
+                    disabled={!selectedRun || selectedRun.status === 'draft'}
+                    onClick={() => {
+                      if (!selectedRun) return;
+                      handleDownloadFile(`/api/v1/payroll/runs/${selectedRun.id}/export/pt`, `PT_Return_${selectedRun.run_number}_${selectedRun.month}_${selectedRun.year}.csv`);
+                    }}
+                    className="w-full mt-2 px-2.5 py-1.5 rounded bg-indigo-950/60 hover:bg-indigo-900 border border-indigo-800/50 text-indigo-300 text-xs font-medium flex items-center justify-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed transition"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    Download PT Form 5 (.csv)
+                  </button>
                 </div>
               </div>
             </div>

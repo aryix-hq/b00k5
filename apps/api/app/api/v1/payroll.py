@@ -2,7 +2,7 @@ from typing import List, Optional, Any, Dict
 import uuid
 from decimal import Decimal
 from datetime import date
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
 from sqlalchemy.orm import selectinload
@@ -16,7 +16,8 @@ from app.schemas.payroll import (
     SalaryStructureCreate, SalaryStructureResponse,
     PayrollRunCreate, PayrollRunResponse, PayrollRunDetailResponse,
     PayslipResponse,
-    EmployeeTaxDeclarationCreate, EmployeeTaxDeclarationResponse
+    EmployeeTaxDeclarationCreate, EmployeeTaxDeclarationResponse,
+    Form16Response
 )
 from app.services.payroll_service import PayrollService
 from app.core.iam import require_owner, require_ca_or_owner, IAMContext
@@ -528,4 +529,139 @@ async def submit_tax_declaration(
 
     await db.commit()
     return decl
+
+
+# ============================================================================
+# 4. STATUTORY EXPORTERS & FORM 16 SUITE
+# ============================================================================
+
+@router.get("/runs/{run_id}/export/epfo-ecr")
+async def export_epfo_ecr(
+    run_id: uuid.UUID,
+    ctx: IAMContext = Depends(require_ca_or_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Exports official EPFO Electronic Challan cum Return (ECR 2.0) text file
+    with #~# delimiters for direct upload to EPFO Unified Portal.
+    """
+    stmt = select(PayrollRun).where(
+        and_(PayrollRun.id == run_id, PayrollRun.tenant_id == ctx.tenant.id)
+    )
+    run = (await db.execute(stmt)).scalar_one_or_none()
+    if not run:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Payroll run not found.")
+
+    txt_content = await PayrollService.generate_epfo_ecr_txt(db, run_id)
+    filename = f"ECR_{run.run_number}_{run.month:02d}_{run.year}.txt"
+    return Response(
+        content=txt_content,
+        media_type="text/plain",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
+
+@router.get("/runs/{run_id}/export/esic")
+async def export_esic_return(
+    run_id: uuid.UUID,
+    ctx: IAMContext = Depends(require_ca_or_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Exports official ESIC Monthly Return upload CSV formatted for ESIC IP Portal.
+    """
+    stmt = select(PayrollRun).where(
+        and_(PayrollRun.id == run_id, PayrollRun.tenant_id == ctx.tenant.id)
+    )
+    run = (await db.execute(stmt)).scalar_one_or_none()
+    if not run:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Payroll run not found.")
+
+    csv_content = await PayrollService.generate_esic_return_csv(db, run_id)
+    filename = f"ESIC_{run.run_number}_{run.month:02d}_{run.year}.csv"
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
+
+@router.get("/runs/{run_id}/export/pt")
+async def export_pt_return(
+    run_id: uuid.UUID,
+    ctx: IAMContext = Depends(require_ca_or_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Exports State-Wise Professional Tax (PT) Monthly Return summary CSV file.
+    """
+    stmt = select(PayrollRun).where(
+        and_(PayrollRun.id == run_id, PayrollRun.tenant_id == ctx.tenant.id)
+    )
+    run = (await db.execute(stmt)).scalar_one_or_none()
+    if not run:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Payroll run not found.")
+
+    csv_content = await PayrollService.generate_pt_return_csv(db, run_id)
+    filename = f"PT_Return_{run.run_number}_{run.month:02d}_{run.year}.csv"
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
+
+@router.get("/employees/{employee_id}/form-16", response_model=Form16Response)
+async def get_form_16(
+    employee_id: uuid.UUID,
+    fiscal_year: Optional[str] = Query(None, alias="financial_year"),
+    ctx: IAMContext = Depends(require_ca_or_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Calculates annual Form 16 Part A and Part B salary and TDS breakdown under Section 203 of Income-tax Act, 1961.
+    """
+    emp_stmt = select(Employee).where(
+        and_(Employee.id == employee_id, Employee.tenant_id == ctx.tenant.id)
+    )
+    emp = (await db.execute(emp_stmt)).scalar_one_or_none()
+    if not emp:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found.")
+
+    try:
+        data = await PayrollService.calculate_form_16(db, employee_id, fiscal_year)
+        return data
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.get("/employees/{employee_id}/form-16/pdf")
+async def download_form_16_pdf(
+    employee_id: uuid.UUID,
+    fiscal_year: Optional[str] = Query(None, alias="financial_year"),
+    ctx: IAMContext = Depends(require_ca_or_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Generates and downloads certified Form 16 Part A and Part B PDF certificate.
+    """
+    emp_stmt = select(Employee).where(
+        and_(Employee.id == employee_id, Employee.tenant_id == ctx.tenant.id)
+    )
+    emp = (await db.execute(emp_stmt)).scalar_one_or_none()
+    if not emp:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found.")
+
+    try:
+        pdf_bytes = await PayrollService.generate_form_16_pdf_for_employee(db, employee_id, fiscal_year)
+        fy_clean = (fiscal_year or "2026-27").replace("/", "-")
+        filename = f"Form16_{emp.employee_code}_{fy_clean}.pdf"
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        )
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
 

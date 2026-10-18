@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-10-18
 
+### Fixed
+- **DEF-23 Schedule III PDF Export Header Overlap & Permanent Account Roll-Forward**:
+  - Remediated table column header overlap in `ScheduleIIIService._render_schedule_iii_pdf` on Page 1 (Balance Sheet) and Page 2 (Statement of Profit and Loss) by refactoring the single-line header box to a structured 2-line layout (`Particulars`, `Note No.`, `Figures as at` / date, and `For period ended` / date) with generous column clearances.
+  - Eliminated artificial ₹1,00,000 balance sheet drift in `ScheduleIIIService._resolve_schedule_iii_components` by rolling forward permanent balance sheet accounts (opening retained deficit and director long-term borrowings) from filed Form AOC-4 anchors into ongoing fiscal year operations, achieving exact equilibrium ($\text{Assets} \equiv \text{Liabilities} \equiv ₹5,000.00$) with zero mathematical drift.
+  - Updated Schedule III Note 3 (*Reserves and Surplus*) opening surplus disclosure to pull authentic prior year opening reserves anchor in both PDF export and web API summary.
+
 ### Added
 - **FEAT-ROC-03 MCA Form AOC-4 & Form MGT-7A Statutory Calibration & Schedule III Comparative Presentation Engine**:
   - Implemented OCR and regex extraction engine in `apps/api/app/services/statutory_vault_engine.py` parsing filed Form AOC-4 (SRN, DIN, UDIN, balance sheet heads) and Form MGT-7A (SRN, authorized capital, paid-up capital, net worth, promoter shareholding pattern).

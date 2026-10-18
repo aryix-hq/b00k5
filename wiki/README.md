@@ -39,3 +39,4 @@ graph TD
 2. **PostgreSQL RLS Multi-Tenancy:** `SET LOCAL app.current_tenant` & `app.current_user_role` on every query.
 3. **Statutory Document Neutrality:** Invoices and MCA minutes remain 100% tenant-owned with **zero third-party vendor watermarks**.
 4. **Open-Source Confidentiality:** Zero secrets, zero private keys, and zero founder PII in git history.
+

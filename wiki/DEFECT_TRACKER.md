@@ -40,6 +40,7 @@ This document tracks all identified software defects, statutory compliance anoma
 | **DEF-19** | `db` | Database Backup RTO Exceeded 60s | 🟠 High | **FIXED** | Single-threaded pg_dump was slow. Upgraded to AES-256-GCM parallel compression drill achieving < 30s RTO. | `scripts/dr_drill.py` |
 | **DEF-20** | `iam` | Duplicate Navigation Links for IAM | 🟡 Medium | **FIXED** | Both `/iam` and `/settings/team` appeared in navigation. Consolidated into `/iam` with Target Organization Scope Badge. | `tests/e2e/test_selenium_aryix_branding_and_about.py` |
 | **DEF-21** | `branding` | Non-Compliant Brand Name Suffix & Watermarks | 🟠 High | **FIXED** | UI used `Aryix (OPC) Pvt Ltd` and risked invoice watermarks. Enforced clean **ARYIX** brand, link to `https://www.aryix.co.in/`, and strict Statutory Document Neutrality. | `tests/e2e/test_selenium_aryix_branding_and_about.py` |
+| **DEF-22** | `ci/cd` | Breaking Gitleaks-Action v2 License Requirement | 🔴 Critical | **FIXED** | `gitleaks/gitleaks-action@v2` introduced a breaking license paywall failing CI. Remediated by installing official open-source Gitleaks binary directly and coupling with `scripts/scan_secrets_and_pii.sh`. | `.github/workflows/ci.yml` |
 
 ---
 
@@ -53,3 +54,4 @@ This document tracks all identified software defects, statutory compliance anoma
 | **TAB-FY-04** | `/vault` | Permanent documents (CIN, PAN, INC-20A) rendered with yearly selector tabs. | 🟡 Medium | **FIXED** | Split Vault into Permanent Anchors (single upload, no yearly tabs) and Annual Statutory Records (yearly tabs). |
 | **TAB-FY-05** | `/vault` | Duplicate INC-20A entries appeared under both General Corporate and MCA Filings. | 🟡 Medium | **FIXED** | Deduplicated document category mappings to render INC-20A exclusively under Statutory Incorporation Anchors. |
 | **TAB-FY-06** | `/invoices` | Item description box was too small for complex multi-line service contracts. | 🟢 Low | **FIXED** | Upgraded item description to expandable multi-line text area with dynamic row height. |
+

@@ -51,6 +51,15 @@ This log provides an auditable, chronological record of all architectural modifi
   6. **Statutory Document Neutrality:** Certified that customer invoices, receipts, and MCA board minutes have zero third-party vendor watermarks.
   7. **Clean Database Reset:** Destroyed legacy dirty state (`docker compose down -v`) and initialized pristine environment from `init_schema.sql`.
 
+### [2026-10-16] — Branch `fix/def-22-ci-gitleaks-license`: CI Pipeline Gitleaks License Remediation
+- **PR:** `fix/def-22-ci-gitleaks-license`
+- **Category:** `fix` / `ci/cd`
+- **Wiki Defect Ref:** [`DEF-22`](DEFECT_TRACKER.md#master-defect-inventory-def-01-to-def-21)
+- **Key Deliverables:**
+  1. Replaced proprietary `gitleaks/gitleaks-action@v2` wrapper with direct official open-source Gitleaks CLI installation.
+  2. Bypassed breaking commercial license paywall while retaining complete `.gitleaks.toml` secret filtering.
+  3. Linked with `scripts/scan_secrets_and_pii.sh` for statutory Indian founder PII compliance.
+
 ---
 
 ### [2026-10-15] — Release `v1.0.3`: Statutory Backup Policy & Disaster Recovery

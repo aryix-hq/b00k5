@@ -10,6 +10,23 @@ set -euo pipefail
 MODEL="${OLLAMA_MODEL:-qwen2.5-coder:14b}"
 OLLAMA_HOST="${OLLAMA_HOST:-http://127.0.0.1:11434}"
 
+# Check execution mode (local vs cloud)
+MODE="${AI_AGENTS_MODE:-}"
+if [[ -z "${MODE}" ]]; then
+  if [[ -f ".agents/mode" ]]; then
+    MODE=$(cat ".agents/mode" | tr -d '[:space:]')
+  elif [[ -f "${HOME}/.gemini/config/ai-agents-mode" ]]; then
+    MODE=$(cat "${HOME}/.gemini/config/ai-agents-mode" | tr -d '[:space:]')
+  else
+    MODE="local"
+  fi
+fi
+
+if [[ "${MODE}" == "cloud" ]]; then
+  echo "[local-coder] Local LLM mode is switched OFF (Mode: cloud). Orchestrator should execute directly via cloud model."
+  exit 2
+fi
+
 PROMPT="${1:-}"
 CONTEXT_FILE="${2:-}"
 

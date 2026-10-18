@@ -888,6 +888,26 @@ export default function PayrollPage() {
                                 >
                                   PT
                                 </button>
+                                <button
+                                  onClick={e => {
+                                    e.stopPropagation();
+                                    handleDownloadFile(`/api/v1/payroll/runs/${run.id}/export/bank-cms?bank_format=hdfc_enet`, `HDFC_ENet_${run.run_number}.csv`);
+                                  }}
+                                  className="px-2 py-0.5 text-[10px] font-mono rounded bg-slate-800 hover:bg-slate-700 text-emerald-400 border border-slate-700"
+                                  title="Download HDFC ENet Bulk Payout CSV"
+                                >
+                                  HDFC
+                                </button>
+                                <button
+                                  onClick={e => {
+                                    e.stopPropagation();
+                                    handleDownloadFile(`/api/v1/payroll/runs/${run.id}/export/bank-cms?bank_format=icici_cms`, `ICICI_CMS_${run.run_number}.csv`);
+                                  }}
+                                  className="px-2 py-0.5 text-[10px] font-mono rounded bg-slate-800 hover:bg-slate-700 text-teal-400 border border-slate-700"
+                                  title="Download ICICI CMS Bulk Payout CSV"
+                                >
+                                  ICICI
+                                </button>
                               </span>
                             )}
                           </td>
@@ -1209,7 +1229,7 @@ export default function PayrollPage() {
               </div>
 
               {/* Statutory Due Dates & Exporters Banner */}
-              <div className="p-4 rounded-xl bg-slate-900/40 border border-slate-800 grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
+              <div className="p-4 rounded-xl bg-slate-900/40 border border-slate-800 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-xs">
                 <div className="space-y-2 p-3 rounded-lg bg-slate-800/40 border border-slate-800/80 flex flex-col justify-between">
                   <div>
                     <div className="font-semibold text-slate-200 flex items-center justify-between">
@@ -1271,6 +1291,51 @@ export default function PayrollPage() {
                     <Download className="w-3.5 h-3.5" />
                     Download PT Form 5 (.csv)
                   </button>
+                </div>
+
+                <div className="space-y-2 p-3 rounded-lg bg-slate-800/40 border border-slate-800/80 flex flex-col justify-between">
+                  <div>
+                    <div className="font-semibold text-slate-200 flex items-center justify-between">
+                      <span>Bank CMS Batch Payouts</span>
+                      <span className="text-[10px] text-emerald-400">Offline Bulk</span>
+                    </div>
+                    <div className="text-slate-400 text-[11px] mt-1">Corporate NetBanking batch upload (.csv) for single-click salaries.</div>
+                  </div>
+                  <div className="grid grid-cols-3 gap-1.5 mt-2">
+                    <button
+                      disabled={!selectedRun || selectedRun.status === 'draft'}
+                      onClick={() => {
+                        if (!selectedRun) return;
+                        handleDownloadFile(`/api/v1/payroll/runs/${selectedRun.id}/export/bank-cms?bank_format=hdfc_enet`, `HDFC_ENet_${selectedRun.run_number}.csv`);
+                      }}
+                      className="px-2 py-1.5 rounded bg-emerald-950/60 hover:bg-emerald-900 border border-emerald-800/50 text-emerald-300 text-[11px] font-medium text-center disabled:opacity-40 disabled:cursor-not-allowed transition"
+                      title="Download HDFC ENet CSV"
+                    >
+                      HDFC
+                    </button>
+                    <button
+                      disabled={!selectedRun || selectedRun.status === 'draft'}
+                      onClick={() => {
+                        if (!selectedRun) return;
+                        handleDownloadFile(`/api/v1/payroll/runs/${selectedRun.id}/export/bank-cms?bank_format=icici_cms`, `ICICI_CMS_${selectedRun.run_number}.csv`);
+                      }}
+                      className="px-2 py-1.5 rounded bg-teal-950/60 hover:bg-teal-900 border border-teal-800/50 text-teal-300 text-[11px] font-medium text-center disabled:opacity-40 disabled:cursor-not-allowed transition"
+                      title="Download ICICI CMS CSV"
+                    >
+                      ICICI
+                    </button>
+                    <button
+                      disabled={!selectedRun || selectedRun.status === 'draft'}
+                      onClick={() => {
+                        if (!selectedRun) return;
+                        handleDownloadFile(`/api/v1/payroll/runs/${selectedRun.id}/export/bank-cms?bank_format=sbi_cmp`, `SBI_CMP_${selectedRun.run_number}.csv`);
+                      }}
+                      className="px-2 py-1.5 rounded bg-sky-950/60 hover:bg-sky-900 border border-sky-800/50 text-sky-300 text-[11px] font-medium text-center disabled:opacity-40 disabled:cursor-not-allowed transition"
+                      title="Download SBI CMP CSV"
+                    >
+                      SBI
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1418,10 +1483,34 @@ export default function PayrollPage() {
 
               {/* Payment Claims & Ledger Vouchers Table */}
               <div className="bg-slate-900/60 border border-slate-800 rounded-xl overflow-hidden shadow-sm">
-                <div className="p-4 border-b border-slate-800 flex items-center justify-between">
+                <div className="p-4 border-b border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div>
                     <h3 className="text-sm font-semibold text-white">Contractor Invoices &amp; Payout Claims</h3>
                     <p className="text-xs text-slate-400 mt-0.5">Two-leg accounting lifecycle: Leg 1 Accrual (Expense/TDS) and Leg 2 Disbursement (Bank Payout).</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-slate-400 font-medium">Batch Payout:</span>
+                    <button
+                      onClick={() => handleDownloadFile('/api/v1/payroll/contractor-payments/export/bank-cms?bank_format=hdfc_enet', `HDFC_ENet_Contractors_${new Date().toISOString().slice(0, 10)}.csv`)}
+                      className="px-2.5 py-1 text-xs rounded bg-slate-800 hover:bg-slate-700 text-emerald-400 border border-slate-700 font-medium inline-flex items-center gap-1 transition"
+                      title="Download HDFC ENet Bulk Payout CSV for approved contractor claims"
+                    >
+                      <Download className="w-3 h-3" /> HDFC ENet
+                    </button>
+                    <button
+                      onClick={() => handleDownloadFile('/api/v1/payroll/contractor-payments/export/bank-cms?bank_format=icici_cms', `ICICI_CMS_Contractors_${new Date().toISOString().slice(0, 10)}.csv`)}
+                      className="px-2.5 py-1 text-xs rounded bg-slate-800 hover:bg-slate-700 text-teal-400 border border-slate-700 font-medium inline-flex items-center gap-1 transition"
+                      title="Download ICICI CMS Bulk Payout CSV for approved contractor claims"
+                    >
+                      <Download className="w-3 h-3" /> ICICI CMS
+                    </button>
+                    <button
+                      onClick={() => handleDownloadFile('/api/v1/payroll/contractor-payments/export/bank-cms?bank_format=sbi_cmp', `SBI_CMP_Contractors_${new Date().toISOString().slice(0, 10)}.csv`)}
+                      className="px-2.5 py-1 text-xs rounded bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700 font-medium inline-flex items-center gap-1 transition"
+                      title="Download SBI CMP Bulk Payout CSV for approved contractor claims"
+                    >
+                      <Download className="w-3 h-3" /> SBI CMP
+                    </button>
                   </div>
                 </div>
 

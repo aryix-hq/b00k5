@@ -1,7 +1,7 @@
 from typing import List, Optional, Any, Dict
 import uuid
 from decimal import Decimal
-from datetime import date
+from datetime import date, datetime
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
@@ -824,6 +824,73 @@ async def download_form_16a_pdf(
         )
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.get("/runs/{run_id}/export/bank-cms")
+async def export_payroll_bank_cms(
+    run_id: uuid.UUID,
+    bank_format: str = Query("hdfc_enet", pattern="^(hdfc_enet|icici_cms|sbi_cmp)$", description="Target bank bulk upload format"),
+    debit_account: Optional[str] = Query(None, description="Optional corporate debit account number"),
+    ctx: IAMContext = Depends(require_ca_or_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Exports official corporate netbanking bulk payout CSV (HDFC ENet, ICICI CMS, SBI CMP)
+    for a completed salaried payroll run.
+    """
+    try:
+        csv_content = await PayrollService.generate_payroll_bank_cms_csv(
+            session=db,
+            run_id=run_id,
+            bank_format=bank_format,
+            debit_account=debit_account
+        )
+        filename = f"{bank_format}_payroll_run_{str(run_id)[:8]}.csv"
+        return Response(
+            content=csv_content,
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Bank CMS export failed: {str(e)}")
+
+
+@router.get("/contractor-payments/export/bank-cms")
+async def export_contractor_bank_cms(
+    bank_format: str = Query("hdfc_enet", pattern="^(hdfc_enet|icici_cms|sbi_cmp)$", description="Target bank bulk upload format"),
+    payment_ids: Optional[str] = Query(None, description="Comma-separated payment UUIDs (optional; defaults to all pending/accrued)"),
+    debit_account: Optional[str] = Query(None, description="Optional corporate debit account number"),
+    ctx: IAMContext = Depends(require_ca_or_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Exports official corporate netbanking bulk payout CSV (HDFC ENet, ICICI CMS, SBI CMP)
+    for contractor and freelancer invoice claims.
+    """
+    try:
+        parsed_ids = None
+        if payment_ids:
+            parsed_ids = [uuid.UUID(pid.strip()) for pid in payment_ids.split(",") if pid.strip()]
+
+        csv_content = await PayrollService.generate_contractor_bank_cms_csv(
+            session=db,
+            tenant_id=ctx.tenant.id,
+            payment_ids=parsed_ids,
+            bank_format=bank_format,
+            debit_account=debit_account
+        )
+        filename = f"{bank_format}_contractor_payouts_{datetime.utcnow().strftime('%Y%m%d')}.csv"
+        return Response(
+            content=csv_content,
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Contractor Bank CMS export failed: {str(e)}")
 
 
 

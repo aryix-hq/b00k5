@@ -260,3 +260,56 @@
      * Bank Challan / BSR Code / Challan Identification Number (CIN) details.
      * Statutory verification statement and digital signature block.
    * Download and issue the PDF directly to your contractor or freelancer.
+
+
+---
+
+### 2.12 Workflow 12: Generating Bank Corporate CMS Batch Payout Files (HDFC ENet, ICICI CMS, SBI CMP)
+**Objective:** Eliminate manual per-beneficiary corporate netbanking entry by exporting standard offline Corporate Management System (CMS) bulk batch payout files for salaried payroll runs and contractor payouts.
+
+1. **Salaried Monthly Run Batch Payouts:**
+   * Navigate to `/payroll` and view the **Run Payroll** tab (or **Statutory Filings** tab).
+   * Once a payroll run is finalized or disbursed, locate the **Bank CMS** export triggers:
+     * **HDFC ENet (.csv):** Click **HDFC** or **Download HDFC ENet CSV**. Formatted with Transaction Type (`IFT`/`NEFT`/`RTGS`), Beneficiary Account, Amount, Beneficiary Name, IFSC Code, Debit Account, and Narration (`SALARY_YYYYMM`).
+     * **ICICI CMS (.csv):** Click **ICICI** or **Download ICICI CMS CSV**. Formatted with Payment Indicator (`I`/`N`/`R`), Beneficiary Account, Amount, Beneficiary Name, IFSC, Debit Account, and Remarks.
+     * **SBI CMP (.csv):** Click **SBI** or **Download SBI CMP CSV**. Formatted with Payment Mode (`OWN`/`NEFT`/`RTGS`), Beneficiary Account, Amount, Beneficiary Name, IFSC, Debit Account, and Remittance Info.
+2. **Contractors & Freelancers Bulk Payouts:**
+   * Switch to the **Contractors & Freelancers** tab.
+   * Review the list of contractor payout claims with status `approved` or `disbursed`.
+   * In the **Batch Payout** toolbar, select the bank format of your corporate account:
+     * Click **HDFC ENet**, **ICICI CMS**, or **SBI CMP**.
+     * The system gathers all approved payments, pulls contractor IFSC and account details, formats the file according to bank CMS protocol, and streams the batch file `HDFC_ENet_Contractors_YYYY-MM-DD.csv`.
+3. **Upload to Corporate Netbanking:**
+   * Log into your HDFC ENet, ICICI Corporate Internet Banking (CIB), or SBI Corporate Portal.
+   * Go to **Bulk Upload / CMS Payouts** > **Upload File**.
+   * Select the generated CSV and submit for corporate maker-checker authorization.
+   * Once authorized by corporate signatories, all employees and contractors receive credited funds simultaneously with zero cloud GSP or proprietary payment gateway lock-in.
+
+---
+
+### 2.13 Workflow 13: Exporting Official GSTR-1 Portal-Ready JSON for Direct GSTN Upload
+**Objective:** Generate official GSTN offline utility JSON returns directly from verified General Ledger vouchers for 1-click upload to `gst.gov.in` without cloud GSPs or intermediary fees.
+
+1. Navigate to `/invoices`.
+2. **Open GSTR-1 Export Modal:**
+   * In the top-right header actions, click **Export GSTR-1 JSON** (accessible in both operational mode and statutory audit mode).
+3. **Select Return Period:**
+   * Select the target **Return Year** (e.g., `2026`).
+   * Select the target **Return Month** (e.g., `October` / `10`).
+   * Review the target filename: `GSTR1_<GSTIN>_<MMYYYY>.json`.
+4. **Statutory Payload Synthesis:**
+   * Click **Download GSTR-1 JSON**.
+   * The platform aggregates all active, non-voided sales invoices and credit/debit notes for the selected period, categorizing them into official GSTN offline utility sections:
+     * **B2B (Table 4):** Taxable outward supplies made to registered persons with recipient GSTIN, invoice date, IRN, reverse charge flag, and tax rate breakdowns.
+     * **B2CL (Table 5):** Inter-state taxable outward supplies to unregistered persons where invoice value exceeds ₹2.5 Lakhs (or state threshold).
+     * **B2CS (Table 7):** Intra-state and small inter-state supplies to unregistered consumers aggregated by POS and GST rate.
+     * **CDNR (Table 9B):** Credit notes, debit notes, and refund vouchers issued to registered persons.
+     * **EXP (Table 6A):** Direct zero-rated export supplies with or without payment of tax.
+     * **HSN Summary (Table 12):** Mandatory HSN-wise summary of outward supplies with Description, UQC (`NOS`, `KGS`, `OTH`), Total Quantity, Taxable Value, Integrated Tax, Central Tax, and State Tax.
+     * **Doc Issue Summary (Table 13):** Serial number range of invoices issued, cancelled, and net issued.
+5. **Direct Portal Upload:**
+   * Log into `https://www.gst.gov.in` with your company DSC or credentials.
+   * Navigate to **Services > Returns > Returns Dashboard > Select FY & Period**.
+   * Under **Details of outward supplies of goods or services (GSTR-1)**, click **Prepare Offline**.
+   * Click **Choose File**, select the downloaded `GSTR1_<GSTIN>_<MMYYYY>.json`, and click **Upload**.
+   * The GSTN portal processes the file and auto-populates all GSTR-1 tables instantly with zero validation errors.

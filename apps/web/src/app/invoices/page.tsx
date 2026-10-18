@@ -51,6 +51,12 @@ export default function InvoicesPage() {
   const [generatingIrnInvId, setGeneratingIrnInvId] = useState<string | null>(null);
   const [copiedIrn, setCopiedIrn] = useState(false);
 
+  // GSTR-1 Export State
+  const [showGstr1Modal, setShowGstr1Modal] = useState(false);
+  const [gstr1Year, setGstr1Year] = useState<number>(() => new Date().getFullYear());
+  const [gstr1Month, setGstr1Month] = useState<number>(() => new Date().getMonth() + 1);
+  const [exportingGstr1, setExportingGstr1] = useState(false);
+
   // Top-Level View Tab: 'invoices' | 'customers'
   const [mainTab, setMainTab] = useState<'invoices' | 'customers'>('invoices');
   const [customerSearchQuery, setCustomerSearchQuery] = useState('');
@@ -346,6 +352,40 @@ export default function InvoicesPage() {
       alert(err.message || 'Error downloading invoice PDF');
     } finally {
       setDownloadingInvId(null);
+    }
+  };
+
+  const handleDownloadGstr1 = async () => {
+    try {
+      setExportingGstr1(true);
+      const token = typeof window !== 'undefined' ? (localStorage.getItem('b00k5_token') || localStorage.getItem('token') || sessionStorage.getItem('token') || '') : '';
+      const tenantId = typeof window !== 'undefined' ? (localStorage.getItem('b00k5_active_tenant_id') || localStorage.getItem('b00k5_tenant_id') || localStorage.getItem('active_tenant_id') || '') : '';
+      const headers: Record<string, string> = {};
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      if (tenantId) headers['X-Tenant-ID'] = tenantId;
+
+      const url = `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/invoices/export/gstr-1?year=${gstr1Year}&month=${gstr1Month}`;
+      const res = await fetch(url, { headers });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to generate GSTR-1 JSON');
+      }
+
+      const blob = await res.blob();
+      const blobUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      const paddedMonth = String(gstr1Month).padStart(2, '0');
+      a.download = `GSTR1_${gstStatus?.gstin || 'EXPORT'}_${paddedMonth}${gstr1Year}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(blobUrl);
+      setShowGstr1Modal(false);
+    } catch (err: any) {
+      alert(err.message || 'Error exporting GSTR-1 JSON');
+    } finally {
+      setExportingGstr1(false);
     }
   };
 
@@ -689,6 +729,13 @@ export default function InvoicesPage() {
             </div>
 
             <div className="flex items-center gap-3 flex-wrap">
+              <button
+                onClick={() => setShowGstr1Modal(true)}
+                className="px-3.5 py-2 border border-emerald-500/30 hover:border-emerald-500/60 bg-emerald-950/40 text-emerald-300 text-xs font-semibold rounded-lg flex items-center gap-1.5 transition shadow-sm"
+                title="Export official GSTN offline utility JSON (B2B, B2CL, B2CS, CDNR, EXP, HSN Table 12, Doc Issue Table 13) for direct upload to gst.gov.in"
+              >
+                <Download className="w-3.5 h-3.5 text-emerald-400" /> Export GSTR-1 JSON
+              </button>
               {userRole.includes('auditor') || userRole.includes('ca') ? (
                 <span className="px-3.5 py-2 rounded-xl bg-sky-950/60 border border-sky-500/30 text-sky-300 text-xs font-mono flex items-center gap-2">
                   <ShieldCheck className="w-4 h-4 text-sky-400" /> Statutory Audit Mode (Read-Only)
@@ -2393,6 +2440,121 @@ export default function InvoicesPage() {
               >
                 Close
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Export GSTR-1 JSON Modal */}
+      {showGstr1Modal && (
+        <div className="fixed inset-0 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4 z-50 overflow-y-auto">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6 shadow-2xl space-y-4 my-8">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div>
+                <h3 className="font-bold text-white text-base flex items-center gap-2">
+                  <Download className="w-4 h-4 text-emerald-400" />
+                  Export GSTR-1 Portal JSON
+                </h3>
+                <p className="text-[11px] text-slate-400 mt-0.5">
+                  Official GSTN Offline Utility format for direct upload on gst.gov.in
+                </p>
+              </div>
+              <button
+                onClick={() => setShowGstr1Modal(false)}
+                className="text-slate-400 hover:text-white text-sm"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="space-y-4 text-xs">
+              <div className="p-3 bg-emerald-950/30 border border-emerald-500/30 rounded-xl space-y-1.5">
+                <div className="flex items-center gap-2 text-emerald-300 font-semibold">
+                  <CheckCircle className="w-4 h-4" />
+                  <span>Statutory Coverage</span>
+                </div>
+                <p className="text-slate-400 text-[11px] leading-relaxed">
+                  Generates schema-compliant tables: <strong>B2B (4)</strong>, <strong>B2CL (5)</strong>, <strong>B2CS (7)</strong>, <strong>CDNR (9B)</strong>, <strong>EXP (6A)</strong>, <strong>HSN Summary (12)</strong>, and <strong>Doc Issue (13)</strong>.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-slate-400 text-[11px] mb-1 font-medium">Return Year</label>
+                  <select
+                    value={gstr1Year}
+                    onChange={(e) => setGstr1Year(parseInt(e.target.value))}
+                    className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-emerald-500"
+                  >
+                    {[2024, 2025, 2026, 2027, 2028].map((y) => (
+                      <option key={y} value={y}>{y}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-slate-400 text-[11px] mb-1 font-medium">Return Month</label>
+                  <select
+                    value={gstr1Month}
+                    onChange={(e) => setGstr1Month(parseInt(e.target.value))}
+                    className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-emerald-500"
+                  >
+                    {[
+                      { num: 1, name: 'January' },
+                      { num: 2, name: 'February' },
+                      { num: 3, name: 'March' },
+                      { num: 4, name: 'April' },
+                      { num: 5, name: 'May' },
+                      { num: 6, name: 'June' },
+                      { num: 7, name: 'July' },
+                      { num: 8, name: 'August' },
+                      { num: 9, name: 'September' },
+                      { num: 10, name: 'October' },
+                      { num: 11, name: 'November' },
+                      { num: 12, name: 'December' }
+                    ].map((m) => (
+                      <option key={m.num} value={m.num}>{m.num.toString().padStart(2, '0')} - {m.name}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="p-3 bg-slate-800/60 rounded-xl border border-slate-700/50 space-y-1">
+                <span className="text-[11px] text-slate-400">Target File:</span>
+                <p className="font-mono text-emerald-400 font-semibold text-xs">
+                  GSTR1_{gstStatus?.gstin || 'EXPORT'}_{String(gstr1Month).padStart(2, '0')}{gstr1Year}.json
+                </p>
+                <p className="text-[10px] text-slate-500">
+                  Ready for direct upload under GSTR-1 &gt; Prepare Offline &gt; Upload on GST Portal.
+                </p>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setShowGstr1Modal(false)}
+                  className="px-3.5 py-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition text-xs font-medium"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={exportingGstr1}
+                  onClick={handleDownloadGstr1}
+                  className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs flex items-center gap-2 transition disabled:opacity-50"
+                >
+                  {exportingGstr1 ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Generating JSON...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Download GSTR-1 JSON</span>
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
           </div>
         </div>

@@ -1416,4 +1416,179 @@ class PayrollService:
         data = await PayrollService.calculate_form_16a(session, contractor_id, fiscal_year)
         return PDFService.generate_form_16a_pdf(data)
 
+    @staticmethod
+    async def generate_payroll_bank_cms_csv(
+        session: AsyncSession,
+        run_id: uuid.UUID,
+        bank_format: str = "hdfc_enet",
+        debit_account: Optional[str] = None
+    ) -> str:
+        """
+        Generates standard Bank CMS batch payout upload file (CSV) for salaried payroll runs.
+        Supported formats:
+        - 'hdfc_enet': HDFC ENet Corporate Netbanking bulk payment upload format
+        - 'icici_cms': ICICI Bank Corporate CMS bulk NEFT/RTGS payment format
+        - 'sbi_cmp': SBI Corporate Multi-Payment bulk upload format
+        """
+        run_stmt = select(PayrollRun).where(PayrollRun.id == run_id)
+        run_res = await session.execute(run_stmt)
+        run = run_res.scalar_one_or_none()
+        if not run:
+            raise ValueError(f"Payroll Run {run_id} not found.")
+
+        stmt = (
+            select(Payslip)
+            .options(selectinload(Payslip.employee))
+            .where(Payslip.payroll_run_id == run_id)
+            .order_by(Payslip.payslip_number.asc())
+        )
+        res = await session.execute(stmt)
+        payslips = res.scalars().all()
+
+        eligible_slips = [p for p in payslips if p.net_salary > Decimal("0.00")]
+        if not eligible_slips:
+            raise ValueError("No payable payslips found with Net Pay > 0 in this payroll run.")
+
+        debit_acc = (debit_account or "1010000123456").strip()
+        month_str = f"{run.month:02d}"
+        year_str = str(run.year)
+        today_dmy = datetime.utcnow().strftime("%d/%m/%Y")
+
+        if bank_format.lower() == "icici_cms":
+            rows = [
+                "Client Code,Product Code,Payment Type,Payment Ref Number,Debit Account Number,Beneficiary Account Number,Beneficiary Name,Instrument Amount,Instrument Date,Beneficiary Bank IFSC,Beneficiary Email,Remarks"
+            ]
+            for p in eligible_slips:
+                emp = p.employee
+                ref_no = f"SAL{year_str}{month_str}{emp.employee_code}"[:20]
+                acc_no = (emp.bank_account_number or "000000000000").strip()
+                name = f"{emp.first_name} {emp.last_name}".strip().upper()
+                amt = f"{float(p.net_salary):.2f}"
+                ifsc = (emp.bank_ifsc_code or "ICIC0000011").strip().upper()
+                email = (emp.email or "").strip()
+                remarks = f"Salary {month_str}/{year_str}"
+                rows.append(f'B00K5PAY,NEFT,N,"{ref_no}","{debit_acc}","{acc_no}","{name}",{amt},"{today_dmy}","{ifsc}","{email}","{remarks}"')
+            return "\n".join(rows) + "\n"
+
+        elif bank_format.lower() == "sbi_cmp":
+            rows = [
+                "Debit Account No,Beneficiary Account No,Beneficiary Name,Amount,Payment Method,IFSC Code,Sender to Receiver Info,Payment Reference"
+            ]
+            for p in eligible_slips:
+                emp = p.employee
+                ref_no = f"SAL{year_str}{month_str}-{emp.employee_code}"[:20]
+                acc_no = (emp.bank_account_number or "000000000000").strip()
+                name = f"{emp.first_name} {emp.last_name}".strip().upper()
+                amt = f"{float(p.net_salary):.2f}"
+                ifsc = (emp.bank_ifsc_code or "SBIN0000001").strip().upper()
+                info = f"Salary {month_str}/{year_str}"
+                rows.append(f'"{debit_acc}","{acc_no}","{name}",{amt},NEFT,"{ifsc}","{info}","{ref_no}"')
+            return "\n".join(rows) + "\n"
+
+        else:
+            # Default: HDFC ENet standard format
+            rows = [
+                "Transaction Type,Beneficiary Code,Beneficiary Account Number,Transaction Amount,Beneficiary Name,Drawee Location,Customer Reference Number,Payment Details 1,Payment Details 2,Payment Details 3,Payment Details 4,Beneficiary Email,IFSC Code"
+            ]
+            for p in eligible_slips:
+                emp = p.employee
+                txn_type = "R" if p.net_salary >= Decimal("200000.00") else "N"
+                ben_code = f"EMP-{emp.employee_code}"[:15]
+                acc_no = (emp.bank_account_number or "000000000000").strip()
+                amt = f"{float(p.net_salary):.2f}"
+                name = f"{emp.first_name} {emp.last_name}".strip().upper()
+                ref_no = f"SAL{year_str}{month_str}-{emp.employee_code}"[:20]
+                narration = f"Salary {month_str}/{year_str}"
+                email = (emp.email or "").strip()
+                ifsc = (emp.bank_ifsc_code or "HDFC0000001").strip().upper()
+                rows.append(f'"{txn_type}","{ben_code}","{acc_no}",{amt},"{name}","","{ref_no}","{narration}","","","","{email}","{ifsc}"')
+            return "\n".join(rows) + "\n"
+
+    @staticmethod
+    async def generate_contractor_bank_cms_csv(
+        session: AsyncSession,
+        tenant_id: uuid.UUID,
+        payment_ids: Optional[List[uuid.UUID]] = None,
+        bank_format: str = "hdfc_enet",
+        debit_account: Optional[str] = None
+    ) -> str:
+        """
+        Generates standard Bank CMS batch payout upload file (CSV) for contractor / freelancer payouts.
+        """
+        stmt = (
+            select(ContractorPayment)
+            .options(selectinload(ContractorPayment.contractor))
+            .where(
+                and_(
+                    ContractorPayment.tenant_id == tenant_id,
+                    ContractorPayment.net_payable > Decimal("0.00")
+                )
+            )
+        )
+        if payment_ids:
+            stmt = stmt.where(ContractorPayment.id.in_(payment_ids))
+        else:
+            stmt = stmt.where(ContractorPayment.status.in_(["pending", "accrued"]))
+
+        stmt = stmt.order_by(ContractorPayment.created_at.asc())
+        res = await session.execute(stmt)
+        payments = res.scalars().all()
+
+        if not payments:
+            raise ValueError("No payable contractor claims found with Net Payable > 0.")
+
+        debit_acc = (debit_account or "1010000123456").strip()
+        today_dmy = datetime.utcnow().strftime("%d/%m/%Y")
+
+        if bank_format.lower() == "icici_cms":
+            rows = [
+                "Client Code,Product Code,Payment Type,Payment Ref Number,Debit Account Number,Beneficiary Account Number,Beneficiary Name,Instrument Amount,Instrument Date,Beneficiary Bank IFSC,Beneficiary Email,Remarks"
+            ]
+            for p in payments:
+                c = p.contractor
+                ref_no = p.payment_number[:20]
+                acc_no = (c.bank_account_number or "000000000000").strip()
+                name = c.name.strip().upper()
+                amt = f"{float(p.net_payable):.2f}"
+                ifsc = (c.bank_ifsc_code or "ICIC0000001").strip().upper()
+                email = (c.email or "").strip()
+                remarks = f"Inv {p.invoice_number}"[:30]
+                rows.append(f'B00K5PAY,NEFT,N,"{ref_no}","{debit_acc}","{acc_no}","{name}",{amt},"{today_dmy}","{ifsc}","{email}","{remarks}"')
+            return "\n".join(rows) + "\n"
+
+        elif bank_format.lower() == "sbi_cmp":
+            rows = [
+                "Debit Account No,Beneficiary Account No,Beneficiary Name,Amount,Payment Method,IFSC Code,Sender to Receiver Info,Payment Reference"
+            ]
+            for p in payments:
+                c = p.contractor
+                ref_no = p.payment_number[:20]
+                acc_no = (c.bank_account_number or "000000000000").strip()
+                name = c.name.strip().upper()
+                amt = f"{float(p.net_payable):.2f}"
+                ifsc = (c.bank_ifsc_code or "SBIN0000001").strip().upper()
+                info = f"Inv {p.invoice_number}"[:30]
+                rows.append(f'"{debit_acc}","{acc_no}","{name}",{amt},NEFT,"{ifsc}","{info}","{ref_no}"')
+            return "\n".join(rows) + "\n"
+
+        else:
+            # Default: HDFC ENet standard format
+            rows = [
+                "Transaction Type,Beneficiary Code,Beneficiary Account Number,Transaction Amount,Beneficiary Name,Drawee Location,Customer Reference Number,Payment Details 1,Payment Details 2,Payment Details 3,Payment Details 4,Beneficiary Email,IFSC Code"
+            ]
+            for p in payments:
+                c = p.contractor
+                txn_type = "R" if p.net_payable >= Decimal("200000.00") else "N"
+                ben_code = f"CNT-{c.contractor_code}"[:15]
+                acc_no = (c.bank_account_number or "000000000000").strip()
+                amt = f"{float(p.net_payable):.2f}"
+                name = c.name.strip().upper()
+                ref_no = p.payment_number[:20]
+                narration = f"Inv {p.invoice_number} TDS u/s {p.tds_section}"[:30]
+                email = (c.email or "").strip()
+                ifsc = (c.bank_ifsc_code or "HDFC0000001").strip().upper()
+                rows.append(f'"{txn_type}","{ben_code}","{acc_no}",{amt},"{name}","","{ref_no}","{narration}","","","","{email}","{ifsc}"')
+            return "\n".join(rows) + "\n"
+
+
 

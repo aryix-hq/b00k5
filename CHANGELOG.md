@@ -40,6 +40,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `FEAT-BANK-04` to `FEAT-BANK-05`: Dynamic Regex Banking Rules and Interactive Split-Match Workbench.
   - `FEAT-AUDIT-01`: MCA Rule 3(1) Companies (Accounts) Rules universal tamper-proof audit trail table with database triggers.
   - `FEAT-GST-01` to `FEAT-GST-02`: GSTR-1 Portal JSON Export and Rule 37 180-day ITC Reversal Watchdog.
+- **FEAT-BANK-04 Corporate Bank CMS Batch Payout Rails (HDFC ENet, ICICI CMS, SBI CMP)**:
+  - Built offline corporate netbanking batch file generator in `apps/api/app/services/payroll_service.py` supporting `hdfc_enet`, `icici_cms`, and `sbi_cmp` formats for both monthly salaried runs and approved contractor payout claims.
+  - Added REST endpoints `GET /api/v1/payroll/runs/{id}/export/bank-cms` and `GET /api/v1/payroll/contractor-payments/export/bank-cms`.
+  - Added single-click export triggers across Tab 1 (Run Payroll), Tab 3 (Statutory Filings), and Tab 5 (Contractors & Freelancers) in `apps/web/src/app/payroll/page.tsx`.
+  - Added automated test suite `apps/api/tests/test_bank_cms_exporter.py` verifying all 3 bank formats.
+- **FEAT-GST-01 Official GSTR-1 Portal-Ready JSON Exporter (Offline Utility)**:
+  - Implemented official GSTN offline utility JSON synthesizer in `apps/api/app/services/gstr1_export_service.py` producing schema-compliant payloads covering B2B (Table 4), B2CL (Table 5), B2CS (Table 7), CDNR (Table 9B), EXP (Table 6A), HSN Summary (Table 12), and Document Issue (Table 13).
+  - Added REST endpoint `GET /api/v1/invoices/export/gstr-1` in `apps/api/app/api/v1/invoices.py`.
+  - Added GSTR-1 Export Modal and header action trigger in `apps/web/src/app/invoices/page.tsx` with Year and Month selectors for direct upload to `gst.gov.in`.
+  - Added automated test suite `apps/api/tests/test_gstr1_json_exporter.py`.
+- **Architectural Research Specifications (Options B & C)**:
+  - Authored [`docs/RESEARCH_OPTION_B_AUDIT_TRAIL_AND_BACKUP.md`](file:///Users/adithya/Code/b00k5/docs/RESEARCH_OPTION_B_AUDIT_TRAIL_AND_BACKUP.md) covering MCA Rule 3(1) Companies (Accounts) Rules 2014 immutable audit trail triggers, REVOKE policies, and AES-256 local encrypted backup/restore specs (`FEAT-AUDIT-01`, `FEAT-SYS-02`).
+  - Authored [`docs/RESEARCH_OPTION_C_SUPPLY_CHAIN_AND_INVENTORY.md`](file:///Users/adithya/Code/b00k5/docs/RESEARCH_OPTION_C_SUPPLY_CHAIN_AND_INVENTORY.md) covering Supply Chain 3-Way PO Matching (PO $\rightarrow$ GRN $\rightarrow$ Bill), Ind AS 2 / ICDS II perpetual FIFO inventory, landed cost allocation, and CGST Section 17(5)(h) ITC write-off rules (`FEAT-SC-01`, `FEAT-INV-05`).
 
 ### Changed
 - Removed 'Sovereign' badge pill from `Sidebar.tsx` navigation across Owner, CA Auditor, Super Admin, and Employee modes.

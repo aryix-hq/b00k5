@@ -54,6 +54,10 @@ backups/
 *.tar.gz
 *.sql.gz
 *.dump
+*_Statutory_Archive/
+
+# IDE
+.vscode/
 
 #anti
 .agents/*

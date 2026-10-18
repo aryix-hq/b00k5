@@ -405,6 +405,41 @@ class ScheduleIIIService:
         prior_aoc4_payload = prior_sync.get("aoc4_payload") or {}
         prior_mgt7_payload = prior_sync.get("mgt7_payload") or {}
 
+        # Prior comparative figures from vault anchor
+        prior_share_capital = Decimal(str(prior_aoc4_payload.get("2010") or prior_mgt7_payload.get("paid_up_capital_inr") or "0.00"))
+        prior_reserves_and_surplus = Decimal(str(prior_aoc4_payload.get("2020") or "0.00"))
+        prior_long_term_borrowings = Decimal(str(prior_aoc4_payload.get("2030") or "0.00"))
+        prior_short_term_borrowings = Decimal(str(prior_aoc4_payload.get("2035") or "0.00"))
+        prior_trade_payables = Decimal(str(prior_aoc4_payload.get("2040") or "0.00"))
+        prior_other_current_liabilities = Decimal(str(prior_aoc4_payload.get("2050") or "0.00"))
+        prior_short_term_provisions = Decimal(str(prior_aoc4_payload.get("2060") or "0.00"))
+
+        prior_net_ppe = Decimal(str(prior_aoc4_payload.get("1050") or "0.00"))
+        prior_ppe_gross = prior_net_ppe
+        prior_ppe_deprec = Decimal("0.00")
+        prior_trade_receivables = Decimal(str(prior_aoc4_payload.get("1020") or "0.00"))
+        prior_cash_and_bank = Decimal(str(prior_aoc4_payload.get("1010") or "0.00"))
+        prior_loans_and_advances = Decimal(str(prior_aoc4_payload.get("1040") or "0.00"))
+        prior_other_current_assets = Decimal(str(prior_aoc4_payload.get("1030") or "0.00"))
+
+        prior_revenue_operations = Decimal(str(prior_aoc4_payload.get("3010") or "0.00"))
+        prior_other_income = Decimal(str(prior_aoc4_payload.get("3020") or "0.00"))
+        prior_employee_benefits = Decimal(str(prior_aoc4_payload.get("4010") or "0.00"))
+        prior_finance_costs = Decimal(str(prior_aoc4_payload.get("4020") or "0.00"))
+        prior_depreciation_exp = Decimal(str(prior_aoc4_payload.get("4030") or "0.00"))
+        prior_other_expenses = Decimal(str(prior_aoc4_payload.get("4040") or "0.00"))
+        prior_profit = Decimal(str(prior_aoc4_payload.get("5020") or prior_aoc4_payload.get("2020") or "0.00"))
+
+        prior_total_rev = prior_revenue_operations + prior_other_income
+        prior_total_exp = prior_employee_benefits + prior_finance_costs + prior_depreciation_exp + prior_other_expenses
+        prior_shareholders_funds = prior_share_capital + prior_reserves_and_surplus
+        prior_non_current_liab = prior_long_term_borrowings
+        prior_current_liab = prior_short_term_borrowings + prior_trade_payables + prior_other_current_liabilities + prior_short_term_provisions
+        prior_total_equity_liab = prior_shareholders_funds + prior_non_current_liab + prior_current_liab
+        prior_total_non_current_assets = prior_net_ppe + prior_loans_and_advances
+        prior_total_current_assets = prior_trade_receivables + prior_cash_and_bank + prior_other_current_assets
+        prior_total_assets = prior_total_non_current_assets + prior_total_current_assets
+
         live_total_equity = (
             share_capital + reserves_and_surplus + long_term_borrowings +
             short_term_borrowings + trade_payables + other_current_liabilities + short_term_provisions
@@ -459,8 +494,22 @@ class ScheduleIIIService:
                 "promoter_shareholding": tenant.statutory_profile.get("shareholding_pattern") or []
             }
 
-        # Subscribed capital statutory fallback if live ledger has 0 capital entry
-        if share_capital == 0 and mgt7_active and mgt7_active.get("paid_up_capital_inr"):
+        # Subscribed capital & permanent balance sheet roll-forward from prior statutory return
+        if not is_current_from_vault and (prior_aoc4_payload or prior_mgt7_payload):
+            if share_capital == 0:
+                share_capital = prior_share_capital or Decimal(str(mgt7_active.get("paid_up_capital_inr", 100000.0)))
+                # Balance sheet accounts are permanent: roll forward opening deficit & borrowings
+                reserves_and_surplus += prior_reserves_and_surplus
+                long_term_borrowings += prior_long_term_borrowings
+                short_term_borrowings += prior_short_term_borrowings
+                trade_payables += prior_trade_payables
+                short_term_provisions += prior_short_term_provisions
+                net_ppe += prior_net_ppe
+                loans_and_advances += prior_loans_and_advances
+                trade_receivables += prior_trade_receivables
+                cash_and_bank += prior_cash_and_bank
+                other_current_assets += prior_other_current_assets
+        elif share_capital == 0 and mgt7_active and mgt7_active.get("paid_up_capital_inr"):
             share_capital = Decimal(str(mgt7_active.get("paid_up_capital_inr", 100000.0)))
 
         total_shareholders_funds = share_capital + reserves_and_surplus
@@ -471,41 +520,6 @@ class ScheduleIIIService:
         total_non_current_assets = net_ppe + loans_and_advances
         total_current_assets = trade_receivables + cash_and_bank + other_current_assets
         total_assets = total_non_current_assets + total_current_assets
-
-        # 6. Prior comparative figures from vault anchor
-        prior_share_capital = Decimal(str(prior_aoc4_payload.get("2010") or prior_mgt7_payload.get("paid_up_capital_inr") or "0.00"))
-        prior_reserves_and_surplus = Decimal(str(prior_aoc4_payload.get("2020") or "0.00"))
-        prior_long_term_borrowings = Decimal(str(prior_aoc4_payload.get("2030") or "0.00"))
-        prior_short_term_borrowings = Decimal(str(prior_aoc4_payload.get("2035") or "0.00"))
-        prior_trade_payables = Decimal(str(prior_aoc4_payload.get("2040") or "0.00"))
-        prior_other_current_liabilities = Decimal(str(prior_aoc4_payload.get("2050") or "0.00"))
-        prior_short_term_provisions = Decimal(str(prior_aoc4_payload.get("2060") or "0.00"))
-
-        prior_net_ppe = Decimal(str(prior_aoc4_payload.get("1050") or "0.00"))
-        prior_ppe_gross = prior_net_ppe
-        prior_ppe_deprec = Decimal("0.00")
-        prior_trade_receivables = Decimal(str(prior_aoc4_payload.get("1020") or "0.00"))
-        prior_cash_and_bank = Decimal(str(prior_aoc4_payload.get("1010") or "0.00"))
-        prior_loans_and_advances = Decimal(str(prior_aoc4_payload.get("1040") or "0.00"))
-        prior_other_current_assets = Decimal(str(prior_aoc4_payload.get("1030") or "0.00"))
-
-        prior_revenue_operations = Decimal(str(prior_aoc4_payload.get("3010") or "0.00"))
-        prior_other_income = Decimal(str(prior_aoc4_payload.get("3020") or "0.00"))
-        prior_employee_benefits = Decimal(str(prior_aoc4_payload.get("4010") or "0.00"))
-        prior_finance_costs = Decimal(str(prior_aoc4_payload.get("4020") or "0.00"))
-        prior_depreciation_exp = Decimal(str(prior_aoc4_payload.get("4030") or "0.00"))
-        prior_other_expenses = Decimal(str(prior_aoc4_payload.get("4040") or "0.00"))
-        prior_profit = Decimal(str(prior_aoc4_payload.get("5020") or prior_aoc4_payload.get("2020") or "0.00"))
-
-        prior_total_rev = prior_revenue_operations + prior_other_income
-        prior_total_exp = prior_employee_benefits + prior_finance_costs + prior_depreciation_exp + prior_other_expenses
-        prior_shareholders_funds = prior_share_capital + prior_reserves_and_surplus
-        prior_non_current_liab = prior_long_term_borrowings
-        prior_current_liab = prior_short_term_borrowings + prior_trade_payables + prior_other_current_liabilities + prior_short_term_provisions
-        prior_total_equity_liab = prior_shareholders_funds + prior_non_current_liab + prior_current_liab
-        prior_total_non_current_assets = prior_net_ppe + prior_loans_and_advances
-        prior_total_current_assets = prior_trade_receivables + prior_cash_and_bank + prior_other_current_assets
-        prior_total_assets = prior_total_non_current_assets + prior_total_current_assets
 
         # 7. Disclosures
         dir_name = sig["director_name"]
@@ -918,7 +932,7 @@ class ScheduleIIIService:
             },
             "note_3": {
                 "title": "Reserves and Surplus",
-                "surplus_opening": 0.0,
+                "surplus_opening": float(comp["prior_reserves_and_surplus"]),
                 "profit_loss_for_period": float(comp["current_period_profit"]),
                 "previous_profit_loss": float(comp["prior_profit"]),
                 "current_total": float(comp["reserves_and_surplus"]),
@@ -1263,6 +1277,10 @@ class ScheduleIIIService:
         mr = pw - 44
         content_w = mr - ml
 
+        col_note_x = ml + 265
+        col_cur_x = mr - 105
+        col_prev_x = mr - 6
+
         unit_label = get_unit_label(unit)
         def fmt(val: Any) -> str:
             return format_statutory_amount(val, unit=unit)
@@ -1331,11 +1349,11 @@ class ScheduleIIIService:
             c.setFillColor(c_dark)
             c.drawString(ml + 6, cy, label)
             if note:
-                c.drawString(ml + 290, cy, str(note))
+                c.drawString(col_note_x, cy, str(note))
             if val_str:
-                c.drawRightString(mr - 105, cy, val_str)
+                c.drawRightString(col_cur_x, cy, val_str)
             if val_prior_str:
-                c.drawRightString(mr - 6, cy, val_prior_str)
+                c.drawRightString(col_prev_x, cy, val_prior_str)
             cy -= 8
             c.line(ml, cy, mr, cy)
             if double_bottom:
@@ -1386,16 +1404,21 @@ class ScheduleIIIService:
         cy -= 8
 
         # Table Header
+        header_h = 24
         c.setStrokeColor(c_border)
         c.setLineWidth(1)
-        c.rect(ml, cy - 16, content_w, 16, fill=0)
-        c.setFont(font_bold, 8.5)
+        c.rect(ml, cy - header_h, content_w, header_h, fill=0)
+        c.setFont(font_bold, 8)
         c.setFillColor(c_dark)
-        c.drawString(ml + 6, cy - 12, "Particulars")
-        c.drawString(ml + 290, cy - 12, "Note No.")
-        c.drawRightString(mr - 105, cy - 12, f"As at {as_of_date.strftime('%d-%b-%Y')}")
-        c.drawRightString(mr - 6, cy - 12, f"As at 31-Mar-{prior_end_yr}")
-        cy -= 30
+        c.drawString(ml + 6, cy - 15, "Particulars")
+        c.drawString(col_note_x, cy - 15, "Note No.")
+
+        c.drawRightString(col_cur_x, cy - 10, "Figures as at")
+        c.drawRightString(col_cur_x, cy - 20, as_of_date.strftime('%d-%b-%Y'))
+
+        c.drawRightString(col_prev_x, cy - 10, "Figures as at")
+        c.drawRightString(col_prev_x, cy - 20, f"31-Mar-{prior_end_yr}")
+        cy -= (header_h + 14)
 
         def draw_bs_row(label: str, note: str, val_str: str, val_prior_str: str = "", is_head: bool = False, indent: int = 0):
             nonlocal cy
@@ -1408,13 +1431,13 @@ class ScheduleIIIService:
             c.drawString(ml + 6 + indent, cy, label)
             if note:
                 c.setFont(font_norm, 8)
-                c.drawString(ml + 290, cy, str(note))
+                c.drawString(col_note_x, cy, str(note))
             if val_str:
                 c.setFont(font_bold if is_head else font_norm, 8)
-                c.drawRightString(mr - 105, cy, val_str)
+                c.drawRightString(col_cur_x, cy, val_str)
             if val_prior_str:
                 c.setFont(font_bold if is_head else font_norm, 8)
-                c.drawRightString(mr - 6, cy, val_prior_str)
+                c.drawRightString(col_prev_x, cy, val_prior_str)
             cy -= 13
 
         # Equity and Liabilities
@@ -1492,15 +1515,24 @@ class ScheduleIIIService:
         c.drawRightString(mr, cy, unit_label)
         cy -= 8
 
+        # Table Header
+        header_h = 24
         c.setStrokeColor(c_border)
-        c.rect(ml, cy - 16, content_w, 16, fill=0)
-        c.setFont(font_bold, 8.5)
+        c.setLineWidth(1)
+        c.rect(ml, cy - header_h, content_w, header_h, fill=0)
+        c.setFont(font_bold, 8)
         c.setFillColor(c_dark)
-        c.drawString(ml + 6, cy - 12, "Particulars")
-        c.drawString(ml + 290, cy - 12, "Note No.")
-        c.drawRightString(mr - 105, cy - 12, pnl_col_header)
-        c.drawRightString(mr - 6, cy - 12, f"For year ended 31-Mar-{prior_end_yr}")
-        cy -= 30
+        c.drawString(ml + 6, cy - 15, "Particulars")
+        c.drawString(col_note_x, cy - 15, "Note No.")
+
+        cur_pnl_title = "For period ended" if is_provisional else "For year ended"
+        cur_pnl_sub = as_of_date.strftime('%d-%b-%Y')
+        c.drawRightString(col_cur_x, cy - 10, cur_pnl_title)
+        c.drawRightString(col_cur_x, cy - 20, cur_pnl_sub)
+
+        c.drawRightString(col_prev_x, cy - 10, "For year ended")
+        c.drawRightString(col_prev_x, cy - 20, f"31-Mar-{prior_end_yr}")
+        cy -= (header_h + 14)
 
         draw_bs_row("REVENUE", "", "", "", is_head=True)
         draw_bs_row("Revenue from Operations", "16", fmt(revenue_operations), fmt(prior_revenue_operations), indent=10)
@@ -1574,13 +1606,17 @@ class ScheduleIIIService:
         c.drawRightString(mr, cy, "Amount in Rs.")
         cy -= 12
 
+        header_h = 24
         c.setStrokeColor(c_border)
-        c.rect(ml, cy - 14, content_w, 14, fill=0)
+        c.setLineWidth(1)
+        c.rect(ml, cy - header_h, content_w, header_h, fill=0)
         c.setFont(font_bold, 8)
-        c.drawString(ml + 6, cy - 10, "Particulars")
-        c.drawRightString(mr - 105, cy - 10, f"As at {as_of_date.strftime('%d-%b-%Y')}")
-        c.drawRightString(mr - 6, cy - 10, f"As at 31-Mar-{prior_end_yr}")
-        cy -= 28
+        c.drawString(ml + 6, cy - 15, "Particulars")
+        c.drawRightString(col_cur_x, cy - 10, "Figures as at")
+        c.drawRightString(col_cur_x, cy - 20, as_of_date.strftime('%d-%b-%Y'))
+        c.drawRightString(col_prev_x, cy - 10, "Figures as at")
+        c.drawRightString(col_prev_x, cy - 20, f"31-Mar-{prior_end_yr}")
+        cy -= (header_h + 14)
 
         c.setFont(font_bold, 8)
         c.drawString(ml + 6, cy, "Authorised Capital")
@@ -1680,7 +1716,7 @@ class ScheduleIIIService:
         draw_note_header("Note - 3: RESERVES & SURPLUS")
         c.setFont(font_norm, 8)
         c.drawString(ml + 8, cy, "Opening Balance in P & L account")
-        c.drawRightString(mr - 6, cy, "-")
+        c.drawRightString(mr - 6, cy, fmt(prior_reserves_and_surplus) if prior_reserves_and_surplus != 0 else "-")
         cy -= 12
         c.drawString(ml + 8, cy, "Add: Net Profit / (Loss) for the year")
         c.drawRightString(mr - 6, cy, fmt(current_period_profit))

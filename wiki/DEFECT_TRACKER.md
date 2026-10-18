@@ -41,6 +41,7 @@ This document tracks all identified software defects, statutory compliance anoma
 | **DEF-20** | `iam` | Duplicate Navigation Links for IAM | 🟡 Medium | **FIXED** | Both `/iam` and `/settings/team` appeared in navigation. Consolidated into `/iam` with Target Organization Scope Badge. | `tests/e2e/test_selenium_aryix_branding_and_about.py` |
 | **DEF-21** | `branding` | Non-Compliant Brand Name Suffix & Watermarks | 🟠 High | **FIXED** | UI used `Aryix (OPC) Pvt Ltd` and risked invoice watermarks. Enforced clean **ARYIX** brand, link to `https://www.aryix.co.in/`, and strict Statutory Document Neutrality. | `tests/e2e/test_selenium_aryix_branding_and_about.py` |
 | **DEF-22** | `ci/cd` | Breaking Gitleaks-Action v2 License Requirement | 🔴 Critical | **FIXED** | `gitleaks/gitleaks-action@v2` introduced a breaking license paywall failing CI. Remediated by installing official open-source Gitleaks binary directly and coupling with `scripts/scan_secrets_and_pii.sh`. | `.github/workflows/ci.yml` |
+| **DEF-23** | `export` | Schedule III PDF Export Header Overlap & Balance Sheet Roll-Forward Imbalance | 🔴 Critical | **FIXED** | Single-line PDF table header in `_render_schedule_iii_pdf` overlapped `"Note No."` and `"For period ended"`. Converted to structured 2-line header. Live ledger lacked roll-forward of prior year AOC-4 balance sheet anchors (deficit & director loan), creating ₹1,00,000 artificial imbalance. Implemented automatic permanent account roll-forward restoring zero mathematical drift. | `verify_balance_sheet_and_pdf.py` |
 
 ---
 

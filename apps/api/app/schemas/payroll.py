@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, EmailStr
+from pydantic import BaseModel, Field, EmailStr, ConfigDict
 from typing import Optional, List
 from datetime import date, datetime
 from decimal import Decimal
@@ -20,7 +20,7 @@ class SalaryStructureBase(BaseModel):
 
 
 class SalaryStructureCreate(SalaryStructureBase):
-    pass
+    employee_id: Optional[uuid.UUID] = None
 
 
 class SalaryStructureResponse(SalaryStructureBase):
@@ -31,8 +31,7 @@ class SalaryStructureResponse(SalaryStructureBase):
     is_active: bool
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class EmployeeBase(BaseModel):
@@ -94,8 +93,7 @@ class EmployeeResponse(EmployeeBase):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class PayslipResponse(BaseModel):
@@ -136,8 +134,7 @@ class PayslipResponse(BaseModel):
     pdf_vault_path: Optional[str] = None
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class PayrollRunCreate(BaseModel):
@@ -168,8 +165,7 @@ class PayrollRunResponse(BaseModel):
     sha256_audit_hash: Optional[str] = None
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class PayrollRunDetailResponse(PayrollRunResponse):
@@ -209,5 +205,5 @@ class EmployeeTaxDeclarationResponse(EmployeeTaxDeclarationBase):
     verified_at: Optional[datetime] = None
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
+

@@ -137,6 +137,8 @@ async def create_employee(
         db.add(struct)
         await db.flush()
 
+    await db.commit()
+
     # Re-fetch with salary structures loaded
     emp_reload = (await db.execute(
         select(Employee).options(selectinload(Employee.salary_structures)).where(Employee.id == emp.id)
@@ -189,11 +191,23 @@ async def update_employee(
     for k, v in payload.dict(exclude_unset=True).items():
         setattr(emp, k, v)
 
-    await db.flush()
+    await db.commit()
     return emp
 
 
-@router.post("/employees/{employee_id}/salary-structure", response_model=SalaryStructureResponse)
+@router.post("/salary-structures", response_model=SalaryStructureResponse, status_code=status.HTTP_201_CREATED)
+async def create_salary_structure(
+    payload: SalaryStructureCreate,
+    ctx: IAMContext = Depends(require_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Assign salary structure to an employee via top-level endpoint."""
+    if not payload.employee_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="employee_id is required in payload.")
+    return await add_salary_structure(payload.employee_id, payload, ctx, db)
+
+
+@router.post("/employees/{employee_id}/salary-structure", response_model=SalaryStructureResponse, status_code=status.HTTP_201_CREATED)
 async def add_salary_structure(
     employee_id: uuid.UUID,
     payload: SalaryStructureCreate,
@@ -240,7 +254,7 @@ async def add_salary_structure(
         is_active=True
     )
     db.add(new_struct)
-    await db.flush()
+    await db.commit()
     return new_struct
 
 
@@ -306,6 +320,7 @@ async def initialize_payroll_run(
 
     # Automatically trigger initial calculation
     run = await PayrollService.calculate_payroll_run(db, run.id)
+    await db.commit()
     return run
 
 
@@ -339,6 +354,7 @@ async def recalculate_payroll_run(
     """Recalculate attendance, gross earnings, withholdings, and net salary for a draft payroll run."""
     try:
         run = await PayrollService.calculate_payroll_run(db, run_id)
+        await db.commit()
         # Reload with payslips
         stmt = select(PayrollRun).options(selectinload(PayrollRun.payslips)).where(PayrollRun.id == run.id)
         return (await db.execute(stmt)).scalar_one()
@@ -358,12 +374,17 @@ async def lock_and_post_accrual(
     """
     try:
         entry = await PayrollService.post_accrual_journal(db, run_id, created_by_user_id=ctx.user.id)
+        await db.commit()
+        # Fetch updated run
+        run_stmt = select(PayrollRun).where(PayrollRun.id == run_id)
+        updated_run = (await db.execute(run_stmt)).scalar_one()
         return {
-            "status": "success",
+            "status": updated_run.status,
             "message": "Payroll accrual voucher posted successfully and run locked.",
-            "journal_entry_id": entry.id,
+            "accrual_journal_id": entry.id,
             "entry_number": entry.entry_number,
-            "entry_date": entry.entry_date
+            "entry_date": entry.entry_date,
+            "sha256_audit_hash": updated_run.sha256_audit_hash
         }
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
@@ -393,10 +414,14 @@ async def post_disbursement(
             disbursement_date=disbursement_date,
             created_by_user_id=ctx.user.id
         )
+        await db.commit()
+        # Fetch updated run
+        run_stmt = select(PayrollRun).where(PayrollRun.id == run_id)
+        updated_run = (await db.execute(run_stmt)).scalar_one()
         return {
-            "status": "success",
+            "status": updated_run.status,
             "message": "Salary disbursement voucher posted successfully.",
-            "journal_entry_id": entry.id,
+            "disbursement_journal_id": entry.id,
             "entry_number": entry.entry_number,
             "entry_date": entry.entry_date
         }
@@ -407,6 +432,22 @@ async def post_disbursement(
 # ============================================================================
 # 3. PAYSLIPS & TAX DECLARATIONS
 # ============================================================================
+
+@router.get("/runs/{run_id}/payslips", response_model=List[PayslipResponse])
+async def list_payslips_for_run(
+    run_id: uuid.UUID,
+    ctx: IAMContext = Depends(require_ca_or_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Retrieve all itemized payslips for a specific payroll run."""
+    stmt = select(Payslip).where(
+        and_(
+            Payslip.payroll_run_id == run_id,
+            Payslip.tenant_id == ctx.tenant.id
+        )
+    ).order_by(Payslip.payslip_number.asc())
+    return (await db.execute(stmt)).scalars().all()
+
 
 @router.get("/payslips/{payslip_id}", response_model=PayslipResponse)
 async def get_payslip(
@@ -485,5 +526,6 @@ async def submit_tax_declaration(
     decl.verified_by = ctx.user.id
     decl.verified_at = datetime.utcnow()
 
-    await db.flush()
+    await db.commit()
     return decl
+

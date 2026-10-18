@@ -688,3 +688,4 @@ class PayrollService:
 
         await session.flush()
         return entry
+

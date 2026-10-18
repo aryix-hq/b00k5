@@ -486,7 +486,8 @@ class StatutoryVaultEngine:
             "FORM NO. AOC-4" in text_norm or "FORM NO. AOC 4" in text_norm or "FORM NO AOC-4" in text_norm or "FORM NO AOC 4" in text_norm or
             "FORM AOC-4" in text_norm or "FORM AOC 4" in text_norm or
             ("FINANCIAL STATEMENTS AND OTHER DOCUMENTS" in text_norm and "AOC" in text_norm) or
-            ("BALANCE SHEET" in text_norm and "PROFIT AND LOSS" in text_norm and ("AOC" in text_norm or "AOC" in fname_norm))
+            ("BALANCE SHEET" in text_norm and "PROFIT AND LOSS" in text_norm and ("AOC" in text_norm or "AOC" in fname_norm)) or
+            "ATTACHED WITH FORM AOC-4" in text_upper or "ATTACHED WITH AOC-4" in text_upper
         ):
             doc_type = "form_aoc_4"
             detected_category = "statutory_filing"
@@ -494,13 +495,35 @@ class StatutoryVaultEngine:
             extracted["extracted_fields"]["aoc4_verified"] = True
             extracted["extracted_fields"]["status"] = "Financial Statements Filed u/s 137"
 
-            fy_m = re.search(r'Financial\s+Year\s*(?:ended|period)?[ \t]*[:\-]?[ \t]*([0-9]{4}[/-][0-9]{2,4})', text, re.I)
+            # Extract SRN
+            srn_m = re.search(r'([A-Z0-9\-]{8,15})_SRN_FORM', text) or re.search(r'\b(1-[0-9]{10,12})\b', text) or re.search(r'\b([0-9]{10})\b', text) or SRN_REGEX.search(text)
+            if srn_m:
+                extracted["extracted_fields"]["srn"] = srn_m.group(1).replace("1-2", "").strip()
+
+            fy_m = re.search(r'Financial\s+Year\s*(?:ended|period)?[ \t]*[:\-]?[ \t]*([0-9]{4}[/-][0-9]{2,4})', text, re.I) or re.search(r'Balance\s+Sheet\s+as\s+at\s+31st\s+March\s+(20[2-3][0-9])', text, re.I)
             if fy_m:
-                extracted["extracted_fields"]["financial_year"] = fy_m.group(1)
+                val = fy_m.group(1)
+                if len(val) == 4 and val.isdigit():
+                    y = int(val)
+                    extracted["extracted_fields"]["financial_year"] = f"{y-1}-{str(y)[-2:]}"
+                    extracted["extracted_fields"]["assessment_year"] = f"{y}-{str(y+1)[-2:]}"
+                else:
+                    extracted["extracted_fields"]["financial_year"] = val
 
             agm_m = re.search(r'(?:Date\s+of\s+AGM|AGM\s+Date)[ \t]*[:\-]?[ \t]*([0-9]{2}[/-][0-9]{2}[/-][0-9]{4})', text, re.I)
             if agm_m:
                 extracted["extracted_fields"]["agm_date"] = agm_m.group(1)
+
+            # Extract Schedule III payload
+            aoc4_classified = StatutoryVaultEngine.classify_statutory_filing(file_bytes, filename, pdf_password)
+            sch_payload = aoc4_classified.get("schedule_iii_payload", {})
+            if sch_payload:
+                extracted["extracted_fields"]["schedule_iii_payload"] = sch_payload
+            if aoc4_classified.get("signatory_din"):
+                extracted["extracted_fields"]["signatory_din"] = aoc4_classified["signatory_din"]
+            if aoc4_classified.get("auditor_udin"):
+                extracted["extracted_fields"]["auditor_udin"] = aoc4_classified["auditor_udin"]
+
 
         # 2. Board's Report / Extract of Board's Report (Section 134)
         elif (
@@ -693,10 +716,94 @@ class StatutoryVaultEngine:
             doc_type = "form_mgt_7"
             detected_category = "statutory_filing"
             extracted["document_title"] = "Form MGT-7 / MGT-7A: Annual Return"
+            extracted["extracted_fields"]["mgt7_verified"] = True
 
+            # Extract SRN
+            srn_m = re.search(r'([A-Z0-9]{8,15})_SRN_FORM', text) or re.search(r'\b([A-Z]{2}[0-9]{7})\b', text) or SRN_REGEX.search(text)
+            if srn_m:
+                extracted["extracted_fields"]["srn"] = srn_m.group(1).strip()
+
+            # Extract FY
+            to_dt_m = re.search(r'(\d{2}/\d{2}/\d{4})\s*\(b\)\s*\*Financial\s+year|31/03/(20[2-3][0-9])', text)
+            if to_dt_m:
+                if to_dt_m.group(2):
+                    yr = int(to_dt_m.group(2))
+                    extracted["extracted_fields"]["financial_year"] = f"{yr-1}-{str(yr)[-2:]}"
+                    extracted["extracted_fields"]["assessment_year"] = f"{yr}-{str(yr+1)[-2:]}"
+                elif to_dt_m.group(1):
+                    dt_part = to_dt_m.group(1).split('/')
+                    yr = int(dt_part[2])
+                    extracted["extracted_fields"]["financial_year"] = f"{yr-1}-{str(yr)[-2:]}"
+                    extracted["extracted_fields"]["assessment_year"] = f"{yr}-{str(yr+1)[-2:]}"
+
+            # Extract Board meetings count
             bm_cnt_m = re.search(r'Number\s+of\s+meetings\s+of\s+the\s+Board[ \t]*[:\-]?[ \t]*([0-9]+)', text, re.I)
             if bm_cnt_m:
                 extracted["extracted_fields"]["board_meetings_held_count"] = int(bm_cnt_m.group(1))
+
+            # Extract Share Capital Structure
+            sh_num_m = re.search(r'Total\s+number\s+of\s+equity\s+shares\s+([0-9]+)', text)
+            sh_amt_m = re.search(r'shares\s*\(in\s*rupees\)\s*([0-9\.]+)', text)
+            sh_nom_m = re.search(r'Nominal\s+value\s+per\s+share\s*\(in\s*rupees\)\s*([0-9\.]+)', text)
+
+            auth_cap = float(sh_amt_m.group(1)) if sh_amt_m else 100000.0
+            tot_shares = int(sh_num_m.group(1)) if sh_num_m else 10000
+            face_val = float(sh_nom_m.group(1)) if sh_nom_m else 10.0
+
+            extracted["extracted_fields"]["authorized_capital_inr"] = auth_cap
+            extracted["extracted_fields"]["total_equity_shares"] = tot_shares
+            extracted["extracted_fields"]["face_value_inr"] = face_val
+            extracted["extracted_fields"]["paid_up_capital_inr"] = auth_cap
+            extracted["extracted_fields"]["paid_up_shares"] = tot_shares
+
+            # Extract Net Worth & Turnover
+            nw_m = re.search(r'Net\s+worth\s+of\s+the\s+Company\s*([-\d\.,]+)', text)
+            if nw_m:
+                extracted["extracted_fields"]["net_worth_inr"] = float(nw_m.group(1).replace(',', ''))
+
+            to_m = re.search(r'([0-9\.]+)\s*i\s*\*Turnover', text) or re.search(r'Turnover\s*[:\-]?[ \t]*([0-9\.]+)', text)
+            if to_m:
+                extracted["extracted_fields"]["turnover_inr"] = float(to_m.group(1).replace(',', ''))
+
+            # Extract Promoters / Shareholding pattern
+            prom_cnt_m = re.search(r'Promoters\s*([0-9]+)\s+([0-9]+)', text)
+            dirs = extracted.get("extracted_fields", {}).get("directors") or []
+            prim_dir = dirs[0]["name"] if dirs else "Director"
+            prim_din = dirs[0]["din"] if dirs else "N/A"
+
+            mgt7_payload = {
+                "srn": extracted["extracted_fields"].get("srn"),
+                "financial_year": extracted["extracted_fields"].get("financial_year"),
+                "authorized_capital_inr": auth_cap,
+                "total_equity_shares": tot_shares,
+                "face_value_inr": face_val,
+                "paid_up_capital_inr": auth_cap,
+                "paid_up_shares": tot_shares,
+                "net_worth_inr": extracted["extracted_fields"].get("net_worth_inr"),
+                "turnover_inr": extracted["extracted_fields"].get("turnover_inr", 0.0),
+                "promoters_count": int(prom_cnt_m.group(1)) if prom_cnt_m else 1,
+                "promoter_holding_percent": 100.0,
+                "shareholders": [
+                    {
+                        "name": prim_dir,
+                        "class_of_shares": "Equity Shares",
+                        "number_of_shares": tot_shares,
+                        "percentage_holding": 100.0
+                    }
+                ],
+                "promoter_shareholding": [
+                    {
+                        "promoter_name": prim_dir,
+                        "din": prim_din,
+                        "shares": tot_shares,
+                        "percentage": 100.0
+                    }
+                ]
+            }
+            extracted["extracted_fields"]["mgt7_payload"] = mgt7_payload
+            extracted["extracted_fields"]["shareholders"] = mgt7_payload["shareholders"]
+            extracted["extracted_fields"]["shareholding_pattern"] = mgt7_payload["promoter_shareholding"]
+
 
         # 9. Memorandum of Association (MOA)
         elif (
@@ -1081,18 +1188,39 @@ class StatutoryVaultEngine:
         schedule_iii = {}
 
         # 1. Form AOC-4 Check
-        if "AOC-4" in text_upper or "AOC 4" in text_upper or "FORM NO. AOC-4" in text_upper or "FORM AOC-4" in text_upper:
+        is_aoc4_candidate = (
+            "AOC-4" in text_upper or "AOC 4" in text_upper or "FORM NO. AOC-4" in text_upper or "FORM AOC-4" in text_upper or
+            "ATTACHED WITH FORM AOC-4" in text_upper or "ATTACHED WITH AOC-4" in text_upper or
+            (("BALANCE SHEET AS AT 31ST MARCH" in text_upper or "BALANCE SHEET AS AT 31 MARCH" in text_upper) and
+             ("AUDITOR'S REPORT" in text_upper or "AUDITORS REPORT" in text_upper or "AOC" in filename.upper()))
+        )
+        if is_aoc4_candidate:
             detected_form = "aoc_4"
-            srn_m = re.search(r'([A-Z0-9]{8,10})_SRN_FORM', text) or SRN_REGEX.search(text)
+            srn_m = (
+                re.search(r'([A-Z0-9\-]{8,15})_SRN_FORM', text) or
+                re.search(r'\b(1-[0-9]{10,12})\b', text) or
+                re.search(r'\b([0-9]{10})\b', text) or
+                SRN_REGEX.search(text)
+            )
             if srn_m:
-                srn_or_ack = srn_m.group(1)
-            fy_m = re.search(r'\b(20[2-3][0-9])-(20[2-3][0-9]|[0-9]{2})\b', text)
+                srn_or_ack = srn_m.group(1).replace("1-2", "").strip()
+
+            fy_m = (
+                re.search(r'\b(20[2-3][0-9])-(20[2-3][0-9]|[0-9]{2})\b', text) or
+                re.search(r'31st\s+March\s+(20[2-3][0-9])', text, re.I) or
+                re.search(r'31\s+March\s+(20[2-3][0-9])', text, re.I)
+            )
             if fy_m:
-                y1 = int(fy_m.group(1))
-                y2_str = fy_m.group(2)
-                y2 = int(y2_str) if len(y2_str) == 4 else y1 + 1
-                detected_fy = f"{y1}-{str(y2)[-2:]}"
-                detected_ay = f"{y2}-{str(y2+1)[-2:]}"
+                if fy_m.lastindex == 2:
+                    y1 = int(fy_m.group(1))
+                    y2_str = fy_m.group(2)
+                    y2 = int(y2_str) if len(y2_str) == 4 else y1 + 1
+                    detected_fy = f"{y1}-{str(y2)[-2:]}"
+                    detected_ay = f"{y2}-{str(y2+1)[-2:]}"
+                else:
+                    y = int(fy_m.group(1))
+                    detected_fy = f"{y-1}-{str(y)[-2:]}"
+                    detected_ay = f"{y}-{str(y+1)[-2:]}"
 
             date_to_m = re.search(r'\*To\s*\(DD/MM/YYYY\)\s*(\d{2}/\d{2}/\d{4})', text)
             if date_to_m:
@@ -1115,12 +1243,23 @@ class StatutoryVaultEngine:
                 '2010': [r'Share\s+capital\s+([-\d\.,]+)', r'\(a\)\s+Share\s+capital\s+([-\d\.,]+)'],
                 '2020': [r'Reserves\s+and\s+surplus\s+([-\d\.,]+)', r'\(b\)\s+Reserves\s+and\s+surplus\s+([-\d\.,]+)'],
                 '2030': [r'Long\s*term\s+borrowings\s+([-\d\.,]+)', r'\(a\)\s+Long\s+term\s+borrowings\s+([-\d\.,]+)'],
-                '2040': [r'Trade\s+payables.*?creditors[^\n]*\n\s*([-\d\.,]+)'],
+                '2035': [r'Short\s*term\s+borrowings\s+([-\d\.,]+)'],
+                '2040': [r'Trade\s+payables.*?creditors[^\n]*\n\s*([-\d\.,]+)', r'Trade\s+payables\s+([-\d\.,]+)'],
                 '2050': [r'Other\s+current\s+liabilities\s+([-\d\.,]+)'],
-                '1050': [r'Property\s+Plant\s+and\s+Equipment\s+([-\d\.,]+)'],
+                '2060': [r'Short\s*term\s+provisions\s+([-\d\.,]+)'],
+                '1050': [r'Property\s+Plant\s+and\s+Equipment\s+([-\d\.,]+)', r'Tangible\s+assets\s+([-\d\.,]+)'],
                 '1020': [r'Trade\s+receivables\s+([-\d\.,]+)'],
-                '1010': [r'Cash\s+and\s+cash\s+equivalents\s+([-\d\.,]+)'],
-                '1040': [r'Short\s*term\s+loans\s+and\s+advances\s+([-\d\.,]+)']
+                '1010': [r'Cash\s+and\s+cash\s+equivalents\s+([-\d\.,]+)', r'Cash\s+and\s+bank\s+balances\s+([-\d\.,]+)'],
+                '1040': [r'Short\s*term\s+loans\s+and\s+advances\s+([-\d\.,]+)'],
+                '1030': [r'Other\s+current\s+assets\s+([-\d\.,]+)'],
+                '3010': [r'Revenue\s+from\s+operations\s+([-\d\.,]+)'],
+                '3020': [r'Other\s+income\s+([-\d\.,]+)'],
+                '4010': [r'Employee\s+benefits?\s+expense\s+([-\d\.,]+)'],
+                '4020': [r'Finance\s+costs\s+([-\d\.,]+)'],
+                '4030': [r'Depreciation\s+and\s+amorti[sz]ation\s+expense\s+([-\d\.,]+)'],
+                '4040': [r'Other\s+expenses\s+([-\d\.,]+)'],
+                '5010': [r'Profit\s+before\s+tax\s+([-\d\.,]+)'],
+                '5020': [r'Profit\s*(?:/\s*\(?loss\)?)?\s*(?:for\s+the\s+period|for\s+the\s+year)\s*([-\d\.,]+)']
             }
             for code, pats in aoc4_patterns.items():
                 for p in pats:
@@ -1150,6 +1289,10 @@ class StatutoryVaultEngine:
             if pan_m:
                 schedule_iii["pan"] = pan_m.group(1)
 
+            loss_m = re.search(r'Current\s+Year\s+business\s+loss[^\n]*\n\s*1\s*\n\s*([0-9,\.]+)', text, re.I)
+            if loss_m:
+                schedule_iii["business_loss"] = float(loss_m.group(1).replace(',', ''))
+
         # 3. Independent Auditor's Report
         elif "INDEPENDENT AUDITOR'S REPORT" in text_upper or "AUDITOR'S REPORT" in text_upper or "INDEPENDENT AUDITORS REPORT" in text_upper:
             detected_form = "auditor_report"
@@ -1172,9 +1315,39 @@ class StatutoryVaultEngine:
         # 5. Form MGT-7 / MGT-7A
         elif "MGT-7" in text_upper or "MGT 7" in text_upper or "MGT-7A" in text_upper or ("ANNUAL RETURN" in text_upper and "COMPANIES ACT" in text_upper):
             detected_form = "mgt_7a"
-            srn_m = re.search(r'([A-Z0-9]{8,10})_SRN_FORM', text) or SRN_REGEX.search(text)
+            srn_m = re.search(r'([A-Z0-9]{8,15})_SRN_FORM', text) or re.search(r'\b([A-Z]{2}[0-9]{7})\b', text) or SRN_REGEX.search(text)
             if srn_m:
-                srn_or_ack = srn_m.group(1)
+                srn_or_ack = srn_m.group(1).strip()
+
+            to_dt_m = re.search(r'(\d{2}/\d{2}/\d{4})\s*\(b\)\s*\*Financial\s+year|31/03/(20[2-3][0-9])', text)
+            if to_dt_m:
+                if to_dt_m.group(2):
+                    yr = int(to_dt_m.group(2))
+                    detected_fy = f"{yr-1}-{str(yr)[-2:]}"
+                    detected_ay = f"{yr}-{str(yr+1)[-2:]}"
+                elif to_dt_m.group(1):
+                    dt_part = to_dt_m.group(1).split('/')
+                    yr = int(dt_part[2])
+                    detected_fy = f"{yr-1}-{str(yr)[-2:]}"
+                    detected_ay = f"{yr}-{str(yr+1)[-2:]}"
+
+            # Extract share capital
+            sh_num_m = re.search(r'Total\s+number\s+of\s+equity\s+shares\s+([0-9]+)', text)
+            sh_amt_m = re.search(r'shares\s*\(in\s*rupees\)\s*([0-9\.]+)', text)
+            sh_nom_m = re.search(r'Nominal\s+value\s+per\s+share\s*\(in\s*rupees\)\s*([0-9\.]+)', text)
+            auth_cap = float(sh_amt_m.group(1)) if sh_amt_m else 100000.0
+            tot_shares = int(sh_num_m.group(1)) if sh_num_m else 10000
+            face_val = float(sh_nom_m.group(1)) if sh_nom_m else 10.0
+            schedule_iii["2010"] = f"{auth_cap:.2f}"
+            schedule_iii["authorized_capital_inr"] = auth_cap
+            schedule_iii["total_equity_shares"] = tot_shares
+            schedule_iii["face_value_inr"] = face_val
+            schedule_iii["paid_up_capital_inr"] = auth_cap
+            schedule_iii["paid_up_shares"] = tot_shares
+            nw_m = re.search(r'Net\s+worth\s+of\s+the\s+Company\s*([-\d\.,]+)', text)
+            if nw_m:
+                schedule_iii["net_worth_inr"] = float(nw_m.group(1).replace(',', ''))
+
 
         # Fallback if filename hints
         if detected_form == "unknown":

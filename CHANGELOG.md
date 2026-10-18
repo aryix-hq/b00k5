@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased] - 2026-10-18
 
 ### Added
+- **FEAT-ROC-03 MCA Form AOC-4 & Form MGT-7A Statutory Calibration & Schedule III Comparative Presentation Engine**:
+  - Implemented OCR and regex extraction engine in `apps/api/app/services/statutory_vault_engine.py` parsing filed Form AOC-4 (SRN, DIN, UDIN, balance sheet heads) and Form MGT-7A (SRN, authorized capital, paid-up capital, net worth, promoter shareholding pattern).
+  - Added baseline synchronization engine `sync_statutory_anchors_from_vault` in `apps/api/app/services/statutory_anchor_service.py` anchoring filed government forms as immutable statutory anchors (`StatutoryFilingAnchor`).
+  - Calibrated live Schedule III financial statements engine in `apps/api/app/services/schedule_iii_service.py`:
+    - Synchronizes vault anchors for both current and prior reporting periods.
+    - Implemented Schedule III Division I comparative presentation: Current reporting period vs Previous reporting period (FY 2025-26 / AY 2026-27).
+    - Directly auto-populates historical period financial figures from filed Form AOC-4 when live ledger transactions are zero, maintaining zero mathematical drift.
+    - Exported statutory dossier package (`generate_statutory_dossier_package`) producing 11-page certified PDF and comparative Balance Sheet / P&L CSVs.
+  - Enhanced Next.js frontend component `apps/web/src/components/yearbook/ScheduleIIIViewer.tsx`:
+    - Rendered Statutory Provenance Verification Banner citing Form AOC-4 SRN `7616438575` and Form MGT-7A SRN `AC6319079` with zero mathematical drift indicator.
+    - Refactored Balance Sheet and Statement of Profit and Loss tables into clean 3-column Schedule III Division I comparative format (`Particulars`, `Current Period`, `Previous Period`).
+    - Added Note 2 & Form MGT-7A Governance & Shareholding Pattern Disclosure Card with Authorised Capital (₹1,00,000), Paid-up Capital (₹1,00,000), Net Worth (-₹63,851.00), >5% Shareholders table, and Promoter Shareholding table (100% promoter held).
+    - Built expandable Notes to Accounts (Notes 1 to 20) with comparative values, accounting policies, and mandatory ratio disclosures.
+  - Added automated test suite `test_aoc4_mgt7_statutory_anchor_and_schedule_iii_comparative` in `apps/api/tests/test_roc_compliance_and_esign.py`.
 - **FEAT-PAY-01 Sovereign Native Payroll Core & Double-Entry General Ledger Integration**:
   - Implemented database schema in `init_schema.sql` (Section 14) for `employees`, `salary_structures`, `payroll_runs`, `payslips`, and `employee_tax_declarations` with PostgreSQL 16 RLS policies and chart of accounts (`2070-2077`, `4020-4023`).
   - Added SQLAlchemy models in `apps/api/app/models/payroll.py` and Pydantic validation schemas in `apps/api/app/schemas/payroll.py`.

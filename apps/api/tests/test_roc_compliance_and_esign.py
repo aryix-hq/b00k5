@@ -207,5 +207,79 @@ def test_phase4_verification_gate_complete_pack():
     assert verif["is_valid"] is True
     assert verif["signer_name"] == "Vikram Sharma"
     assert verif["din"] == "09876541"
-    print(f"  ✓ Non-repudiation audit verified: {verif['message']}")
     print("✓ Phase 4 Verification Gate Successfully Passed!")
+
+
+def test_aoc4_mgt7_statutory_anchor_and_schedule_iii_comparative():
+    """
+    Validates:
+    1. Statutory OCR parsing of MCA Form AOC-4 and Form MGT-7A.
+    2. Zero mathematical drift in Schedule III balance sheet (Assets == Equity & Liabilities == 0.00).
+    3. Schedule III Clause 4 rounding calculation.
+    """
+    from app.services.statutory_vault_engine import StatutoryVaultEngine
+    from app.services.schedule_iii_service import ScheduleIIIService
+
+    # 1. Test AOC-4 Parsing
+    aoc4_sample = """
+    FORM NO. AOC-4
+    Form for filing financial statement and other documents with the Registrar
+    SRN: 7616438575
+    Service Request Number (SRN) of Form AOC-4 is 7616438575
+    DIN of Director: 11249061
+    UDIN: 2611249061AAAAA1234
+    I. EQUITY AND LIABILITIES
+    1. Shareholders' Funds
+    (a) Share Capital 100000.00
+    (b) Reserves and Surplus -163851.00
+    2. Non-Current Liabilities
+    (a) Long-term borrowings 63851.00
+    3. Current Liabilities
+    TOTAL EQUITY AND LIABILITIES 0.00
+    II. ASSETS
+    TOTAL ASSETS 0.00
+    Other expenses 163851.00
+    Profit / (Loss) for the period -163851.00
+    """
+    parsed_aoc4 = StatutoryVaultEngine.parse_aoc4_financial_statement(aoc4_sample)
+    assert parsed_aoc4["srn"] == "7616438575"
+    assert parsed_aoc4["schedule_iii_heads"]["2010"] == "100000.00"
+    assert parsed_aoc4["schedule_iii_heads"]["2020"] == "-163851.00"
+    assert parsed_aoc4["schedule_iii_heads"]["2030"] == "63851.00"
+    assert parsed_aoc4["schedule_iii_heads"]["4040"] == "163851.00"
+    assert parsed_aoc4["schedule_iii_heads"]["5020"] == "-163851.00"
+
+    # 2. Test MGT-7 Parsing
+    mgt7_sample = """
+    FORM NO. MGT-7A
+    Abridged Annual Return for OPC and Small Companies
+    SRN: AC6319079
+    Authorised capital of the company 100000
+    Total number of equity shares 10000
+    Nominal value per share 10
+    Paid up capital 100000
+    Net worth of the company -63851
+    Turnover 0.00
+    Promoter Shareholding:
+    Adithya Nagaraja Khamithkar DIN 11249061 shares 10000 percentage 100.00
+    """
+    parsed_mgt7 = StatutoryVaultEngine.parse_mgt7_annual_return(mgt7_sample)
+    assert parsed_mgt7["srn"] == "AC6319079"
+    assert parsed_mgt7["authorized_capital_inr"] == 100000.0
+    assert parsed_mgt7["paid_up_capital_inr"] == 100000.0
+    assert parsed_mgt7["net_worth_inr"] == -63851.0
+    assert parsed_mgt7["promoter_holding_percent"] == 100.0
+
+    # 3. Schedule III Clause 4 Rounding Scale Base
+    unit, label = ScheduleIIIService.get_auto_rounding_unit(
+        total_revenue=0.0,
+        total_assets=0.0,
+        total_expenses=163851.0
+    )
+    assert unit == "hundreds"
+    assert "Nearest Hundreds" in label
+
+    # 4. Invariant Balance: Share Capital (100000) + Reserves (-163851) + Borrowings (63851) = 0.00
+    eq_liab = Decimal("100000.00") + Decimal("-163851.00") + Decimal("63851.00")
+    assert eq_liab == Decimal("0.00")
+

@@ -482,12 +482,34 @@ async def smart_ingest_document(
             current_statutory["aoc4_srn"] = ext_fields["srn"]
         if ext_fields.get("financial_year"):
             current_statutory["aoc4_fy"] = ext_fields["financial_year"]
+        if ext_fields.get("schedule_iii_payload"):
+            current_statutory["aoc4_schedule_iii"] = ext_fields["schedule_iii_payload"]
+        if resolved_fy:
+            try:
+                from app.services.statutory_anchor_service import StatutoryAnchorService
+                await StatutoryAnchorService.sync_statutory_anchors_from_vault(db, tenant, resolved_fy)
+            except Exception as e:
+                import logging
+                logging.getLogger("vault").warning(f"Error auto-syncing AOC-4 anchor: {e}")
 
     # Form MGT-7 / MGT-7A
     elif doc_type_val == "form_mgt_7":
         current_statutory["mgt7_verified"] = True
         if ext_fields.get("srn"):
             current_statutory["mgt7_srn"] = ext_fields["srn"]
+        if ext_fields.get("financial_year"):
+            current_statutory["mgt7_fy"] = ext_fields["financial_year"]
+        for k in ("authorized_capital_inr", "total_equity_shares", "face_value_inr", "paid_up_capital_inr", "paid_up_shares", "shareholders", "shareholding_pattern"):
+            if ext_fields.get(k):
+                current_statutory[k] = ext_fields[k]
+        if resolved_fy:
+            try:
+                from app.services.statutory_anchor_service import StatutoryAnchorService
+                await StatutoryAnchorService.sync_statutory_anchors_from_vault(db, tenant, resolved_fy)
+            except Exception as e:
+                import logging
+                logging.getLogger("vault").warning(f"Error auto-syncing MGT-7 anchor: {e}")
+
 
     # Income Tax Return
     elif doc_type_val == "itr":

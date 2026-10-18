@@ -390,7 +390,7 @@ export default function PayrollPage() {
                 </div>
                 <div>
                   <h1 className="text-2xl font-bold tracking-tight text-white flex items-center gap-2">
-                    Sovereign Payroll & Statutory Roster
+                    Payroll &amp; Statutory Roster
                     <span className="text-xs font-normal px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
                       Ind AS 19 / Schedule III
                     </span>
@@ -442,7 +442,7 @@ export default function PayrollPage() {
                 <Users className="w-4 h-4 text-emerald-400" />
               </div>
               <div className="text-2xl font-bold text-white">{employees.length}</div>
-              <div className="text-xs text-slate-500 mt-1">Sovereign salaried employees</div>
+              <div className="text-xs text-slate-500 mt-1">Active salaried employees</div>
             </div>
 
             <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800/80">
@@ -962,7 +962,7 @@ export default function PayrollPage() {
                 <div className="flex items-center justify-between p-5 border-b border-slate-800">
                   <h2 className="text-lg font-bold text-white flex items-center gap-2">
                     <Users className="w-5 h-5 text-emerald-400" />
-                    Onboard Sovereign Employee
+                    Onboard Employee
                   </h2>
                   <button onClick={() => setShowOnboardModal(false)} className="text-slate-400 hover:text-white">
                     <X className="w-5 h-5" />
@@ -1362,13 +1362,13 @@ export default function PayrollPage() {
             </div>
           )}
 
-          {/* MODAL: VIEW SOVEREIGN PAYSLIP */}
+          {/* MODAL: VIEW PAYSLIP */}
           {showPayslipModal && selectedPayslip && (
             <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 overflow-y-auto">
               <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-xl overflow-hidden shadow-2xl p-6 space-y-6">
                 <div className="flex items-center justify-between border-b border-slate-800 pb-4">
                   <div>
-                    <h2 className="text-lg font-bold text-white">Sovereign Salary Payslip</h2>
+                    <h2 className="text-lg font-bold text-white">Salary Payslip</h2>
                     <p className="text-xs text-slate-400">Slip #{selectedPayslip.payslip_number}</p>
                   </div>
                   <button onClick={() => setShowPayslipModal(false)} className="text-slate-400 hover:text-white">

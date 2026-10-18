@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings, validate_production_security
 from app.core.s3 import ensure_buckets_exist
-from app.api.v1 import auth, setup, invoices, ledger, vault, compliance, dsc, reconciliation, storage, iam, expenses, pricing, system, batch_ingest, reports, tenant_iam, tds, assets, registers
+from app.api.v1 import auth, setup, invoices, ledger, vault, compliance, dsc, reconciliation, storage, iam, expenses, pricing, system, batch_ingest, reports, tenant_iam, tds, assets, registers, payroll
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("b00k5_api")
@@ -80,6 +80,7 @@ app.include_router(tenant_iam.router, prefix=f"{settings.API_V1_STR}/tenants", t
 app.include_router(tds.router, prefix=f"{settings.API_V1_STR}/tds", tags=["Indian TDS/TCS Withholding (FEAT-08)"])
 app.include_router(assets.router, prefix=f"{settings.API_V1_STR}/assets", tags=["Schedule II Fixed Assets & Depreciation (FEAT-09)"])
 app.include_router(registers.router, prefix=f"{settings.API_V1_STR}/registers", tags=["MCA Statutory Registers & Disclosures (FEAT-12)"])
+app.include_router(payroll.router, prefix=f"{settings.API_V1_STR}/payroll", tags=["Sovereign Payroll & Statutory Withholdings (FEAT-PAY-01)"])
 
 @app.get("/")
 @app.get("/health")

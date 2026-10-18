@@ -968,6 +968,14 @@ BEGIN
     (p_tenant_id, '2062', 'TDS Payable u/s 194I (Rent)', 'liability', 'tax_liability', 'credit', 'TDS on rent of land, building & machinery'),
     (p_tenant_id, '2063', 'TDS Payable u/s 194Q (Purchase of Goods)', 'liability', 'tax_liability', 'credit', 'TDS on high-value goods purchases'),
     (p_tenant_id, '2064', 'TCS Payable u/s 206C', 'liability', 'tax_liability', 'credit', 'Tax Collected at Source on sales'),
+    (p_tenant_id, '2070', 'Salaries & Wages Payable', 'liability', 'current_liability', 'credit', 'Net salaries payable to employees'),
+    (p_tenant_id, '2071', 'Employee Provident Fund (EPF) Payable', 'liability', 'tax_liability', 'credit', '12% employee PF deduction'),
+    (p_tenant_id, '2072', 'Employer Provident Fund (EPF) Payable', 'liability', 'tax_liability', 'credit', '12% employer PF + admin/EDLI'),
+    (p_tenant_id, '2073', 'Employee State Insurance (ESIC) Payable', 'liability', 'tax_liability', 'credit', '0.75% employee ESI deduction'),
+    (p_tenant_id, '2074', 'Employer State Insurance (ESIC) Payable', 'liability', 'tax_liability', 'credit', '3.25% employer ESI contribution'),
+    (p_tenant_id, '2075', 'Professional Tax (PT) Payable', 'liability', 'tax_liability', 'credit', 'State-specific professional tax withheld'),
+    (p_tenant_id, '2076', 'TDS Payable u/s 192 (Salaries)', 'liability', 'tax_liability', 'credit', 'TDS on employee salaries'),
+    (p_tenant_id, '2077', 'Labour Welfare Fund (LWF) Payable', 'liability', 'tax_liability', 'credit', 'Labour Welfare Fund contributions'),
     (p_tenant_id, '2099', 'Suspense Account (Bank Reconciliation)', 'liability', 'suspense', 'credit', 'Unmatched bank statement lines pending allocation'),
 
     -- 3000–3999: Revenue from Operations & Other Income (Schedule III)
@@ -976,7 +984,10 @@ BEGIN
 
     -- 4000–4999: Expenses (Schedule III)
     (p_tenant_id, '4010', 'Direct Expenses / Cloud Hosting (AWS/GCP)', 'expense', 'direct_expense', 'debit', 'Cloud servers, databases & infrastructure'),
-    (p_tenant_id, '4020', 'Employee Benefit Expenses / Payroll', 'expense', 'payroll', 'debit', 'Salaries, stipends and contractor payouts'),
+    (p_tenant_id, '4020', 'Employee Benefit Expenses / Payroll', 'expense', 'payroll', 'debit', 'Gross salaries, stipends and allowances'),
+    (p_tenant_id, '4021', 'Employer Contribution to Provident Fund', 'expense', 'payroll', 'debit', 'Employer EPF, EPS and EDLI contributions'),
+    (p_tenant_id, '4022', 'Employer Contribution to ESI', 'expense', 'payroll', 'debit', 'Employer 3.25% ESIC contributions'),
+    (p_tenant_id, '4023', 'Staff Welfare & Insurance Expenses', 'expense', 'payroll', 'debit', 'Employee medical insurance, snacks, and welfare amenities'),
     (p_tenant_id, '4030', 'Finance Costs & Bank Charges', 'expense', 'financial_expense', 'debit', 'Payment gateway fees & wire charges'),
     (p_tenant_id, '4040', 'Legal & Professional Fees (CA/CS/ROC)', 'expense', 'professional_fees', 'debit', 'Auditor retainer, CS filings, legal advisory'),
     (p_tenant_id, '4050', 'Rent & Workplace Expenses', 'expense', 'rent', 'debit', 'Office lease, coworking and utilities'),
@@ -1374,6 +1385,213 @@ ALTER TABLE share_certificates ENABLE ROW LEVEL SECURITY;
 ALTER TABLE share_certificates FORCE ROW LEVEL SECURITY;
 
 CREATE POLICY tenant_isolation_certs ON share_certificates
+    FOR ALL
+    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
+    WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
+
+-- ============================================================================
+-- 14. SOVEREIGN EMBEDDED PAYROLL & STATUTORY WITHHOLDINGS (FEAT-PAY-01)
+-- ============================================================================
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'employee_status_enum') THEN
+        CREATE TYPE employee_status_enum AS ENUM ('active', 'on_notice', 'terminated', 'resigned', 'on_leave');
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'employment_type_enum') THEN
+        CREATE TYPE employment_type_enum AS ENUM ('full_time', 'part_time', 'intern', 'contractor', 'consultant');
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'tax_regime_enum') THEN
+        CREATE TYPE tax_regime_enum AS ENUM ('new_115bac', 'old_regime');
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'payroll_status_enum') THEN
+        CREATE TYPE payroll_status_enum AS ENUM ('draft', 'calculated', 'approved', 'locked', 'disbursed', 'sealed');
+    END IF;
+END$$;
+
+CREATE TABLE IF NOT EXISTS employees (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    employee_code VARCHAR(32) NOT NULL,
+    first_name VARCHAR(100) NOT NULL,
+    last_name VARCHAR(100) NOT NULL,
+    email VARCHAR(255) NOT NULL,
+    phone VARCHAR(20),
+    date_of_birth DATE NOT NULL,
+    gender VARCHAR(20),
+    date_of_joining DATE NOT NULL,
+    date_of_exit DATE,
+    status employee_status_enum NOT NULL DEFAULT 'active',
+    employment_type employment_type_enum NOT NULL DEFAULT 'full_time',
+    department VARCHAR(100),
+    designation VARCHAR(100) NOT NULL,
+    pan_number VARCHAR(10) NOT NULL CHECK (pan_number ~ '^[A-Z]{5}[0-9]{4}[A-Z]{1}$'),
+    aadhaar_ref_id VARCHAR(64),
+    uan_number VARCHAR(12) CHECK (uan_number IS NULL OR uan_number ~ '^[0-9]{12}$'),
+    esic_number VARCHAR(17),
+    bank_account_number VARCHAR(34) NOT NULL,
+    bank_ifsc_code VARCHAR(11) NOT NULL CHECK (bank_ifsc_code ~ '^[A-Z]{4}0[A-Z0-9]{6}$'),
+    bank_name VARCHAR(100) NOT NULL,
+    tax_regime tax_regime_enum NOT NULL DEFAULT 'new_115bac',
+    pt_state VARCHAR(50) NOT NULL DEFAULT 'Karnataka',
+    pf_opt_out BOOLEAN NOT NULL DEFAULT FALSE,
+    is_pf_capped BOOLEAN NOT NULL DEFAULT TRUE,
+    is_esi_eligible BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_tenant_employee_code UNIQUE (tenant_id, employee_code),
+    CONSTRAINT uq_tenant_employee_pan UNIQUE (tenant_id, pan_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_employees_tenant ON employees(tenant_id, status);
+ALTER TABLE employees ENABLE ROW LEVEL SECURITY;
+ALTER TABLE employees FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation_employees ON employees
+    FOR ALL
+    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
+    WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
+
+CREATE TABLE IF NOT EXISTS salary_structures (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    employee_id UUID NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+    effective_from DATE NOT NULL,
+    effective_to DATE,
+    annual_ctc NUMERIC(15, 2) NOT NULL CHECK (annual_ctc >= 0),
+    monthly_basic NUMERIC(15, 2) NOT NULL CHECK (monthly_basic >= 0),
+    monthly_hra NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    monthly_da NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    monthly_conveyance NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    monthly_medical_allowance NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    monthly_special_allowance NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    employer_pf_monthly NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    employer_esi_monthly NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    monthly_gross NUMERIC(15, 2) GENERATED ALWAYS AS (
+        monthly_basic + monthly_hra + monthly_da + monthly_conveyance + 
+        monthly_medical_allowance + monthly_special_allowance
+    ) STORED,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_salary_structures_emp ON salary_structures(tenant_id, employee_id, is_active);
+ALTER TABLE salary_structures ENABLE ROW LEVEL SECURITY;
+ALTER TABLE salary_structures FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation_salary_structures ON salary_structures
+    FOR ALL
+    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
+    WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
+
+CREATE TABLE IF NOT EXISTS payroll_runs (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    run_number VARCHAR(32) NOT NULL,
+    month INTEGER NOT NULL CHECK (month BETWEEN 1 AND 12),
+    year INTEGER NOT NULL CHECK (year >= 2020),
+    fiscal_year VARCHAR(32) NOT NULL,
+    status payroll_status_enum NOT NULL DEFAULT 'draft',
+    total_employees INTEGER NOT NULL DEFAULT 0,
+    total_gross_pay NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    total_deductions NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    total_net_pay NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    total_employer_pf NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    total_employer_esi NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    total_tds_192 NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    total_pt NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    accrual_journal_id UUID REFERENCES journal_entries(id) ON DELETE SET NULL,
+    disbursement_journal_id UUID REFERENCES journal_entries(id) ON DELETE SET NULL,
+    sealed_at TIMESTAMPTZ,
+    sealed_by UUID REFERENCES users(id),
+    sha256_audit_hash VARCHAR(64),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_tenant_payroll_period UNIQUE (tenant_id, year, month)
+);
+
+CREATE INDEX IF NOT EXISTS idx_payroll_runs_tenant ON payroll_runs(tenant_id, year, month);
+ALTER TABLE payroll_runs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE payroll_runs FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation_payroll_runs ON payroll_runs
+    FOR ALL
+    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
+    WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
+
+CREATE TABLE IF NOT EXISTS payslips (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    payroll_run_id UUID NOT NULL REFERENCES payroll_runs(id) ON DELETE CASCADE,
+    employee_id UUID NOT NULL REFERENCES employees(id) ON DELETE RESTRICT,
+    payslip_number VARCHAR(64) NOT NULL,
+    total_days INTEGER NOT NULL DEFAULT 30,
+    paid_days NUMERIC(5, 2) NOT NULL DEFAULT 30.00,
+    loss_of_pay_days NUMERIC(5, 2) NOT NULL DEFAULT 0.00,
+    basic_earned NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    hra_earned NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    da_earned NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    conveyance_earned NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    special_allowance_earned NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    bonus_or_arrears NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    gross_earnings NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    employee_pf NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    employee_esi NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    professional_tax NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    tds_deducted NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    lwf_deducted NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    other_deductions NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    total_deductions NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    net_salary NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    employer_pf NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    employer_eps NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    employer_esi NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    employer_edli NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    payout_status VARCHAR(20) NOT NULL DEFAULT 'unpaid',
+    payout_utr VARCHAR(64),
+    payout_date DATE,
+    pdf_vault_path VARCHAR(512),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_run_employee UNIQUE (payroll_run_id, employee_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_payslips_tenant_run ON payslips(tenant_id, payroll_run_id);
+CREATE INDEX IF NOT EXISTS idx_payslips_employee ON payslips(tenant_id, employee_id);
+ALTER TABLE payslips ENABLE ROW LEVEL SECURITY;
+ALTER TABLE payslips FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation_payslips ON payslips
+    FOR ALL
+    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
+    WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
+
+CREATE TABLE IF NOT EXISTS employee_tax_declarations (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    employee_id UUID NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+    fiscal_year VARCHAR(32) NOT NULL,
+    regime tax_regime_enum NOT NULL DEFAULT 'new_115bac',
+    sec_80c_lic NUMERIC(15, 2) DEFAULT 0.00,
+    sec_80c_ppf NUMERIC(15, 2) DEFAULT 0.00,
+    sec_80c_elss NUMERIC(15, 2) DEFAULT 0.00,
+    sec_80c_home_loan_principal NUMERIC(15, 2) DEFAULT 0.00,
+    sec_80c_tuition_fees NUMERIC(15, 2) DEFAULT 0.00,
+    sec_80c_total_claimed NUMERIC(15, 2) DEFAULT 0.00,
+    sec_80c_total_verified NUMERIC(15, 2) DEFAULT 0.00,
+    sec_80d_self_family NUMERIC(15, 2) DEFAULT 0.00,
+    sec_80d_parents NUMERIC(15, 2) DEFAULT 0.00,
+    sec_24b_home_loan_interest NUMERIC(15, 2) DEFAULT 0.00,
+    lender_pan VARCHAR(10),
+    annual_rent_paid NUMERIC(15, 2) DEFAULT 0.00,
+    landlord_pan VARCHAR(10),
+    rental_address TEXT,
+    is_metro_city BOOLEAN DEFAULT FALSE,
+    verification_status VARCHAR(20) DEFAULT 'submitted',
+    verified_by UUID REFERENCES users(id),
+    verified_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_tenant_employee_fy UNIQUE (tenant_id, employee_id, fiscal_year)
+);
+
+CREATE INDEX IF NOT EXISTS idx_tax_decl_tenant ON employee_tax_declarations(tenant_id, employee_id, fiscal_year);
+ALTER TABLE employee_tax_declarations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE employee_tax_declarations FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation_tax_declarations ON employee_tax_declarations
     FOR ALL
     USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
     WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);

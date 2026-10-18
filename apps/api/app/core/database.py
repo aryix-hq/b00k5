@@ -1,5 +1,6 @@
+from __future__ import annotations
 import uuid
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator, Optional, Union
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy.orm import declarative_base
 from sqlalchemy import text

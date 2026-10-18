@@ -6,6 +6,22 @@ This log provides an auditable, chronological record of all architectural modifi
 
 ## 📅 Chronological Change Register
 
+### [2026-10-18] — Milestone: `FEAT-PAY-01` Sovereign Payroll Core Implementation
+- **Branch / PR:** `feat/sovereign-payroll-core-and-ledger`
+- **Category:** `feat` / `payroll` / `ledger` / `statutory`
+- **Author:** Sovereign Architecture & Core Engineering Working Group
+- **Key Deliverables:**
+  1. **PostgreSQL 16 Schema:** Added Section 14 to `init_schema.sql` defining `employees`, `salary_structures`, `payroll_runs`, `payslips`, and `employee_tax_declarations` with Row-Level Security (RLS) isolation and Payroll Chart of Accounts (`2070-2077`, `4020-4023`).
+  2. **Statutory Calculation Engine (`PayrollService`):** Implemented Section 192 TDS (Finance Act 2024 New 115BAC vs Old regime), EPF Act 1952 (12% employee/employer, EPS capped at ₹1,250), ESI Act 1948 (0.75% / 3.25% on gross $\le$ ₹21,000), Professional Tax (Karnataka, Maharashtra, Delhi), and Loss of Pay (LOP) calendar-day proration using Banker's Rounding (`Decimal(15, 2)`).
+  3. **Atomic 3-Leg Double-Entry General Ledger Postings:**
+     - **Leg 1 (Month-End Accrual):** Dr. Salaries (4020), Dr. Employer PF (4021), Dr. Employer ESI (4022) vs Cr. Net Salary Payable (2070), Cr. Employee PF (2071), Cr. Employer PF (2072), Cr. Employee ESI (2073), Cr. Employer ESI (2074), Cr. PT (2075), Cr. TDS 192 (2076) with SHA-256 seal.
+     - **Leg 2 (Salary Disbursement):** Dr. Net Salary Payable (2070) vs Cr. Bank Account (1010).
+  4. **Schedule III Integration:** Mapped payroll liability accounts `2070-2077` into Note 7 (Other Current Liabilities) and expense accounts `4020-4023` into Note 17 (Employee Benefits Expense).
+  5. **FastAPI Endpoints:** Created `/api/v1/payroll` endpoints for employees, salary structures, payroll runs, calculate, lock/post-accrual, post-disbursement, payslips, and tax declarations.
+  6. **Comprehensive Automated Tests:** Implemented unit and live Postgres E2E tests in `apps/api/tests/test_payroll_ledger_inviolability.py` (6/6 passing).
+
+---
+
 ### [2026-10-18] — Release `v1.1.0-alpha`: Enterprise Accounting Benchmark & Sovereign Payroll Roadmap
 - **PR / Milestone:** `feat/enterprise-benchmark-and-feature-registry`
 - **Category:** `feat` / `architecture` / `statutory`

@@ -133,3 +133,4 @@ When running `b00k5` on local machines (macOS, Linux workstation, or private on-
 ## 4. Why Deferred in Favor of Option A
 * **Current Operational Priority:** `b00k5` is already running on a local Docker volume with persistent bind mounts (`b00k5_postgres_data` and `minio_data`).
 * Option A (Bank CMS & GSTR-1 JSON) provides immediate monthly cash-flow and filing utility. Option B can be implemented prior to statutory annual audit closing.
+

@@ -8,7 +8,7 @@ from sqlalchemy import select, and_
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_db, get_current_user, get_current_tenant
-from app.models.tenant import User, Tenant
+from app.models.tenant import User, Tenant, TenantUser
 from app.models.payroll import Employee, SalaryStructure, PayrollRun, Payslip, EmployeeTaxDeclaration, Contractor, ContractorPayment
 from app.models.ledger import JournalEntry
 from app.schemas.payroll import (
@@ -437,6 +437,47 @@ async def post_disbursement(
 # 3. PAYSLIPS & TAX DECLARATIONS
 # ============================================================================
 
+@router.get("/my-payslips", response_model=List[PayslipResponse])
+async def get_my_payslips(
+    current_user: User = Depends(get_current_user),
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Self-service endpoint: Retrieve all historical payslips for the authenticated employee.
+    """
+    emp_stmt = select(Employee).where(
+        and_(
+            Employee.email == current_user.email.lower(),
+            Employee.tenant_id == tenant.id
+        )
+    )
+    emp = (await db.execute(emp_stmt)).scalar_one_or_none()
+    if not emp:
+        return []
+
+    stmt = select(Payslip).options(
+        selectinload(Payslip.payroll_run)
+    ).where(
+        and_(
+            Payslip.employee_id == emp.id,
+            Payslip.tenant_id == tenant.id
+        )
+    ).order_by(Payslip.created_at.desc())
+    slips = (await db.execute(stmt)).scalars().all()
+    results = []
+    for s in slips:
+        item = PayslipResponse.model_validate(s)
+        item.employee_name = f"{emp.first_name} {emp.last_name}"
+        item.employee_code = emp.employee_code
+        if s.payroll_run:
+            item.fiscal_year = s.payroll_run.fiscal_year
+            item.month = s.payroll_run.month
+            item.year = s.payroll_run.year
+        results.append(item)
+    return results
+
+
 @router.get("/runs/{run_id}/payslips", response_model=List[PayslipResponse])
 async def list_payslips_for_run(
     run_id: uuid.UUID,
@@ -444,13 +485,28 @@ async def list_payslips_for_run(
     db: AsyncSession = Depends(get_db)
 ):
     """Retrieve all itemized payslips for a specific payroll run."""
-    stmt = select(Payslip).where(
+    stmt = select(Payslip).options(
+        selectinload(Payslip.employee),
+        selectinload(Payslip.payroll_run)
+    ).where(
         and_(
             Payslip.payroll_run_id == run_id,
             Payslip.tenant_id == ctx.tenant.id
         )
     ).order_by(Payslip.payslip_number.asc())
-    return (await db.execute(stmt)).scalars().all()
+    slips = (await db.execute(stmt)).scalars().all()
+    results = []
+    for s in slips:
+        item = PayslipResponse.model_validate(s)
+        if s.employee:
+            item.employee_name = f"{s.employee.first_name} {s.employee.last_name}"
+            item.employee_code = s.employee.employee_code
+        if s.payroll_run:
+            item.fiscal_year = s.payroll_run.fiscal_year
+            item.month = s.payroll_run.month
+            item.year = s.payroll_run.year
+        results.append(item)
+    return results
 
 
 @router.get("/payslips/{payslip_id}", response_model=PayslipResponse)
@@ -460,7 +516,10 @@ async def get_payslip(
     db: AsyncSession = Depends(get_db)
 ):
     """Retrieve individual payslip details."""
-    stmt = select(Payslip).where(
+    stmt = select(Payslip).options(
+        selectinload(Payslip.employee),
+        selectinload(Payslip.payroll_run)
+    ).where(
         and_(
             Payslip.id == payslip_id,
             Payslip.tenant_id == ctx.tenant.id
@@ -469,7 +528,15 @@ async def get_payslip(
     payslip = (await db.execute(stmt)).scalar_one_or_none()
     if not payslip:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Payslip not found.")
-    return payslip
+    item = PayslipResponse.model_validate(payslip)
+    if payslip.employee:
+        item.employee_name = f"{payslip.employee.first_name} {payslip.employee.last_name}"
+        item.employee_code = payslip.employee.employee_code
+    if payslip.payroll_run:
+        item.fiscal_year = payslip.payroll_run.fiscal_year
+        item.month = payslip.payroll_run.month
+        item.year = payslip.payroll_run.year
+    return item
 
 
 @router.post("/tax-declarations", response_model=EmployeeTaxDeclarationResponse, status_code=status.HTTP_201_CREATED)
@@ -642,18 +709,37 @@ async def get_form_16(
 async def download_form_16_pdf(
     employee_id: uuid.UUID,
     fiscal_year: Optional[str] = Query(None, alias="financial_year"),
-    ctx: IAMContext = Depends(require_ca_or_owner),
+    current_user: User = Depends(get_current_user),
+    tenant: Tenant = Depends(get_current_tenant),
     db: AsyncSession = Depends(get_db)
 ):
     """
     Generates and downloads certified Form 16 Part A and Part B PDF certificate.
+    Permits Company Owner, CA Auditor, or the target Employee themselves.
     """
     emp_stmt = select(Employee).where(
-        and_(Employee.id == employee_id, Employee.tenant_id == ctx.tenant.id)
+        and_(Employee.id == employee_id, Employee.tenant_id == tenant.id)
     )
     emp = (await db.execute(emp_stmt)).scalar_one_or_none()
     if not emp:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found.")
+
+    is_self = bool(emp.email and current_user.email and emp.email.lower() == current_user.email.lower())
+    tu_stmt = select(TenantUser).where(
+        and_(
+            TenantUser.tenant_id == tenant.id,
+            TenantUser.user_id == current_user.id
+        )
+    )
+    tu = (await db.execute(tu_stmt)).scalar_one_or_none()
+    user_role = (tu.role or "employee").lower() if tu else "employee"
+    is_mgmt = user_role in ("company_owner", "owner", "ca_auditor", "auditor_ca", "admin", "super_admin")
+
+    if not (is_self or is_mgmt):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access restricted: You may only download your own Form 16 certificate."
+        )
 
     try:
         pdf_bytes = await PayrollService.generate_form_16_pdf_for_employee(db, employee_id, fiscal_year)

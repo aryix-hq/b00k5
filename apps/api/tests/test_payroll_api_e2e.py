@@ -403,3 +403,122 @@ async def test_payroll_api_rls_multi_tenant_isolation(payroll_test_tenant: Tenan
         res_b = await client.get("/api/v1/payroll/employees", headers=auth_headers_b)
         assert res_b.status_code == 200
         assert len(res_b.json()) == 0, "RLS Leak! Tenant B saw Tenant A's employees."
+
+
+@pytest.mark.asyncio
+async def test_employee_self_service_payslip_and_form16(payroll_test_tenant: Tenant, auth_headers: dict, db_session: AsyncSession):
+    """
+    Verifies employee role self-service:
+    1. Corporate endpoints (/runs, /employees) return 403 Forbidden.
+    2. Self-service /my-payslips returns personal itemized payslips with metadata.
+    3. Self-service Form 16 PDF download returns 200 OK.
+    """
+    tenant = payroll_test_tenant
+    owner_headers = auth_headers
+
+    emp_email = f"emp_{uuid.uuid4().hex[:6]}@payrolltech.io"
+    pan = f"AABCP{random.randint(1000, 9999)}K"
+
+    # 1. Owner onboards employee and creates payroll run
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        emp_res = await client.post(
+            "/api/v1/payroll/employees",
+            json={
+                "employee_code": "EMP-SELF-01",
+                "first_name": "Arjun",
+                "last_name": "Reddy",
+                "email": emp_email,
+                "date_of_birth": "1994-06-15",
+                "date_of_joining": "2025-01-01",
+                "designation": "Staff Engineer",
+                "department": "Platform",
+                "pan_number": pan,
+                "bank_name": "ICICI Bank",
+                "bank_account_number": "123405009876",
+                "bank_ifsc_code": "ICIC0000001",
+                "tax_regime": "new_115bac",
+                "pt_state": "Karnataka",
+                "is_pf_capped": True,
+                "is_esi_eligible": False,
+                "initial_salary_structure": {
+                    "effective_from": "2025-01-01",
+                    "annual_ctc": 1800000.00,
+                    "monthly_basic": 75000.00,
+                    "monthly_hra": 37500.00,
+                    "monthly_conveyance": 5000.00,
+                    "monthly_special_allowance": 32500.00
+                }
+            },
+            headers=owner_headers
+        )
+        assert emp_res.status_code == 201
+        emp_id = emp_res.json()["id"]
+
+        # Run payroll for Oct 2026
+        run_res = await client.post(
+            "/api/v1/payroll/runs",
+            json={"month": 10, "year": 2026},
+            headers=owner_headers
+        )
+        assert run_res.status_code == 201
+        run_id = run_res.json()["id"]
+
+        calc_res = await client.post(f"/api/v1/payroll/runs/{run_id}/calculate", headers=owner_headers)
+        assert calc_res.status_code == 200
+
+    # 2. Provision IAM User with employee role
+    emp_user = User(
+        id=uuid.uuid4(),
+        email=emp_email,
+        first_name="Arjun",
+        last_name="Reddy",
+        password_hash="mock_secret_hash",
+        is_active=True
+    )
+    db_session.add(emp_user)
+
+    tu = TenantUser(
+        id=uuid.uuid4(),
+        tenant_id=tenant.id,
+        user_id=emp_user.id,
+        role="employee"
+    )
+    db_session.add(tu)
+    await db_session.commit()
+
+    emp_token = create_access_token(
+        data={
+            "sub": str(emp_user.id),
+            "email": emp_user.email,
+            "tenant_id": str(tenant.id),
+            "role": "employee"
+        }
+    )
+    emp_headers = {
+        "Authorization": f"Bearer {emp_token}",
+        "X-Tenant-ID": str(tenant.id)
+    }
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # Corporate runs endpoint must be blocked for employee
+        runs_403 = await client.get("/api/v1/payroll/runs", headers=emp_headers)
+        assert runs_403.status_code == 403
+
+        # Self-service my-payslips must return employee's payslip
+        slips_res = await client.get("/api/v1/payroll/my-payslips", headers=emp_headers)
+        assert slips_res.status_code == 200
+        my_slips = slips_res.json()
+        assert len(my_slips) == 1
+        assert my_slips[0]["employee_name"] == "Arjun Reddy"
+        assert my_slips[0]["employee_code"] == "EMP-SELF-01"
+        assert float(my_slips[0]["net_salary"]) > 0
+
+        # Self-service Form 16 PDF download must succeed
+        f16_res = await client.get(
+            f"/api/v1/payroll/employees/{emp_id}/form-16/pdf?financial_year=2026-27",
+            headers=emp_headers
+        )
+        assert f16_res.status_code == 200
+        assert f16_res.headers["content-type"] == "application/pdf"
+        assert len(f16_res.content) > 1000
+

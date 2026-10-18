@@ -58,6 +58,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed 'Sovereign' badge pill from `Sidebar.tsx` navigation across Owner, CA Auditor, Super Admin, and Employee modes.
 - Neutralized user-facing UI copy in `apps/web/src/app/payroll/page.tsx` (standardizing labels to 'Payroll & Statutory Roster', 'Active salaried employees', 'Onboard Employee', and 'Salary Payslip').
 
+### Fixed
+- **DEF-PAY-01 URL Tab Parameter Synchronization**: Synchronized `activeTab` with query parameter `?tab=payslips` so employee navigation lands directly on personal payslips.
+- **DEF-PAY-02 Role-Based Privilege Boundaries in Payroll UI**: Isolated corporate management tabs (`Payroll Runs`, `Employee Roster`, `Contractors`, `Statutory Breakdown`) and admin action buttons (`New Payroll Run`, `Onboard Employee`) from employee sessions. Rendered tailored employee self-service workbench with personal take-home, TDS, and EPF metrics.
+- **DEF-PAY-03 Employee Self-Service Payslip Retrieval**: Added dedicated `GET /api/v1/payroll/my-payslips` endpoint returning payslips filtered strictly to authenticated employee email, avoiding corporate `/runs` 403 Forbidden errors.
+- **DEF-PAY-04 Form 16 Part B Certificate Self-Service**: Authorized employee access to `GET /api/v1/payroll/employees/{id}/form-16/pdf` for their own tax certificate download.
+- **DEF-PAY-05 Offset-Naive vs Offset-Aware Timezone Error**: Normalized `inv.expires_at` timezone handling in invitation acceptance flow (`POST /api/v1/tenants/accept-invite`).
+
 ## [1.0.4-ga] - 2026-10-16
 
 ### Added

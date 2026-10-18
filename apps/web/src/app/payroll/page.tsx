@@ -114,6 +114,11 @@ interface Payslip {
   employer_edli: number;
   payout_status: 'unpaid' | 'paid';
   payout_utr?: string;
+  employee_name?: string;
+  employee_code?: string;
+  fiscal_year?: string;
+  month?: number;
+  year?: number;
 }
 
 interface Contractor {
@@ -253,8 +258,18 @@ export default function PayrollPage() {
   // Search filter
   const [employeeSearch, setEmployeeSearch] = useState('');
   const [contractorSearch, setContractorSearch] = useState('');
+  const [userRole, setUserRole] = useState<string>('owner');
 
   useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const storedRole = (localStorage.getItem('b00k5_role') || localStorage.getItem('b00k5_user_role') || 'owner').toLowerCase();
+      setUserRole(storedRole);
+      const urlParams = new URLSearchParams(window.location.search);
+      const tabParam = urlParams.get('tab');
+      if (tabParam === 'payslips' || storedRole === 'employee') {
+        setActiveTab('payslips');
+      }
+    }
     loadPayrollData();
   }, []);
 
@@ -262,20 +277,32 @@ export default function PayrollPage() {
     setLoading(true);
     setErrorMsg(null);
     try {
-      const [empData, runsData, contractorsData, paymentsData] = await Promise.all([
-        fetchApi('/api/v1/payroll/employees').catch(() => []),
-        fetchApi('/api/v1/payroll/runs').catch(() => []),
-        fetchApi('/api/v1/payroll/contractors').catch(() => []),
-        fetchApi('/api/v1/payroll/contractor-payments').catch(() => [])
-      ]);
-      setEmployees(empData || []);
-      setRuns(runsData || []);
-      setContractors(contractorsData || []);
-      setContractorPayments(paymentsData || []);
+      const storedRole = typeof window !== 'undefined' ? (localStorage.getItem('b00k5_role') || localStorage.getItem('b00k5_user_role') || 'owner').toLowerCase() : 'owner';
 
-      if (runsData && runsData.length > 0) {
-        setSelectedRun(runsData[0]);
-        loadPayslipsForRun(runsData[0].id);
+      if (storedRole === 'employee') {
+        // Employee self-service data loading: fetch only personal payslips
+        const mySlips = await fetchApi('/api/v1/payroll/my-payslips').catch(() => []);
+        setPayslips(mySlips || []);
+        setRuns([]);
+        setEmployees([]);
+        setContractors([]);
+        setContractorPayments([]);
+      } else {
+        const [empData, runsData, contractorsData, paymentsData] = await Promise.all([
+          fetchApi('/api/v1/payroll/employees').catch(() => []),
+          fetchApi('/api/v1/payroll/runs').catch(() => []),
+          fetchApi('/api/v1/payroll/contractors').catch(() => []),
+          fetchApi('/api/v1/payroll/contractor-payments').catch(() => [])
+        ]);
+        setEmployees(empData || []);
+        setRuns(runsData || []);
+        setContractors(contractorsData || []);
+        setContractorPayments(paymentsData || []);
+
+        if (runsData && runsData.length > 0) {
+          setSelectedRun(runsData[0]);
+          loadPayslipsForRun(runsData[0].id);
+        }
       }
     } catch (err: any) {
       setErrorMsg(err.message || 'Failed to load payroll data.');
@@ -605,34 +632,38 @@ export default function PayrollPage() {
                 </div>
                 <div>
                   <h1 className="text-2xl font-bold tracking-tight text-white flex items-center gap-2">
-                    Payroll &amp; Statutory Roster
+                    {userRole === 'employee' ? 'My Payslips & Tax Compliance' : 'Payroll & Statutory Roster'}
                     <span className="text-xs font-normal px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                      Ind AS 19 / Schedule III
+                      {userRole === 'employee' ? 'Employee Self-Service' : 'Ind AS 19 / Schedule III'}
                     </span>
                   </h1>
                   <p className="text-sm text-slate-400">
-                    Dual-regime Section 192 TDS, EPF, ESIC, Professional Tax, and atomic 3-leg General Ledger vouchers.
+                    {userRole === 'employee'
+                      ? 'Personal monthly payslips, statutory deductions (EPF, PT, Section 192 TDS), and Form 16 certificates.'
+                      : 'Dual-regime Section 192 TDS, EPF, ESIC, Professional Tax, and atomic 3-leg General Ledger vouchers.'}
                   </p>
                 </div>
               </div>
             </div>
 
-            <div className="flex items-center gap-3">
-              <button
-                onClick={() => setShowNewRunModal(true)}
-                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 rounded-lg text-sm font-medium transition flex items-center gap-2"
-              >
-                <Calendar className="w-4 h-4 text-sky-400" />
-                New Payroll Run
-              </button>
-              <button
-                onClick={() => setShowOnboardModal(true)}
-                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm font-medium transition shadow-lg shadow-emerald-950/40 flex items-center gap-2"
-              >
-                <Plus className="w-4 h-4" />
-                Onboard Employee
-              </button>
-            </div>
+            {userRole !== 'employee' && (
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setShowNewRunModal(true)}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 rounded-lg text-sm font-medium transition flex items-center gap-2"
+                >
+                  <Calendar className="w-4 h-4 text-sky-400" />
+                  New Payroll Run
+                </button>
+                <button
+                  onClick={() => setShowOnboardModal(true)}
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm font-medium transition shadow-lg shadow-emerald-950/40 flex items-center gap-2"
+                >
+                  <Plus className="w-4 h-4" />
+                  Onboard Employee
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Alert Banners */}
@@ -650,97 +681,155 @@ export default function PayrollPage() {
           )}
 
           {/* Quick Metrics Bar */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800/80">
-              <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
-                <span>Active Roster</span>
-                <Users className="w-4 h-4 text-emerald-400" />
+          {userRole === 'employee' ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800/80">
+                <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+                  <span>Latest Take-Home Pay</span>
+                  <DollarSign className="w-4 h-4 text-emerald-400" />
+                </div>
+                <div className="text-2xl font-bold text-emerald-400">
+                  ₹{payslips[0] ? Number(payslips[0].net_salary).toLocaleString('en-IN', { minimumFractionDigits: 2 }) : '0.00'}
+                </div>
+                <div className="text-xs text-slate-500 mt-1">Disbursed to your salary account</div>
               </div>
-              <div className="text-2xl font-bold text-white">{employees.length}</div>
-              <div className="text-xs text-slate-500 mt-1">Active salaried employees</div>
-            </div>
 
-            <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800/80">
-              <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
-                <span>Latest Run Gross Pay</span>
-                <TrendingUp className="w-4 h-4 text-sky-400" />
+              <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800/80">
+                <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+                  <span>Available Payslips</span>
+                  <FileText className="w-4 h-4 text-sky-400" />
+                </div>
+                <div className="text-2xl font-bold text-white">{payslips.length}</div>
+                <div className="text-xs text-slate-500 mt-1">Itemized monthly receipts</div>
               </div>
-              <div className="text-2xl font-bold text-white">
-                ₹{runs[0] ? Number(runs[0].total_gross_pay).toLocaleString('en-IN') : '0.00'}
-              </div>
-              <div className="text-xs text-slate-500 mt-1">{runs[0] ? runs[0].run_number : 'No runs executed'}</div>
-            </div>
 
-            <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800/80">
-              <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
-                <span>Net Salary Payable</span>
-                <DollarSign className="w-4 h-4 text-emerald-400" />
+              <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800/80">
+                <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+                  <span>TDS Deducted (Latest)</span>
+                  <Shield className="w-4 h-4 text-indigo-400" />
+                </div>
+                <div className="text-2xl font-bold text-indigo-300">
+                  ₹{payslips[0] ? Number(payslips[0].tds_deducted).toLocaleString('en-IN', { minimumFractionDigits: 2 }) : '0.00'}
+                </div>
+                <div className="text-xs text-slate-500 mt-1">Section 192 tax withheld</div>
               </div>
-              <div className="text-2xl font-bold text-emerald-400">
-                ₹{runs[0] ? Number(runs[0].total_net_pay).toLocaleString('en-IN') : '0.00'}
-              </div>
-              <div className="text-xs text-slate-500 mt-1">GL Account 2070 balance</div>
-            </div>
 
-            <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800/80">
-              <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
-                <span>Statutory Dues Withheld</span>
-                <ShieldCheck className="w-4 h-4 text-indigo-400" />
+              <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800/80">
+                <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+                  <span>EPF Contribution (Latest)</span>
+                  <ShieldCheck className="w-4 h-4 text-purple-400" />
+                </div>
+                <div className="text-2xl font-bold text-purple-300">
+                  ₹{payslips[0] ? Number(payslips[0].employee_pf).toLocaleString('en-IN', { minimumFractionDigits: 2 }) : '0.00'}
+                </div>
+                <div className="text-xs text-slate-500 mt-1">Employee Provident Fund</div>
               </div>
-              <div className="text-2xl font-bold text-indigo-300">
-                ₹{runs[0] ? Number(runs[0].total_deductions).toLocaleString('en-IN') : '0.00'}
-              </div>
-              <div className="text-xs text-slate-500 mt-1">EPF + ESI + PT + TDS 192</div>
             </div>
-          </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800/80">
+                <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+                  <span>Active Roster</span>
+                  <Users className="w-4 h-4 text-emerald-400" />
+                </div>
+                <div className="text-2xl font-bold text-white">{employees.length}</div>
+                <div className="text-xs text-slate-500 mt-1">Active salaried employees</div>
+              </div>
+
+              <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800/80">
+                <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+                  <span>Latest Run Gross Pay</span>
+                  <TrendingUp className="w-4 h-4 text-sky-400" />
+                </div>
+                <div className="text-2xl font-bold text-white">
+                  ₹{runs[0] ? Number(runs[0].total_gross_pay).toLocaleString('en-IN') : '0.00'}
+                </div>
+                <div className="text-xs text-slate-500 mt-1">{runs[0] ? runs[0].run_number : 'No runs executed'}</div>
+              </div>
+
+              <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800/80">
+                <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+                  <span>Net Salary Payable</span>
+                  <DollarSign className="w-4 h-4 text-emerald-400" />
+                </div>
+                <div className="text-2xl font-bold text-emerald-400">
+                  ₹{runs[0] ? Number(runs[0].total_net_pay).toLocaleString('en-IN') : '0.00'}
+                </div>
+                <div className="text-xs text-slate-500 mt-1">GL Account 2070 balance</div>
+              </div>
+
+              <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800/80">
+                <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+                  <span>Statutory Dues Withheld</span>
+                  <ShieldCheck className="w-4 h-4 text-indigo-400" />
+                </div>
+                <div className="text-2xl font-bold text-indigo-300">
+                  ₹{runs[0] ? Number(runs[0].total_deductions).toLocaleString('en-IN') : '0.00'}
+                </div>
+                <div className="text-xs text-slate-500 mt-1">EPF + ESI + PT + TDS 192</div>
+              </div>
+            </div>
+          )}
 
           {/* Navigation Tabs */}
           <div className="flex border-b border-slate-800 gap-6">
-            <button
-              onClick={() => setActiveTab('runs')}
-              className={`pb-3 text-sm font-medium transition relative ${
-                activeTab === 'runs' ? 'text-emerald-400' : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              Payroll Runs & General Ledger
-              {activeTab === 'runs' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-500" />}
-            </button>
-            <button
-              onClick={() => setActiveTab('employees')}
-              className={`pb-3 text-sm font-medium transition relative ${
-                activeTab === 'employees' ? 'text-emerald-400' : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              Employee Roster & CTC ({employees.length})
-              {activeTab === 'employees' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-500" />}
-            </button>
-            <button
-              onClick={() => setActiveTab('payslips')}
-              className={`pb-3 text-sm font-medium transition relative ${
-                activeTab === 'payslips' ? 'text-emerald-400' : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              Itemized Payslips ({payslips.length})
-              {activeTab === 'payslips' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-500" />}
-            </button>
-            <button
-              onClick={() => setActiveTab('contractors')}
-              className={`pb-3 text-sm font-medium transition relative ${
-                activeTab === 'contractors' ? 'text-emerald-400' : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              Contractors &amp; Freelancers ({contractors.length})
-              {activeTab === 'contractors' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-500" />}
-            </button>
-            <button
-              onClick={() => setActiveTab('statutory')}
-              className={`pb-3 text-sm font-medium transition relative ${
-                activeTab === 'statutory' ? 'text-emerald-400' : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              Statutory Breakdown &amp; Schedule III
-              {activeTab === 'statutory' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-500" />}
-            </button>
+            {userRole === 'employee' ? (
+              <button
+                onClick={() => setActiveTab('payslips')}
+                className="pb-3 text-sm font-medium transition relative text-emerald-400"
+              >
+                My Payslips &amp; Tax Compliance ({payslips.length})
+                <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-500" />
+              </button>
+            ) : (
+              <>
+                <button
+                  onClick={() => setActiveTab('runs')}
+                  className={`pb-3 text-sm font-medium transition relative ${
+                    activeTab === 'runs' ? 'text-emerald-400' : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Payroll Runs & General Ledger
+                  {activeTab === 'runs' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-500" />}
+                </button>
+                <button
+                  onClick={() => setActiveTab('employees')}
+                  className={`pb-3 text-sm font-medium transition relative ${
+                    activeTab === 'employees' ? 'text-emerald-400' : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Employee Roster & CTC ({employees.length})
+                  {activeTab === 'employees' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-500" />}
+                </button>
+                <button
+                  onClick={() => setActiveTab('payslips')}
+                  className={`pb-3 text-sm font-medium transition relative ${
+                    activeTab === 'payslips' ? 'text-emerald-400' : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Itemized Payslips ({payslips.length})
+                  {activeTab === 'payslips' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-500" />}
+                </button>
+                <button
+                  onClick={() => setActiveTab('contractors')}
+                  className={`pb-3 text-sm font-medium transition relative ${
+                    activeTab === 'contractors' ? 'text-emerald-400' : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Contractors &amp; Freelancers ({contractors.length})
+                  {activeTab === 'contractors' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-500" />}
+                </button>
+                <button
+                  onClick={() => setActiveTab('statutory')}
+                  className={`pb-3 text-sm font-medium transition relative ${
+                    activeTab === 'statutory' ? 'text-emerald-400' : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Statutory Breakdown &amp; Schedule III
+                  {activeTab === 'statutory' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-500" />}
+                </button>
+              </>
+            )}
           </div>
 
           {/* TAB 1: PAYROLL RUNS */}
@@ -1026,26 +1115,35 @@ export default function PayrollPage() {
           {activeTab === 'payslips' && (
             <div className="space-y-4">
               <div className="flex items-center justify-between gap-4">
-                <div className="flex items-center gap-3">
-                  <span className="text-sm text-slate-400">Viewing Run:</span>
-                  <select
-                    value={selectedRun?.id || ''}
-                    onChange={e => {
-                      const run = runs.find(r => r.id === e.target.value);
-                      if (run) {
-                        setSelectedRun(run);
-                        loadPayslipsForRun(run.id);
-                      }
-                    }}
-                    className="bg-slate-900 border border-slate-800 rounded-lg text-sm text-slate-200 px-3 py-1.5 focus:outline-none focus:border-emerald-500"
-                  >
-                    {runs.map(r => (
-                      <option key={r.id} value={r.id}>
-                        {r.run_number} ({MONTH_NAMES[r.month - 1]} {r.year}) - {r.status.toUpperCase()}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                {userRole !== 'employee' ? (
+                  <div className="flex items-center gap-3">
+                    <span className="text-sm text-slate-400">Viewing Run:</span>
+                    <select
+                      value={selectedRun?.id || ''}
+                      onChange={e => {
+                        const run = runs.find(r => r.id === e.target.value);
+                        if (run) {
+                          setSelectedRun(run);
+                          loadPayslipsForRun(run.id);
+                        }
+                      }}
+                      className="bg-slate-900 border border-slate-800 rounded-lg text-sm text-slate-200 px-3 py-1.5 focus:outline-none focus:border-emerald-500"
+                    >
+                      {runs.map(r => (
+                        <option key={r.id} value={r.id}>
+                          {r.run_number} ({MONTH_NAMES[r.month - 1]} {r.year}) - {r.status.toUpperCase()}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <ShieldCheck className="w-5 h-5 text-emerald-400" />
+                    <span className="text-sm font-medium text-slate-200">
+                      Personal Salary &amp; Tax Compliance History
+                    </span>
+                  </div>
+                )}
 
                 <div className="text-xs text-slate-400">
                   Total Slips: <span className="font-bold text-white">{payslips.length}</span>
@@ -1073,18 +1171,30 @@ export default function PayrollPage() {
                     {payslips.length === 0 ? (
                       <tr>
                         <td colSpan={11} className="py-12 text-center text-slate-500">
-                          No payslips calculated for this run yet. Run &quot;Calculate&quot; in Payroll Runs tab.
+                          {userRole === 'employee'
+                            ? 'No payslips published for your profile yet.'
+                            : 'No payslips calculated for this run yet. Run "Calculate" in Payroll Runs tab.'}
                         </td>
                       </tr>
                     ) : (
                       payslips.map(ps => {
                         const emp = employees.find(e => e.id === ps.employee_id);
+                        const empName = ps.employee_name || (emp ? `${emp.first_name} ${emp.last_name}` : 'Employee');
+                        const empCodeDisplay = ps.employee_code || emp?.employee_code || 'EMP';
+                        const fy = ps.fiscal_year || selectedRun?.fiscal_year || '2026-27';
                         return (
                           <tr key={ps.id} className="hover:bg-slate-800/30 transition">
                             <td className="py-3 px-3 font-mono text-slate-400">{ps.payslip_number}</td>
                             <td className="py-3 px-3">
-                              <div className="font-medium text-white">{emp ? `${emp.first_name} ${emp.last_name}` : 'Employee'}</div>
-                              <div className="text-slate-500 font-mono">{emp?.employee_code}</div>
+                              <div className="font-medium text-white">{empName}</div>
+                              <div className="text-slate-500 font-mono text-2xs">
+                                {empCodeDisplay}
+                                {ps.month && ps.year && (
+                                  <span className="ml-2 text-sky-400">
+                                    • {MONTH_NAMES[ps.month - 1]} {ps.year}
+                                  </span>
+                                )}
+                              </div>
                             </td>
                             <td className="py-3 px-3 text-right text-slate-300">{ps.paid_days}</td>
                             <td className="py-3 px-3 text-right font-mono text-slate-200">
@@ -1121,8 +1231,8 @@ export default function PayrollPage() {
                               <button
                                 onClick={() => {
                                   handleDownloadFile(
-                                    `/api/v1/payroll/employees/${ps.employee_id}/form-16/pdf?financial_year=${selectedRun?.fiscal_year || '2026-27'}`,
-                                    `Form16_${emp?.employee_code || ps.employee_id}_${(selectedRun?.fiscal_year || '2026-27').replace('/', '-')}.pdf`
+                                    `/api/v1/payroll/employees/${ps.employee_id}/form-16/pdf?financial_year=${fy}`,
+                                    `Form16_${empCodeDisplay}_${fy.replace('/', '-')}.pdf`
                                   );
                                 }}
                                 className="ml-1 px-2 py-1 rounded bg-indigo-950/60 hover:bg-indigo-900 border border-indigo-700/50 text-indigo-300 text-2xs font-medium"
@@ -2079,7 +2189,21 @@ export default function PayrollPage() {
                   </div>
                 </div>
 
-                <div className="flex justify-end pt-2">
+                <div className="flex justify-between items-center pt-2">
+                  <button
+                    onClick={() => {
+                      const empCodeDisplay = selectedPayslip.employee_code || 'EMP';
+                      const fy = selectedPayslip.fiscal_year || selectedRun?.fiscal_year || '2026-27';
+                      handleDownloadFile(
+                        `/api/v1/payroll/employees/${selectedPayslip.employee_id}/form-16/pdf?financial_year=${fy}`,
+                        `Form16_${empCodeDisplay}_${fy.replace('/', '-')}.pdf`
+                      );
+                    }}
+                    className="px-3 py-1.5 bg-indigo-950/70 hover:bg-indigo-900 border border-indigo-700/60 text-indigo-300 rounded-lg text-xs font-medium flex items-center gap-1.5"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    Download Form 16 (Part B)
+                  </button>
                   <button
                     onClick={() => setShowPayslipModal(false)}
                     className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-sm font-medium"

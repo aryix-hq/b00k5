@@ -88,3 +88,4 @@ Under Section 17(5)(h) of the CGST Act, 2017, Input Tax Credit (ITC) must be rev
 ## 4. Why Deferred in Favor of Option A
 * **User Profile Fit:** Companies currently adopting `b00k5` for local self-hosting are primarily software companies, consulting practices, and digital service agencies that have zero physical warehouse inventory.
 * **Maintainability:** Option C requires 12 new relational tables, complex concurrency locks for lot depletion, and warehouse UI components. Deferring this keeps the codebase ultra-lean and focused on sovereign banking, payroll, and GST.
+

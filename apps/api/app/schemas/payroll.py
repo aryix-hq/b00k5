@@ -134,6 +134,12 @@ class PayslipResponse(BaseModel):
     pdf_vault_path: Optional[str] = None
     created_at: datetime
 
+    employee_name: Optional[str] = None
+    employee_code: Optional[str] = None
+    fiscal_year: Optional[str] = None
+    month: Optional[int] = None
+    year: Optional[int] = None
+
     model_config = ConfigDict(from_attributes=True)
 
 

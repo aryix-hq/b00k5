@@ -96,6 +96,10 @@ def enforce_rbac_policy(role: str, method: str, path: str) -> None:
                 return
         if norm_path.startswith(("/api/v1/auth", "/api/v1/pricing")) and norm_method in ("GET", "HEAD", "OPTIONS"):
             return
+        if norm_path.startswith("/api/v1/payroll") and norm_method in ("GET", "HEAD", "OPTIONS"):
+            # Allow employee self-service payslip and Form 16 endpoints
+            if norm_path.startswith("/api/v1/payroll/my-") or "/form-16" in norm_path or "/payslips" in norm_path:
+                return
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="RBAC Violation: Employee role cannot access restricted finance, ledger, IAM, governance, or cap-table resources."

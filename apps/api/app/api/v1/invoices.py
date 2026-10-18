@@ -23,7 +23,9 @@ from app.core.config import settings
 from app.core.fiscal_year import get_or_create_fiscal_year
 from app.core.iam import require_owner, require_ca_or_owner, IAMContext
 from app.services.einvoice_service import EInvoiceService
+from app.services.gstr1_export_service import GSTR1ExportService
 from app.schemas.einvoice import EInvoiceResponse, EInvoiceGenerateRequest
+from fastapi.responses import JSONResponse
 
 router = APIRouter()
 
@@ -1741,6 +1743,37 @@ async def get_invoice_einvoice(
         grand_total=inv.grand_total,
         einvoice_payload=inv.einvoice_payload or {}
     )
+
+
+@router.get("/export/gstr-1")
+async def export_gstr1_json(
+    year: int = Query(..., description="Calendar year, e.g. 2026"),
+    month: int = Query(..., ge=1, le=12, description="Calendar month (1-12)"),
+    ctx: IAMContext = Depends(require_ca_or_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Exports official GSTN GSTR-1 offline tool JSON for direct upload to gst.gov.in.
+    Includes B2B, B2CL, B2CS, CDNR, EXP, HSN Table 12, and Document Issue Table 13.
+    """
+    try:
+        payload = await GSTR1ExportService.generate_gstr1_json(
+            session=db,
+            tenant_id=ctx.tenant.id,
+            year=year,
+            month=month
+        )
+        fp = f"{month:02d}{year}"
+        gstin = ctx.tenant.gstin or "29AABCV1234F1Z5"
+        filename = f"GSTR1_{gstin}_{fp}.json"
+        return JSONResponse(
+            content=payload,
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"'
+            }
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to generate GSTR-1 JSON: {str(e)}")
 
 
 

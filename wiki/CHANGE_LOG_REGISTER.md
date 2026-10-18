@@ -6,6 +6,38 @@ This log provides an auditable, chronological record of all architectural modifi
 
 ## 📅 Chronological Change Register
 
+### [2026-10-18] — Milestone: `FEAT-PAY-01` Sovereign Payroll Core Implementation
+- **Branch / PR:** `feat/sovereign-payroll-core-and-ledger`
+- **Category:** `feat` / `payroll` / `ledger` / `statutory`
+- **Author:** Sovereign Architecture & Core Engineering Working Group
+- **Key Deliverables:**
+  1. **PostgreSQL 16 Schema:** Added Section 14 to `init_schema.sql` defining `employees`, `salary_structures`, `payroll_runs`, `payslips`, and `employee_tax_declarations` with Row-Level Security (RLS) isolation and Payroll Chart of Accounts (`2070-2077`, `4020-4023`).
+  2. **Statutory Calculation Engine (`PayrollService`):** Implemented Section 192 TDS (Finance Act 2024 New 115BAC vs Old regime), EPF Act 1952 (12% employee/employer, EPS capped at ₹1,250), ESI Act 1948 (0.75% / 3.25% on gross $\le$ ₹21,000), Professional Tax (Karnataka, Maharashtra, Delhi), and Loss of Pay (LOP) calendar-day proration using Banker's Rounding (`Decimal(15, 2)`).
+  3. **Atomic 3-Leg Double-Entry General Ledger Postings:**
+     - **Leg 1 (Month-End Accrual):** Dr. Salaries (4020), Dr. Employer PF (4021), Dr. Employer ESI (4022) vs Cr. Net Salary Payable (2070), Cr. Employee PF (2071), Cr. Employer PF (2072), Cr. Employee ESI (2073), Cr. Employer ESI (2074), Cr. PT (2075), Cr. TDS 192 (2076) with SHA-256 seal.
+     - **Leg 2 (Salary Disbursement):** Dr. Net Salary Payable (2070) vs Cr. Bank Account (1010).
+  4. **Schedule III Integration:** Mapped payroll liability accounts `2070-2077` into Note 7 (Other Current Liabilities) and expense accounts `4020-4023` into Note 17 (Employee Benefits Expense).
+  5. **FastAPI Endpoints:** Created `/api/v1/payroll` endpoints for employees, salary structures, payroll runs, calculate, lock/post-accrual, post-disbursement, payslips, and tax declarations.
+  6. **Comprehensive Automated Tests:** Implemented unit and live Postgres E2E tests in `apps/api/tests/test_payroll_ledger_inviolability.py` and `apps/api/tests/test_payroll_api_e2e.py` (50/50 test cases passing).
+  7. **Sovereign Payroll Web UI:** Built dedicated Next.js App Router interface (`apps/web/src/app/payroll/page.tsx`) with monthly run lifecycle management (Calculate, Leg 1 Accrual, Leg 2 Disbursement), Employee Onboarding modal with CTC structures, itemized payslip viewer, and Schedule III P&L / Balance Sheet statutory mapping.
+  8. **Sidebar Integration:** Integrated "Payroll & Salaries" navigation links across Company Owner, CA / Auditor, Platform Super Admin, and Employee workspace roles in `apps/web/src/components/Sidebar.tsx`.
+
+---
+
+### [2026-10-18] — Release `v1.1.0-alpha`: Enterprise Accounting Benchmark & Sovereign Payroll Roadmap
+- **PR / Milestone:** `feat/enterprise-benchmark-and-feature-registry`
+- **Category:** `feat` / `architecture` / `statutory`
+- **Author:** Product Management & System Architecture Working Group
+- **Key Deliverables:**
+  1. **Master Competitive Benchmarking:** Published deep-dive comparative matrix and reverse-engineering report across `b00k5`, Zoho Books, Odoo 17/18 Accounting, Zoho Payroll, RazorpayX, and Tally Prime.
+  2. **Embedded Sovereign Payroll Architecture:** Designed atomic 3-leg general ledger posting (Accrual $\rightarrow$ Disbursement $\rightarrow$ Remittance) with direct Schedule III Note 17 (*Employee Benefits Expense*) integration.
+  3. **Statutory Withholding Engines:** Reverse-engineered and specified Section 192 TDS (Dual-Regime with Budget 2024 ₹75,000 standard deduction), EPF Act 1952 (ECR export), ESIC Act 1948, and state-wise Professional Tax (PT).
+  4. **Supply Chain & Perpetual Inventory (Ind AS 2):** Specified Purchase Order $\rightarrow$ Goods Inward $\leftrightarrow$ Vendor Bill 3-Way Matching, Landed Cost allocation, and real-time COGS FIFO ledger vouchers.
+  5. **Universal Audit Trail (Rule 3(1)):** Architected MCA Companies (Accounts) Rules 2014 Rule 3(1) tamper-proof append-only audit trail table with database triggers.
+  6. **Feature Registry Expansion:** Added official feature IDs `FEAT-PAY-01` to `05`, `FEAT-INV-05` to `07`, `FEAT-SC-01` to `02`, `FEAT-BANK-04` to `05`, and `FEAT-AUDIT-01` to `wiki/FEATURE_REGISTRY.md`.
+
+---
+
 ### [2026-10-16] — Release `v1.0.4-ga`: Repository Public Readiness, PR Template & ARYIX Ecosystem
 - **PR / Milestone:** `v1.0.4-ga`
 - **Category:** `feat` / `chore` / `governance`

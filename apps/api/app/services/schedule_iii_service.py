@@ -376,9 +376,9 @@ class ScheduleIIIService:
             amt = Decimal(str(it.get("amount") or 0))
             if code.startswith("203") or code.startswith("204"):
                 trade_payables += amt
-            elif code.startswith("205") or code.startswith("206"):
+            elif code.startswith("205") or code.startswith("206") or (code.startswith("207") and code not in ["2078", "2079"]):
                 other_current_liabilities += amt
-            elif code.startswith("207"):
+            elif code.startswith("207") or code.startswith("208"):
                 short_term_provisions += amt
             elif code.startswith("202"):
                 long_term_borrowings += amt
@@ -656,8 +656,8 @@ class ScheduleIIIService:
             code = str(it.get("code") or "")
             amt = Decimal(str(it.get("amount") or 0))
             if code.startswith("203") or code.startswith("204"): trade_payables += amt
-            elif code.startswith("205") or code.startswith("206"): other_current_liabilities += amt
-            elif code.startswith("207"): short_term_provisions += amt
+            elif code.startswith("205") or code.startswith("206") or (code.startswith("207") and code not in ["2078", "2079"]): other_current_liabilities += amt
+            elif code.startswith("207") or code.startswith("208"): short_term_provisions += amt
             elif code.startswith("202"): long_term_borrowings += amt
             else: other_current_liabilities += amt
 

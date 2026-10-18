@@ -17,22 +17,23 @@ Indian corporate founders and financial professionals face a critical dilemma: t
 
 ## 2. Competitive Benchmarking Matrix
 
-| Feature / Capability | **b00k5** | **Tally Prime** | **Zoho Books** | **QuickBooks India** | **ClearTax** | **Khatabook / myBillBook** |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Hosting Model** | **Local-First / Private Cloud (Docker)** | Local Desktop (Windows Only) | Multi-Tenant Cloud | Discontinued (2023) | Multi-Tenant Cloud | Mobile / Cloud |
-| **Data Sovereignty & Open-Source** | **100% Open-Source / Self-Hosted** | Closed Proprietary | Closed Proprietary | Closed / Exited | Closed Proprietary | Closed Proprietary |
-| **Database Architecture** | **PostgreSQL 16 + RLS (ACID)** | Proprietary Binary (`.tsf`) | Proprietary Cloud DB | Cloud DB | Cloud DB | SQLite / Cloud Sync |
-| **MCA Board Meeting Governance (SS-1)** | **Native (§173(1) 120-Day Watchdog)** | None | None | None | None | None |
-| **Hardware USB DSC Token Signing** | **Native (X.509 PKCS#11 Bridge)** | None (Manual PDF) | External Paid Add-on | None | Cloud DSC Add-on | None |
-| **Form DPT-3 Loan Declarations** | **Automated (Exempt / Non-Exempt)** | None | None | None | None | None |
-| **Authentic Binary Source Vault** | **Native MinIO (Original Unaltered)** | Discarded / Unlinked | Compressed Attachment | Cloud Blob | Cloud Attachment | Basic Photo |
-| **Double-Entry Ledger Balancing** | **Strict $\vert\sum\text{Dr}-\sum\text{Cr}\vert \equiv 0.00$** | Yes | Yes | Yes | Tax Filing Only | Single-Entry / Cashbook |
-| **3-Tier Bank Reconciliation** | **Automated + Suspense (Code 2099)** | Semi-Automated | Semi-Automated | Discontinued | Bank Sync | None |
-| **Schedule III MCA Balance Sheet Export** | **1-Click ICAI Standardized Pack** | Requires Manual CA Map | Add-on Report | None | Tax Audit Utility | None |
-| **Sec 69C / 115BBE 78% Tax Watchdog** | **Native Form Warnings & Audits** | None | None | None | None | None |
-| **Sec 40A(3) ₹10,000 Cash Limit Alert** | **Native Real-Time Enforcement** | None | Basic Warning | None | Scrutiny Check | None |
-| **Multi-Tenancy & RLS Isolation** | **PostgreSQL RLS (`app.current_tenant`)** | None (File per company) | App-Level Filters | App-Level | App-Level | None |
-| **Pricing & Cost Structure** | **Zero License Fees / Self-Hosted** | Perpetual + Annual TSS | Per-User Monthly SaaS | Discontinued | Per-Filing SaaS | Freemium / Paid SaaS |
+| Feature / Capability | **b00k5 Sovereign ERP** | **Zoho Books & Payroll** | **Odoo 17/18 Accounting** | **RazorpayX Payroll** | **Tally Prime** |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **Hosting Model** | **Local-First / Sovereign Docker** | Multi-Tenant Cloud | Cloud or Self-hosted | Multi-Tenant Cloud | Local Desktop (Win Only) |
+| **Data Sovereignty & Open-Source** | **100% Open-Source / Self-Hosted** | Closed Proprietary | Open Core / Paid Enterprise | Closed Proprietary | Closed Proprietary |
+| **Database Architecture** | **PostgreSQL 16 + RLS (ACID)** | Proprietary Cloud DB | PostgreSQL (Multi-company) | Cloud DB | Proprietary Binary (`.tsf`) |
+| **MCA Secretarial Governance (SS-1/SS-2)** | **Native (Registers, Minutes, DIN/CIN)**| **None (0%)** | **None (0%)** | **None (0%)** | **None (0%)** |
+| **Hardware USB DSC Signing (PKCS#11)** | **Native (Localhost Bridge :28045)** | Cloud Paid Add-on | External Plugin | None | None |
+| **Double-Entry Ledger Invariance** | **Strict $\vert\sum\text{Dr}-\sum\text{Cr}\vert \equiv 0.00$** | Enforced | Unified `account.move` | Journal Summary Export | Enforced |
+| **Schedule III Division I Reporting** | **Automated Notes 1–20 + Auto-Round** | India Edition (Basic) | Custom Reports Required | None (Payroll Only) | Manual CA Mapping |
+| **Perpetual FIFO Inventory (Ind AS 2)** | **Native Real-Time COGS Engine** | FIFO (Continuous) | Perpetual FIFO & AVCO | None | Periodic / Basic FIFO |
+| **3-Way PO Matching & Landed Costs** | **PO $\leftrightarrow$ GRN $\leftrightarrow$ Bill + Landed Cost**| PO $\rightarrow$ Bill + Landed Cost | 3-Way Match + Landed Cost| None | Basic PO to Purchase |
+| **Embedded Sovereign Payroll (192)** | **Native 3-Leg GL + ECR/ESIC/PT** | External Paid (Zoho Payroll) | Global Rules (Weak India) | Native Instant Payouts | Basic Tally Payroll |
+| **Contractor 194C/194J Integration** | **Unified People Roster + Form 16A** | Separate AP Bills | Generic Vendor Bills | Instant Pay + Form 16A | Manual Vouchers |
+| **Universal Audit Trail (Rule 3(1))** | **Immutable DB Triggers (Append-Only)**| Change Log with Timestamps | Field Tracking (Chatter) | Standard Audit Log | Tally Edit Log (Separate) |
+| **Banking Feeds & Reconciliation** | **3-Tier Matcher + Dynamic Rules** | Direct Feeds + Rules | Reconciliation Widget | Instant Virtual Accounts | Manual CSV Bank Tally |
+| **Pricing & Cost Structure** | **Zero License / Zero Per-Seat Fee** | ₹1,500–₹8,000/mo + ₹50/emp | €20–€40/user/mo | ₹100/emp/mo + Bank Fees | ₹22,500+ one-time + TSS |
+
 
 ---
 

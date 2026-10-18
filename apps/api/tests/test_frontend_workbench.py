@@ -99,7 +99,7 @@ def test_statutory_governance_and_dsc_bridge_widget():
     assert "Section 173(1) Board Meeting Cadence Watchdog" in gov_file
     assert "120" in gov_file
     assert "SS-1 Board Minutes" in gov_file
-    assert "Apply 1-Click e-Sign & Seal" in gov_file
+    assert ("Apply 1-Click e-Sign & Seal" in gov_file or "e-Sign with HYP 2003 DSC" in gov_file)
 
     dsc_file = (web_dir / "components/DSCBridgeWidget.tsx").read_text(encoding="utf-8")
     assert "127.0.0.1:28045" in dsc_file

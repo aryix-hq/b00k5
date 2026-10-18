@@ -71,3 +71,33 @@ This registry documents all core business capabilities, statutory compliance eng
 | `FEAT-DR-01` | AES-256-GCM Dual-Layer Backup | CA 2013 §128(5) | Automated database and S3 backup drills achieving RTO < 30s with zero ledger drift. |
 | `FEAT-SRE-01` | Branch Deploy Automation Script | DevOps Invariant | One-command deploy of any git branch to isolated test environment (`scripts/branch_deploy.sh`). |
 
+### 9. Embedded Sovereign Payroll & Unified People Roster
+| Feature ID | Feature Name | Statutory Citation | Acceptance Criteria |
+| :--- | :--- | :--- | :--- |
+| `FEAT-PAY-01` | Double-Entry 3-Leg Payroll Engine | Ind AS 19 / CA 2013 | Atomic Accrual, Bank Disbursement, and Statutory Remittance journal vouchers; zero float drift. |
+| `FEAT-PAY-02` | Section 192 TDS Dual Regime Engine | IT Act §192 / §115BAC | Standard deduction (₹75k New / ₹50k Old), §87A rebate, progressive monthly proration. |
+| `FEAT-PAY-03` | EPFO ECR & ESIC Monthly Returns | EPF 1952 / ESI 1948 | Official ECR text file and ESIC monthly portal file export; wage cutoff rules (₹15k / ₹21k). |
+| `FEAT-PAY-04` | Universal Bank CMS Batch Exporters | RBI / Banking Std | Direct batch generation for ICICI CMS, HDFC ENet, SBI CMP, and NPCI NACH. |
+| `FEAT-PAY-05` | Unified Contractor Roster (194C/J) | IT Act §194C / §194J | Seamless contractor fee disbursement with automated TDS withholding and quarterly Form 16A. |
+
+### 10. Perpetual Inventory & Supply Chain (Ind AS 2)
+| Feature ID | Feature Name | Statutory Citation | Acceptance Criteria |
+| :--- | :--- | :--- | :--- |
+| `FEAT-INV-05` | Items Master Catalog & UOM | CGST Act §31 | Goods vs Services distinction with HSN/SAC, barcode, reorder point, and linked GL accounts. |
+| `FEAT-INV-06` | Ind AS 2 Perpetual FIFO Engine | Ind AS 2 / AS-2 | Automated FIFO valuation layers and real-time COGS debit journal vouchers on delivery/sale. |
+| `FEAT-SC-01` | Purchase Orders & 3-Way Match | Accounting Stds | Comparison of PO Line $\leftrightarrow$ Goods Receipt $\leftrightarrow$ Vendor Bill; variance detection. |
+| `FEAT-SC-02` | Landed Cost Allocation Engine | Ind AS 2 §11 | Capitalize freight, customs duties, and handling into inventory valuation layers. |
+| `FEAT-INV-07` | Stock Write-Off & ITC Reversal | CGST Act §17(5)(h) | Automatic ITC reversal journal vouchers when goods are lost, stolen, destroyed, or written off. |
+
+### 11. Banking Automation & Dynamic Rules
+| Feature ID | Feature Name | Statutory Citation | Acceptance Criteria |
+| :--- | :--- | :--- | :--- |
+| `FEAT-BANK-04` | Dynamic Regex Banking Rules | Accounting Stds | Auto-categorization and GL mapping based on narration patterns, party name, and amount thresholds. |
+| `FEAT-BANK-05` | Interactive Side-by-Side Split UI | UI Ergonomics | Dual-pane workbench: Bank statement on left, book suggestions on right; 1-click keyboard split/match. |
+
+### 12. Statutory Audit Trail & Full GST Suite
+| Feature ID | Feature Name | Statutory Citation | Acceptance Criteria |
+| :--- | :--- | :--- | :--- |
+| `FEAT-AUDIT-01` | Rule 3(1) Universal Audit Trail | CA (Accounts) R.3(1) | Append-only database table with triggers permanently preventing UPDATE or DELETE on audit logs. |
+| `FEAT-GST-01` | GSTR-1 Portal-Ready JSON Export | CGST Act §37 | Full JSON export covering Tables 4 (B2B), 5 (B2CL), 7 (B2CS), 9B (CDNR), 12 (HSN), and 13 (Docs). |
+| `FEAT-GST-02` | Rule 37 180-Day ITC Reversal Watchdog | CGST Rule 37 | Automated alert and journal reversal with Section 50 interest on unpaid vendor bills $>180$ days. |

@@ -17,6 +17,13 @@ from app.models.mca_registers import (
     DirectorAnnualDisclosure,
     ShareCertificate
 )
+from app.models.payroll import (
+    Employee,
+    SalaryStructure,
+    PayrollRun,
+    Payslip,
+    EmployeeTaxDeclaration
+)
 
 __all__ = [
     "Tenant",
@@ -25,6 +32,11 @@ __all__ = [
     "ChartOfAccounts",
     "JournalEntry",
     "JournalLine",
+    "Employee",
+    "SalaryStructure",
+    "PayrollRun",
+    "Payslip",
+    "EmployeeTaxDeclaration",
     "Contact",
     "Invoice",
     "InvoiceItem",

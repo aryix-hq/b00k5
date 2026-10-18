@@ -286,7 +286,8 @@ async def accept_invitation(
     if not inv:
         raise HTTPException(status_code=400, detail="Invalid, expired, or already accepted invitation token.")
 
-    if inv.expires_at < datetime.utcnow():
+    exp_at = inv.expires_at.replace(tzinfo=None) if inv.expires_at and inv.expires_at.tzinfo else inv.expires_at
+    if exp_at and exp_at < datetime.utcnow():
         raise HTTPException(status_code=400, detail="Invitation token has expired.")
 
     # Find or provision user

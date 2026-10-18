@@ -9,7 +9,7 @@ from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_db, get_current_user, get_current_tenant
 from app.models.tenant import User, Tenant
-from app.models.payroll import Employee, SalaryStructure, PayrollRun, Payslip, EmployeeTaxDeclaration
+from app.models.payroll import Employee, SalaryStructure, PayrollRun, Payslip, EmployeeTaxDeclaration, Contractor, ContractorPayment
 from app.models.ledger import JournalEntry
 from app.schemas.payroll import (
     EmployeeCreate, EmployeeUpdate, EmployeeResponse,
@@ -17,7 +17,10 @@ from app.schemas.payroll import (
     PayrollRunCreate, PayrollRunResponse, PayrollRunDetailResponse,
     PayslipResponse,
     EmployeeTaxDeclarationCreate, EmployeeTaxDeclarationResponse,
-    Form16Response
+    Form16Response,
+    ContractorCreate, ContractorUpdate, ContractorResponse,
+    ContractorPaymentCreate, ContractorPaymentResponse,
+    Form16AResponse
 )
 from app.services.payroll_service import PayrollService
 from app.core.iam import require_owner, require_ca_or_owner, IAMContext
@@ -663,5 +666,164 @@ async def download_form_16_pdf(
         )
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+# ============================================================================
+# 8. CONTRACTORS & FREELANCERS (PHASE 3 / SECTION 194C & 194J)
+# ============================================================================
+
+@router.post("/contractors", response_model=ContractorResponse, status_code=status.HTTP_201_CREATED)
+async def create_contractor(
+    payload: ContractorCreate,
+    ctx: IAMContext = Depends(require_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Onboard a new contractor or professional freelancer."""
+    try:
+        return await PayrollService.onboard_contractor(db, ctx.tenant.id, payload)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.get("/contractors", response_model=List[ContractorResponse])
+async def list_contractors(
+    ctx: IAMContext = Depends(require_ca_or_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """List all contractors and professional freelancers for the active tenant."""
+    return await PayrollService.get_contractors(db, ctx.tenant.id)
+
+
+@router.get("/contractors/{contractor_id}", response_model=ContractorResponse)
+async def get_contractor(
+    contractor_id: uuid.UUID,
+    ctx: IAMContext = Depends(require_ca_or_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Retrieve contractor details."""
+    contractor = await PayrollService.get_contractor(db, ctx.tenant.id, contractor_id)
+    if not contractor:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Contractor not found.")
+    return contractor
+
+
+@router.post("/contractor-payments", response_model=ContractorPaymentResponse, status_code=status.HTTP_201_CREATED)
+async def create_contractor_payment(
+    payload: ContractorPaymentCreate,
+    ctx: IAMContext = Depends(require_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Record an invoice or retainer claim for a contractor with auto-calculated TDS."""
+    try:
+        payment = await PayrollService.create_contractor_payment(db, ctx.tenant.id, payload)
+        contractor = await PayrollService.get_contractor(db, ctx.tenant.id, payment.contractor_id)
+        res = ContractorPaymentResponse.model_validate(payment)
+        if contractor:
+            res.contractor_name = contractor.name
+            res.contractor_pan = contractor.pan_number
+            res.contractor_code = contractor.contractor_code
+        return res
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.get("/contractor-payments", response_model=List[ContractorPaymentResponse])
+async def list_contractor_payments(
+    contractor_id: Optional[uuid.UUID] = None,
+    ctx: IAMContext = Depends(require_ca_or_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """List contractor payment records with TDS breakdowns."""
+    payments = await PayrollService.get_contractor_payments(db, ctx.tenant.id, contractor_id)
+    results = []
+    for p in payments:
+        res = ContractorPaymentResponse.model_validate(p)
+        if p.contractor:
+            res.contractor_name = p.contractor.name
+            res.contractor_pan = p.contractor.pan_number
+            res.contractor_code = p.contractor.contractor_code
+        results.append(res)
+    return results
+
+
+@router.post("/contractor-payments/{payment_id}/accrue", response_model=ContractorPaymentResponse)
+async def accrue_contractor_payment(
+    payment_id: uuid.UUID,
+    ctx: IAMContext = Depends(require_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Leg 1: Post contractor invoice accrual to General Ledger."""
+    try:
+        payment = await PayrollService.accrue_contractor_payment(db, ctx.tenant.id, payment_id, ctx.user.id)
+        contractor = await PayrollService.get_contractor(db, ctx.tenant.id, payment.contractor_id)
+        res = ContractorPaymentResponse.model_validate(payment)
+        if contractor:
+            res.contractor_name = contractor.name
+            res.contractor_pan = contractor.pan_number
+            res.contractor_code = contractor.contractor_code
+        return res
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.post("/contractor-payments/{payment_id}/disburse", response_model=ContractorPaymentResponse)
+async def disburse_contractor_payment(
+    payment_id: uuid.UUID,
+    utr: Optional[str] = Query(None),
+    ctx: IAMContext = Depends(require_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Leg 2: Post contractor payment disbursement from bank account to General Ledger."""
+    try:
+        payment = await PayrollService.disburse_contractor_payment(db, ctx.tenant.id, payment_id, ctx.user.id, utr)
+        contractor = await PayrollService.get_contractor(db, ctx.tenant.id, payment.contractor_id)
+        res = ContractorPaymentResponse.model_validate(payment)
+        if contractor:
+            res.contractor_name = contractor.name
+            res.contractor_pan = contractor.pan_number
+            res.contractor_code = contractor.contractor_code
+        return res
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.get("/contractors/{contractor_id}/form-16a", response_model=Form16AResponse)
+async def get_form_16a(
+    contractor_id: uuid.UUID,
+    fiscal_year: Optional[str] = Query(None, alias="financial_year"),
+    ctx: IAMContext = Depends(require_ca_or_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Calculates Form 16A quarterly / annual TDS withholding summary for a contractor."""
+    try:
+        return await PayrollService.calculate_form_16a(db, contractor_id, fiscal_year)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.get("/contractors/{contractor_id}/form-16a/pdf")
+async def download_form_16a_pdf(
+    contractor_id: uuid.UUID,
+    fiscal_year: Optional[str] = Query(None, alias="financial_year"),
+    ctx: IAMContext = Depends(require_ca_or_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """Generates and downloads certified Form 16A TDS certificate PDF under Section 203."""
+    contractor = await PayrollService.get_contractor(db, ctx.tenant.id, contractor_id)
+    if not contractor:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Contractor not found.")
+
+    try:
+        pdf_bytes = await PayrollService.generate_form_16a_pdf_for_contractor(db, contractor_id, fiscal_year)
+        fy_clean = (fiscal_year or "2026-27").replace("/", "-")
+        filename = f"Form16A_{contractor.contractor_code}_{fy_clean}.pdf"
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        )
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
 
 

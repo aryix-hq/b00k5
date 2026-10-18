@@ -25,6 +25,7 @@ import {
   ArrowRight,
   TrendingUp,
   FileSpreadsheet,
+  Briefcase,
   X
 } from 'lucide-react';
 import { fetchApi } from '@/lib/api';
@@ -115,13 +116,60 @@ interface Payslip {
   payout_utr?: string;
 }
 
+interface Contractor {
+  id: string;
+  contractor_code: string;
+  name: string;
+  contractor_type: 'individual_huf' | 'company_firm';
+  pan_number: string;
+  gstin?: string;
+  tds_section: string;
+  tds_rate: number;
+  email: string;
+  phone?: string;
+  address?: string;
+  bank_name: string;
+  bank_account_number: string;
+  bank_ifsc_code: string;
+  status: string;
+  created_at: string;
+}
+
+interface ContractorPayment {
+  id: string;
+  contractor_id: string;
+  payment_number: string;
+  invoice_number: string;
+  invoice_date: string;
+  payment_date: string;
+  description: string;
+  gross_amount: number;
+  gst_rate: number;
+  gst_amount: number;
+  tds_section: string;
+  tds_rate: number;
+  tds_amount: number;
+  net_payable: number;
+  status: 'pending' | 'approved' | 'disbursed';
+  accrual_journal_id?: string;
+  disbursement_journal_id?: string;
+  payout_utr?: string;
+  payout_date?: string;
+  contractor_name?: string;
+  contractor_pan?: string;
+  contractor_code?: string;
+  created_at: string;
+}
+
 const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December'
 ];
 
 export default function PayrollPage() {
-  const [activeTab, setActiveTab] = useState<'runs' | 'employees' | 'payslips' | 'statutory'>('runs');
+  const [activeTab, setActiveTab] = useState<'runs' | 'employees' | 'payslips' | 'contractors' | 'statutory'>('runs');
+  const [contractors, setContractors] = useState<Contractor[]>([]);
+  const [contractorPayments, setContractorPayments] = useState<ContractorPayment[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [runs, setRuns] = useState<PayrollRun[]>([]);
   const [selectedRun, setSelectedRun] = useState<PayrollRun | null>(null);
@@ -172,8 +220,39 @@ export default function PayrollPage() {
   const [payoutUtr, setPayoutUtr] = useState('');
   const [bankAccountCode, setBankAccountCode] = useState('1010');
 
+  // Contractor Modals & State
+  const [showOnboardContractorModal, setShowOnboardContractorModal] = useState<boolean>(false);
+  const [showContractorPaymentModal, setShowContractorPaymentModal] = useState<boolean>(false);
+
+  // New Contractor Form State
+  const [contractorCode, setContractorCode] = useState('');
+  const [contractorName, setContractorName] = useState('');
+  const [contractorType, setContractorType] = useState<'individual_huf' | 'company_firm'>('individual_huf');
+  const [contractorPan, setContractorPan] = useState('');
+  const [contractorGstin, setContractorGstin] = useState('');
+  const [contractorTdsSection, setContractorTdsSection] = useState('194J_TECH');
+  const [contractorTdsRate, setContractorTdsRate] = useState('2.00');
+  const [contractorEmail, setContractorEmail] = useState('');
+  const [contractorPhone, setContractorPhone] = useState('');
+  const [contractorAddress, setContractorAddress] = useState('');
+  const [contractorBankName, setContractorBankName] = useState('');
+  const [contractorBankAccount, setContractorBankAccount] = useState('');
+  const [contractorBankIfsc, setContractorBankIfsc] = useState('');
+
+  // Contractor Payment Form State
+  const [cpayContractorId, setCpayContractorId] = useState('');
+  const [cpayInvoiceNumber, setCpayInvoiceNumber] = useState('');
+  const [cpayInvoiceDate, setCpayInvoiceDate] = useState(new Date().toISOString().split('T')[0]);
+  const [cpayPaymentDate, setCpayPaymentDate] = useState(new Date().toISOString().split('T')[0]);
+  const [cpayDescription, setCpayDescription] = useState('');
+  const [cpayGrossAmount, setCpayGrossAmount] = useState('50000');
+  const [cpayGstRate, setCpayGstRate] = useState('18');
+  const [cpayTdsSection, setCpayTdsSection] = useState('194J_TECH');
+  const [cpayTdsRate, setCpayTdsRate] = useState('2');
+
   // Search filter
   const [employeeSearch, setEmployeeSearch] = useState('');
+  const [contractorSearch, setContractorSearch] = useState('');
 
   useEffect(() => {
     loadPayrollData();
@@ -183,12 +262,16 @@ export default function PayrollPage() {
     setLoading(true);
     setErrorMsg(null);
     try {
-      const [empData, runsData] = await Promise.all([
+      const [empData, runsData, contractorsData, paymentsData] = await Promise.all([
         fetchApi('/api/v1/payroll/employees').catch(() => []),
-        fetchApi('/api/v1/payroll/runs').catch(() => [])
+        fetchApi('/api/v1/payroll/runs').catch(() => []),
+        fetchApi('/api/v1/payroll/contractors').catch(() => []),
+        fetchApi('/api/v1/payroll/contractor-payments').catch(() => [])
       ]);
       setEmployees(empData || []);
       setRuns(runsData || []);
+      setContractors(contractorsData || []);
+      setContractorPayments(paymentsData || []);
 
       if (runsData && runsData.length > 0) {
         setSelectedRun(runsData[0]);
@@ -198,6 +281,106 @@ export default function PayrollPage() {
       setErrorMsg(err.message || 'Failed to load payroll data.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleCreateContractor = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMsg(null);
+    setSuccessMsg(null);
+    try {
+      const payload = {
+        contractor_code: contractorCode.trim(),
+        name: contractorName.trim(),
+        contractor_type: contractorType,
+        pan_number: contractorPan.trim().toUpperCase(),
+        gstin: contractorGstin.trim().toUpperCase() || undefined,
+        tds_section: contractorTdsSection,
+        tds_rate: parseFloat(contractorTdsRate) || 2.0,
+        email: contractorEmail.trim(),
+        phone: contractorPhone.trim() || undefined,
+        address: contractorAddress.trim() || undefined,
+        bank_name: contractorBankName.trim(),
+        bank_account_number: contractorBankAccount.trim(),
+        bank_ifsc_code: contractorBankIfsc.trim().toUpperCase()
+      };
+      await fetchApi('/api/v1/payroll/contractors', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      });
+      setSuccessMsg('Contractor onboarded successfully!');
+      setShowOnboardContractorModal(false);
+      setContractorCode('');
+      setContractorName('');
+      setContractorPan('');
+      setContractorGstin('');
+      setContractorEmail('');
+      setContractorPhone('');
+      setContractorAddress('');
+      setContractorBankName('');
+      setContractorBankAccount('');
+      setContractorBankIfsc('');
+      loadPayrollData();
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Failed to onboard contractor.');
+    }
+  };
+
+  const handleCreateContractorPayment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMsg(null);
+    setSuccessMsg(null);
+    try {
+      const gross = parseFloat(cpayGrossAmount) || 0;
+      const gstRate = parseFloat(cpayGstRate) || 0;
+      const gstAmount = gross * (gstRate / 100);
+      const payload = {
+        contractor_id: cpayContractorId,
+        invoice_number: cpayInvoiceNumber.trim(),
+        invoice_date: cpayInvoiceDate,
+        payment_date: cpayPaymentDate,
+        description: cpayDescription.trim(),
+        gross_amount: gross,
+        gst_rate: gstRate,
+        gst_amount: gstAmount,
+        tds_section: cpayTdsSection,
+        tds_rate: parseFloat(cpayTdsRate) || 2.0
+      };
+      await fetchApi('/api/v1/payroll/contractor-payments', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      });
+      setSuccessMsg('Contractor payment claim created!');
+      setShowContractorPaymentModal(false);
+      setCpayInvoiceNumber('');
+      setCpayDescription('');
+      loadPayrollData();
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Failed to create payment claim.');
+    }
+  };
+
+  const handleAccrueContractorPayment = async (paymentId: string) => {
+    setErrorMsg(null);
+    setSuccessMsg(null);
+    try {
+      await fetchApi(`/api/v1/payroll/contractor-payments/${paymentId}/accrue`, { method: 'POST' });
+      setSuccessMsg('Bill accrued and Leg 1 journal voucher posted to General Ledger!');
+      loadPayrollData();
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Failed to accrue contractor payment.');
+    }
+  };
+
+  const handleDisburseContractorPayment = async (paymentId: string) => {
+    setErrorMsg(null);
+    setSuccessMsg(null);
+    try {
+      await fetchApi(`/api/v1/payroll/contractor-payments/${paymentId}/disburse`, { method: 'POST' });
+      setSuccessMsg('Payout disbursed and Leg 2 journal voucher posted to General Ledger!');
+      loadPayrollData();
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Failed to disburse contractor payment.');
     }
   };
 
@@ -541,12 +724,21 @@ export default function PayrollPage() {
               {activeTab === 'payslips' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-500" />}
             </button>
             <button
+              onClick={() => setActiveTab('contractors')}
+              className={`pb-3 text-sm font-medium transition relative ${
+                activeTab === 'contractors' ? 'text-emerald-400' : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              Contractors &amp; Freelancers ({contractors.length})
+              {activeTab === 'contractors' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-500" />}
+            </button>
+            <button
               onClick={() => setActiveTab('statutory')}
               className={`pb-3 text-sm font-medium transition relative ${
                 activeTab === 'statutory' ? 'text-emerald-400' : 'text-slate-400 hover:text-slate-200'
               }`}
             >
-              Statutory Breakdown & Schedule III
+              Statutory Breakdown &amp; Schedule III
               {activeTab === 'statutory' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-500" />}
             </button>
           </div>
@@ -1084,6 +1276,254 @@ export default function PayrollPage() {
             </div>
           )}
 
+          {/* TAB 4: CONTRACTORS & FREELANCERS */}
+          {activeTab === 'contractors' && (
+            <div className="space-y-6">
+              {/* Header Action Bar */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 rounded-xl bg-slate-900/60 border border-slate-800">
+                <div>
+                  <h2 className="text-base font-semibold text-white flex items-center gap-2">
+                    <Briefcase className="w-5 h-5 text-emerald-400" />
+                    Contractors, Retainers &amp; Freelancers Roster
+                  </h2>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Process contractor payouts with automated Section 194C (1%/2%) &amp; 194J (2%/10%) TDS withholding, Ledger posting, and Form 16A certificates.
+                  </p>
+                </div>
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => {
+                      if (contractors.length > 0 && !cpayContractorId) {
+                        setCpayContractorId(contractors[0].id);
+                        setCpayTdsSection(contractors[0].tds_section);
+                        setCpayTdsRate(String(contractors[0].tds_rate));
+                      }
+                      setShowContractorPaymentModal(true);
+                    }}
+                    className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-medium transition flex items-center gap-1.5 shadow-lg shadow-indigo-950/40"
+                  >
+                    <Plus className="w-4 h-4" />
+                    Record Payout Claim
+                  </button>
+                  <button
+                    onClick={() => {
+                      setContractorCode(`CON-${String(contractors.length + 1).padStart(3, '0')}`);
+                      setShowOnboardContractorModal(true);
+                    }}
+                    className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-medium transition flex items-center gap-1.5 shadow-lg shadow-emerald-950/40"
+                  >
+                    <Plus className="w-4 h-4" />
+                    Onboard Contractor
+                  </button>
+                </div>
+              </div>
+
+              {/* Contractor Directory Table */}
+              <div className="bg-slate-900/60 border border-slate-800 rounded-xl overflow-hidden shadow-sm">
+                <div className="p-4 border-b border-slate-800 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-semibold text-white">Active Contractor Directory</span>
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 font-mono">
+                      {contractors.length}
+                    </span>
+                  </div>
+                  <div className="relative w-64">
+                    <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-500" />
+                    <input
+                      type="text"
+                      placeholder="Search name, code, PAN..."
+                      value={contractorSearch}
+                      onChange={(e) => setContractorSearch(e.target.value)}
+                      className="w-full bg-slate-800/60 border border-slate-700/80 rounded-lg pl-9 pr-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-sm">
+                    <thead className="bg-slate-900 border-b border-slate-800 text-slate-400 font-medium text-xs">
+                      <tr>
+                        <th className="py-3 px-4">Code &amp; Name</th>
+                        <th className="py-3 px-4">Entity Type</th>
+                        <th className="py-3 px-4">PAN / GSTIN</th>
+                        <th className="py-3 px-4">Statutory Scheme</th>
+                        <th className="py-3 px-4">Bank Details</th>
+                        <th className="py-3 px-4">Status</th>
+                        <th className="py-3 px-4 text-right">Form 16A</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60 text-xs">
+                      {contractors.length === 0 ? (
+                        <tr>
+                          <td colSpan={7} className="py-8 text-center text-slate-500">
+                            No contractors onboarded yet. Click &quot;Onboard Contractor&quot; to add your first vendor or freelancer.
+                          </td>
+                        </tr>
+                      ) : (
+                        contractors
+                          .filter(c =>
+                            !contractorSearch ||
+                            c.name.toLowerCase().includes(contractorSearch.toLowerCase()) ||
+                            c.contractor_code.toLowerCase().includes(contractorSearch.toLowerCase()) ||
+                            c.pan_number.toLowerCase().includes(contractorSearch.toLowerCase())
+                          )
+                          .map(c => (
+                            <tr key={c.id} className="hover:bg-slate-800/30 transition">
+                              <td className="py-3 px-4">
+                                <div className="font-semibold text-white">{c.name}</div>
+                                <div className="text-[11px] font-mono text-slate-400">{c.contractor_code} • {c.email}</div>
+                              </td>
+                              <td className="py-3 px-4">
+                                <span className={`px-2 py-0.5 rounded text-[10px] font-medium ${
+                                  c.contractor_type === 'individual_huf' ? 'bg-sky-500/10 text-sky-400 border border-sky-500/20' : 'bg-purple-500/10 text-purple-400 border border-purple-500/20'
+                                }`}>
+                                  {c.contractor_type === 'individual_huf' ? 'Individual / HUF' : 'Company / Firm'}
+                                </span>
+                              </td>
+                              <td className="py-3 px-4 font-mono">
+                                <div className="text-slate-200">{c.pan_number}</div>
+                                {c.gstin && <div className="text-[10px] text-slate-400">{c.gstin}</div>}
+                              </td>
+                              <td className="py-3 px-4">
+                                <span className="font-medium text-emerald-400">
+                                  {c.tds_section === '194C' ? 'Sec 194C (Contractor)' : c.tds_section === '194J_PROF' ? 'Sec 194J (Professional)' : 'Sec 194J (Technical)'}
+                                </span>
+                                <div className="text-[11px] text-slate-400 font-mono">TDS Rate: {Number(c.tds_rate).toFixed(1)}%</div>
+                              </td>
+                              <td className="py-3 px-4">
+                                <div className="text-slate-300">{c.bank_name}</div>
+                                <div className="font-mono text-[11px] text-slate-500">A/C: ••••{c.bank_account_number.slice(-4)} • {c.bank_ifsc_code}</div>
+                              </td>
+                              <td className="py-3 px-4">
+                                <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/20 text-emerald-300">
+                                  {c.status.toUpperCase()}
+                                </span>
+                              </td>
+                              <td className="py-3 px-4 text-right">
+                                <button
+                                  onClick={() => handleDownloadFile(`/api/v1/payroll/contractors/${c.id}/form-16a/pdf`, `Form16A_${c.contractor_code}_2026-27.pdf`)}
+                                  className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-white transition inline-flex items-center gap-1.5 text-xs"
+                                >
+                                  <Download className="w-3.5 h-3.5 text-sky-400" />
+                                  Certificate
+                                </button>
+                              </td>
+                            </tr>
+                          ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Payment Claims & Ledger Vouchers Table */}
+              <div className="bg-slate-900/60 border border-slate-800 rounded-xl overflow-hidden shadow-sm">
+                <div className="p-4 border-b border-slate-800 flex items-center justify-between">
+                  <div>
+                    <h3 className="text-sm font-semibold text-white">Contractor Invoices &amp; Payout Claims</h3>
+                    <p className="text-xs text-slate-400 mt-0.5">Two-leg accounting lifecycle: Leg 1 Accrual (Expense/TDS) and Leg 2 Disbursement (Bank Payout).</p>
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-sm">
+                    <thead className="bg-slate-900 border-b border-slate-800 text-slate-400 font-medium text-xs">
+                      <tr>
+                        <th className="py-3 px-4">Payment Ref</th>
+                        <th className="py-3 px-4">Contractor</th>
+                        <th className="py-3 px-4">Invoice Details</th>
+                        <th className="py-3 px-4">Description</th>
+                        <th className="py-3 px-4 text-right">Gross (₹)</th>
+                        <th className="py-3 px-4 text-right">TDS (₹)</th>
+                        <th className="py-3 px-4 text-right">Net Payable (₹)</th>
+                        <th className="py-3 px-4">Status</th>
+                        <th className="py-3 px-4 text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60 text-xs">
+                      {contractorPayments.length === 0 ? (
+                        <tr>
+                          <td colSpan={9} className="py-8 text-center text-slate-500">
+                            No contractor invoices submitted yet. Click &quot;Record Payout Claim&quot; to initiate a retainer or bill payout.
+                          </td>
+                        </tr>
+                      ) : (
+                        contractorPayments.map(p => (
+                          <tr key={p.id} className="hover:bg-slate-800/30 transition">
+                            <td className="py-3 px-4 font-mono font-medium text-sky-400">
+                              {p.payment_number}
+                            </td>
+                            <td className="py-3 px-4">
+                              <div className="font-semibold text-white">{p.contractor_name || 'Contractor'}</div>
+                              <div className="text-[11px] font-mono text-slate-500">{p.contractor_code}</div>
+                            </td>
+                            <td className="py-3 px-4">
+                              <div className="font-mono text-slate-200">#{p.invoice_number}</div>
+                              <div className="text-[11px] text-slate-500">{p.invoice_date}</div>
+                            </td>
+                            <td className="py-3 px-4 text-slate-300 max-w-xs truncate">
+                              {p.description}
+                            </td>
+                            <td className="py-3 px-4 text-right font-mono text-slate-200">
+                              ₹{Number(p.gross_amount).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                            </td>
+                            <td className="py-3 px-4 text-right font-mono text-rose-400">
+                              -₹{Number(p.tds_amount).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                              <div className="text-[10px] text-slate-500">{p.tds_section} @ {Number(p.tds_rate).toFixed(1)}%</div>
+                            </td>
+                            <td className="py-3 px-4 text-right font-mono font-semibold text-emerald-400">
+                              ₹{Number(p.net_payable).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                            </td>
+                            <td className="py-3 px-4">
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
+                                p.status === 'disbursed' ? 'bg-emerald-500/20 text-emerald-300' :
+                                p.status === 'approved' ? 'bg-blue-500/20 text-blue-300' :
+                                'bg-amber-500/20 text-amber-300'
+                              }`}>
+                                {p.status.toUpperCase()}
+                              </span>
+                              {p.payout_utr && (
+                                <div className="text-[10px] font-mono text-slate-400 mt-0.5">{p.payout_utr}</div>
+                              )}
+                            </td>
+                            <td className="py-3 px-4 text-right">
+                              {p.status === 'pending' && (
+                                <button
+                                  onClick={() => handleAccrueContractorPayment(p.id)}
+                                  className="px-2.5 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white font-medium text-xs transition"
+                                >
+                                  Accrue (Leg 1)
+                                </button>
+                              )}
+                              {p.status === 'approved' && (
+                                <button
+                                  onClick={() => handleDisburseContractorPayment(p.id)}
+                                  className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-xs transition flex items-center gap-1 ml-auto"
+                                >
+                                  <Send className="w-3 h-3" />
+                                  Disburse (Leg 2)
+                                </button>
+                              )}
+                              {p.status === 'disbursed' && (
+                                <button
+                                  onClick={() => handleDownloadFile(`/api/v1/payroll/contractors/${p.contractor_id}/form-16a/pdf`, `Form16A_${p.contractor_code || 'CON'}_2026-27.pdf`)}
+                                  className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs transition inline-flex items-center gap-1"
+                                >
+                                  <Download className="w-3 h-3 text-sky-400" />
+                                  Form 16A
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* MODAL: ONBOARD EMPLOYEE */}
           {showOnboardModal && (
             <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 overflow-y-auto">
@@ -1558,6 +1998,401 @@ export default function PayrollPage() {
                     Close
                   </button>
                 </div>
+              </div>
+            </div>
+          )}
+
+          {/* MODAL: ONBOARD CONTRACTOR */}
+          {showOnboardContractorModal && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 overflow-y-auto">
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-2xl overflow-hidden shadow-2xl my-8">
+                <div className="flex items-center justify-between p-5 border-b border-slate-800">
+                  <h2 className="text-lg font-bold text-white flex items-center gap-2">
+                    <Briefcase className="w-5 h-5 text-emerald-400" />
+                    Onboard Contractor or Professional Freelancer
+                  </h2>
+                  <button
+                    onClick={() => setShowOnboardContractorModal(false)}
+                    className="text-slate-400 hover:text-slate-200 transition"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+
+                <form onSubmit={handleCreateContractor} className="p-6 space-y-4 max-h-[80vh] overflow-y-auto text-xs">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-slate-400 mb-1 font-medium">Contractor Code</label>
+                      <input
+                        type="text"
+                        required
+                        value={contractorCode}
+                        onChange={(e) => setContractorCode(e.target.value)}
+                        placeholder="e.g. CON-001"
+                        className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-slate-400 mb-1 font-medium">Entity Type</label>
+                      <select
+                        value={contractorType}
+                        onChange={(e: any) => {
+                          setContractorType(e.target.value);
+                          if (contractorTdsSection === '194C') {
+                            setContractorTdsRate(e.target.value === 'individual_huf' ? '1.00' : '2.00');
+                          }
+                        }}
+                        className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white"
+                      >
+                        <option value="individual_huf">Individual / Proprietorship / HUF (194C 1%)</option>
+                        <option value="company_firm">Company / LLP / Partnership Firm (194C 2%)</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-slate-400 mb-1 font-medium">Full Name / Legal Entity Name</label>
+                    <input
+                      type="text"
+                      required
+                      value={contractorName}
+                      onChange={(e) => setContractorName(e.target.value)}
+                      placeholder="e.g. Arya DevOps Consulting LLP"
+                      className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-slate-400 mb-1 font-medium">PAN Number (10 characters)</label>
+                      <input
+                        type="text"
+                        required
+                        maxLength={10}
+                        value={contractorPan}
+                        onChange={(e) => setContractorPan(e.target.value.toUpperCase())}
+                        placeholder="e.g. AABCA1234F"
+                        className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white font-mono uppercase"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-slate-400 mb-1 font-medium">GSTIN (Optional, 15 chars)</label>
+                      <input
+                        type="text"
+                        maxLength={15}
+                        value={contractorGstin}
+                        onChange={(e) => setContractorGstin(e.target.value.toUpperCase())}
+                        placeholder="e.g. 29AABCA1234F1Z5"
+                        className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white font-mono uppercase"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4 p-3 bg-slate-800/40 border border-slate-700/60 rounded-xl">
+                    <div>
+                      <label className="block text-slate-400 mb-1 font-medium">Statutory TDS Scheme</label>
+                      <select
+                        value={contractorTdsSection}
+                        onChange={(e) => {
+                          const sec = e.target.value;
+                          setContractorTdsSection(sec);
+                          if (sec === '194C') {
+                            setContractorTdsRate(contractorType === 'individual_huf' ? '1.00' : '2.00');
+                          } else if (sec === '194J_PROF') {
+                            setContractorTdsRate('10.00');
+                          } else {
+                            setContractorTdsRate('2.00');
+                          }
+                        }}
+                        className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white"
+                      >
+                        <option value="194J_TECH">Section 194J(a) — Technical Services / Royalty (2%)</option>
+                        <option value="194J_PROF">Section 194J(b) — Professional Services (10%)</option>
+                        <option value="194C">Section 194C — Payments to Contractors (1% / 2%)</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-slate-400 mb-1 font-medium">Default TDS Rate (%)</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        required
+                        value={contractorTdsRate}
+                        onChange={(e) => setContractorTdsRate(e.target.value)}
+                        className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white font-mono"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-slate-400 mb-1 font-medium">Email Address</label>
+                      <input
+                        type="email"
+                        required
+                        value={contractorEmail}
+                        onChange={(e) => setContractorEmail(e.target.value)}
+                        placeholder="vendor@company.com"
+                        className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-slate-400 mb-1 font-medium">Phone Number</label>
+                      <input
+                        type="text"
+                        value={contractorPhone}
+                        onChange={(e) => setContractorPhone(e.target.value)}
+                        placeholder="9876543210"
+                        className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-slate-400 mb-1 font-medium">Registered / Billing Address</label>
+                    <textarea
+                      rows={2}
+                      value={contractorAddress}
+                      onChange={(e) => setContractorAddress(e.target.value)}
+                      placeholder="Street, City, State, PIN"
+                      className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-3 p-3 bg-slate-800/40 border border-slate-700/60 rounded-xl">
+                    <div>
+                      <label className="block text-slate-400 mb-1 font-medium">Bank Name</label>
+                      <input
+                        type="text"
+                        required
+                        value={contractorBankName}
+                        onChange={(e) => setContractorBankName(e.target.value)}
+                        placeholder="e.g. HDFC Bank"
+                        className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-slate-400 mb-1 font-medium">Account Number</label>
+                      <input
+                        type="text"
+                        required
+                        value={contractorBankAccount}
+                        onChange={(e) => setContractorBankAccount(e.target.value)}
+                        placeholder="Account Number"
+                        className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-slate-400 mb-1 font-medium">IFSC Code</label>
+                      <input
+                        type="text"
+                        required
+                        value={contractorBankIfsc}
+                        onChange={(e) => setContractorBankIfsc(e.target.value.toUpperCase())}
+                        placeholder="HDFC0001234"
+                        className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white font-mono uppercase"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex justify-end gap-3 pt-3 border-t border-slate-800">
+                    <button
+                      type="button"
+                      onClick={() => setShowOnboardContractorModal(false)}
+                      className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-medium shadow-lg shadow-emerald-950/40"
+                    >
+                      Onboard Contractor
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+
+          {/* MODAL: CONTRACTOR PAYOUT CLAIM */}
+          {showContractorPaymentModal && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 overflow-y-auto">
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-xl overflow-hidden shadow-2xl my-8">
+                <div className="flex items-center justify-between p-5 border-b border-slate-800">
+                  <h2 className="text-lg font-bold text-white flex items-center gap-2">
+                    <CreditCard className="w-5 h-5 text-indigo-400" />
+                    Record Contractor Invoice / Payout Claim
+                  </h2>
+                  <button
+                    onClick={() => setShowContractorPaymentModal(false)}
+                    className="text-slate-400 hover:text-slate-200 transition"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+
+                <form onSubmit={handleCreateContractorPayment} className="p-6 space-y-4 text-xs">
+                  <div>
+                    <label className="block text-slate-400 mb-1 font-medium">Select Contractor</label>
+                    <select
+                      required
+                      value={cpayContractorId}
+                      onChange={(e) => {
+                        const cid = e.target.value;
+                        setCpayContractorId(cid);
+                        const match = contractors.find(c => c.id === cid);
+                        if (match) {
+                          setCpayTdsSection(match.tds_section);
+                          setCpayTdsRate(String(match.tds_rate));
+                        }
+                      }}
+                      className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white text-xs"
+                    >
+                      <option value="">-- Choose Contractor --</option>
+                      {contractors.map(c => (
+                        <option key={c.id} value={c.id}>
+                          {c.name} ({c.contractor_code} • PAN: {c.pan_number})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-slate-400 mb-1 font-medium">Invoice Number</label>
+                      <input
+                        type="text"
+                        required
+                        value={cpayInvoiceNumber}
+                        onChange={(e) => setCpayInvoiceNumber(e.target.value)}
+                        placeholder="e.g. INV-2026-042"
+                        className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-slate-400 mb-1 font-medium">Invoice Date</label>
+                      <input
+                        type="date"
+                        required
+                        value={cpayInvoiceDate}
+                        onChange={(e) => setCpayInvoiceDate(e.target.value)}
+                        className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-slate-400 mb-1 font-medium">Nature / Description of Services</label>
+                    <input
+                      type="text"
+                      required
+                      value={cpayDescription}
+                      onChange={(e) => setCpayDescription(e.target.value)}
+                      placeholder="e.g. Frontend Architecture Consulting & Code Review"
+                      className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-slate-400 mb-1 font-medium">Gross Base Amount (₹)</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        required
+                        value={cpayGrossAmount}
+                        onChange={(e) => setCpayGrossAmount(e.target.value)}
+                        className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-slate-400 mb-1 font-medium">GST Rate (%)</label>
+                      <select
+                        value={cpayGstRate}
+                        onChange={(e) => setCpayGstRate(e.target.value)}
+                        className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white"
+                      >
+                        <option value="0">0% (Nil / Unregistered)</option>
+                        <option value="5">5%</option>
+                        <option value="12">12%</option>
+                        <option value="18">18% (Standard Services)</option>
+                        <option value="28">28%</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-slate-400 mb-1 font-medium">TDS Section</label>
+                      <select
+                        value={cpayTdsSection}
+                        onChange={(e) => setCpayTdsSection(e.target.value)}
+                        className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white"
+                      >
+                        <option value="194J_TECH">Section 194J(a) Technical (2%)</option>
+                        <option value="194J_PROF">Section 194J(b) Professional (10%)</option>
+                        <option value="194C">Section 194C Contractor (1% / 2%)</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-slate-400 mb-1 font-medium">TDS Rate (%)</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        required
+                        value={cpayTdsRate}
+                        onChange={(e) => setCpayTdsRate(e.target.value)}
+                        className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white font-mono"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Live Calculation Card */}
+                  {(() => {
+                    const gross = parseFloat(cpayGrossAmount) || 0;
+                    const gst = gross * ((parseFloat(cpayGstRate) || 0) / 100);
+                    const tds = gross * ((parseFloat(cpayTdsRate) || 0) / 100);
+                    const net = gross + gst - tds;
+                    return (
+                      <div className="p-3 rounded-xl bg-slate-800/60 border border-slate-700/60 space-y-1.5 text-xs">
+                        <div className="flex justify-between text-slate-400">
+                          <span>Base Invoice Value:</span>
+                          <span className="font-mono text-white">₹{gross.toFixed(2)}</span>
+                        </div>
+                        <div className="flex justify-between text-slate-400">
+                          <span>GST Added:</span>
+                          <span className="font-mono text-white">₹{gst.toFixed(2)}</span>
+                        </div>
+                        <div className="flex justify-between text-rose-400">
+                          <span>TDS Withheld u/s {cpayTdsSection}:</span>
+                          <span className="font-mono">-₹{tds.toFixed(2)}</span>
+                        </div>
+                        <div className="flex justify-between pt-1 border-t border-slate-700 font-bold text-emerald-400 text-sm">
+                          <span>Net Payable to Contractor:</span>
+                          <span className="font-mono">₹{net.toFixed(2)}</span>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  <div className="flex justify-end gap-3 pt-3 border-t border-slate-800">
+                    <button
+                      type="button"
+                      onClick={() => setShowContractorPaymentModal(false)}
+                      className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={!cpayContractorId}
+                      className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium shadow-lg shadow-indigo-950/40 disabled:opacity-40"
+                    >
+                      Create Payout Claim
+                    </button>
+                  </div>
+                </form>
               </div>
             </div>
           )}

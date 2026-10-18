@@ -216,3 +216,61 @@ class EmployeeTaxDeclaration(Base):
 
     employee = relationship("Employee", back_populates="tax_declarations")
 
+
+class Contractor(Base):
+    __tablename__ = "contractors"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    contractor_code = Column(String(32), nullable=False)
+    name = Column(String(150), nullable=False)
+    contractor_type = Column(String(32), default='individual_huf', nullable=False)
+    pan_number = Column(String(10), nullable=False)
+    gstin = Column(String(15), nullable=True)
+    tds_section = Column(String(20), default='194J_TECH', nullable=False)
+    tds_rate = Column(Numeric(5, 2), default=Decimal("2.00"), nullable=False)
+    email = Column(String(255), nullable=False)
+    phone = Column(String(20), nullable=True)
+    address = Column(Text, nullable=True)
+    bank_name = Column(String(100), nullable=False)
+    bank_account_number = Column(String(34), nullable=False)
+    bank_ifsc_code = Column(String(11), nullable=False)
+    status = Column(String(20), default='active', nullable=False)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    tenant = relationship("Tenant")
+    payments = relationship("ContractorPayment", back_populates="contractor", cascade="all, delete-orphan")
+
+
+class ContractorPayment(Base):
+    __tablename__ = "contractor_payments"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    contractor_id = Column(UUID(as_uuid=True), ForeignKey("contractors.id", ondelete="RESTRICT"), nullable=False)
+    payment_number = Column(String(64), nullable=False)
+    invoice_number = Column(String(64), nullable=False)
+    invoice_date = Column(Date, nullable=False)
+    payment_date = Column(Date, nullable=False)
+    description = Column(Text, nullable=False)
+    gross_amount = Column(Numeric(15, 2), nullable=False)
+    gst_rate = Column(Numeric(5, 2), default=Decimal("0.00"), nullable=False)
+    gst_amount = Column(Numeric(15, 2), default=Decimal("0.00"), nullable=False)
+    tds_section = Column(String(20), nullable=False)
+    tds_rate = Column(Numeric(5, 2), nullable=False)
+    tds_amount = Column(Numeric(15, 2), default=Decimal("0.00"), nullable=False)
+    net_payable = Column(Numeric(15, 2), nullable=False)
+    status = Column(String(20), default='pending', nullable=False)
+    accrual_journal_id = Column(UUID(as_uuid=True), ForeignKey("journal_entries.id", ondelete="SET NULL"), nullable=True)
+    disbursement_journal_id = Column(UUID(as_uuid=True), ForeignKey("journal_entries.id", ondelete="SET NULL"), nullable=True)
+    payout_utr = Column(String(64), nullable=True)
+    payout_date = Column(Date, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    contractor = relationship("Contractor", back_populates="payments")
+    accrual_journal = relationship("JournalEntry", foreign_keys=[accrual_journal_id])
+    disbursement_journal = relationship("JournalEntry", foreign_keys=[disbursement_journal_id])
+
+

@@ -905,6 +905,243 @@ class PDFService:
         return buf.getvalue()
 
     @staticmethod
+    def generate_form_16a_pdf(data: Dict[str, Any]) -> bytes:
+        """
+        Generates an official Form 16A TDS Certificate under Section 203 of the Income-tax Act, 1961
+        [See rule 31(1)(b)] for tax deducted at source on payments other than salary (Section 194C / 194J).
+        """
+        try:
+            from reportlab.lib.pagesizes import A4
+            from reportlab.pdfgen import canvas
+            from reportlab.lib import colors
+            from reportlab.pdfbase import pdfmetrics
+            from reportlab.pdfbase.ttfonts import TTFont
+        except ImportError:
+            raise RuntimeError("ReportLab is not installed or available.")
+
+        # Font fallback
+        font_normal = "Helvetica"
+        font_bold = "Helvetica-Bold"
+        try:
+            pdfmetrics.registerFont(TTFont("Inter-Regular", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"))
+            pdfmetrics.registerFont(TTFont("Inter-Bold", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"))
+            font_normal = "Inter-Regular"
+            font_bold = "Inter-Bold"
+            rupee_sym = "₹ "
+        except Exception:
+            rupee_sym = "Rs. "
+
+        def fmt_inr(val: Any) -> str:
+            amt = float(val or 0.0)
+            return f"{rupee_sym}{amt:,.2f}"
+
+        buf = io.BytesIO()
+        c = canvas.Canvas(buf, pagesize=A4)
+        page_w, page_h = A4
+
+        c_primary = colors.HexColor("#0f172a")     # Slate 900
+        c_muted = colors.HexColor("#64748b")       # Slate 500
+        c_text = colors.HexColor("#1e293b")        # Slate 800
+        c_border = colors.HexColor("#cbd5e1")      # Slate 300
+        c_bg = colors.HexColor("#f8fafc")          # Slate 50
+        c_accent = colors.HexColor("#0d9488")      # Teal 600
+
+        margin_l = 40.0
+        margin_r = page_w - 40.0
+        width = margin_r - margin_l
+
+        # Outer Border
+        c.setStrokeColor(c_border)
+        c.setLineWidth(1)
+        c.rect(margin_l, 40, width, page_h - 80)
+
+        # Header Title
+        c.setFont(font_bold, 14)
+        c.setFillColor(c_primary)
+        c.drawCentredString(page_w / 2.0, page_h - 65, "FORM NO. 16A")
+
+        c.setFont(font_normal, 9)
+        c.setFillColor(c_muted)
+        c.drawCentredString(page_w / 2.0, page_h - 78, "[See rule 31(1)(b)]")
+
+        c.setFont(font_bold, 9.5)
+        c.setFillColor(c_text)
+        c.drawCentredString(page_w / 2.0, page_h - 93, "Certificate under section 203 of the Income-tax Act, 1961 for tax deducted at source on payments other than salary")
+
+        # Top Banner
+        c.setFillColor(c_accent)
+        c.rect(margin_l, page_h - 118, width, 20, fill=1, stroke=0)
+        c.setFont(font_bold, 10)
+        c.setFillColor(colors.white)
+        c.drawString(margin_l + 10, page_h - 113, "Certificate of Tax Deducted at Source (TDS) u/s 194C / 194J")
+
+        # Deductor / Deductee Two Column Box
+        box_top = page_h - 124
+        box_h = 135
+        c.setStrokeColor(c_border)
+        c.setFillColor(c_bg)
+        c.rect(margin_l + 10, box_top - box_h, width - 20, box_h, fill=1, stroke=1)
+
+        mid_x = margin_l + 10 + (width - 20) / 2.0
+        c.line(mid_x, box_top, mid_x, box_top - box_h)
+
+        # Deductor Info
+        deductor_name = str(data.get("deductor_name") or "Aryix Tech Private Limited")
+        deductor_addr = str(data.get("deductor_address") or "Bangalore, Karnataka, India")
+        deductor_pan = str(data.get("deductor_pan") or "AABCA1234F")
+        deductor_tan = str(data.get("deductor_tan") or "BLRA12345D")
+
+        cur_y = box_top - 18
+        c.setFont(font_bold, 9)
+        c.setFillColor(c_primary)
+        c.drawString(margin_l + 20, cur_y, "Name and Address of the Deductor (Company):")
+        cur_y -= 14
+        c.setFont(font_bold, 9.5)
+        c.drawString(margin_l + 20, cur_y, deductor_name[:40])
+        cur_y -= 12
+        c.setFont(font_normal, 8)
+        c.setFillColor(c_muted)
+        c.drawString(margin_l + 20, cur_y, deductor_addr[:45])
+        cur_y -= 22
+        c.setFont(font_normal, 8.5)
+        c.setFillColor(c_text)
+        c.drawString(margin_l + 20, cur_y, f"PAN of Deductor: {deductor_pan}")
+        cur_y -= 14
+        c.drawString(margin_l + 20, cur_y, f"TAN of Deductor: {deductor_tan}")
+
+        # Deductee Info
+        contractor_name = str(data.get("contractor_name") or "Contractor")
+        contractor_pan = str(data.get("contractor_pan") or "N/A")
+        contractor_code = str(data.get("contractor_code") or "")
+        contractor_addr = str(data.get("contractor_address") or "India")
+        ay = str(data.get("assessment_year") or "2027-28")
+        fy = str(data.get("financial_year") or "2026-27")
+        quarter = str(data.get("quarter") or "Annual")
+
+        cur_y = box_top - 18
+        c.setFont(font_bold, 9)
+        c.setFillColor(c_primary)
+        c.drawString(mid_x + 10, cur_y, "Name and Address of the Deductee (Contractor):")
+        cur_y -= 14
+        c.setFont(font_bold, 9.5)
+        c.drawString(mid_x + 10, cur_y, f"{contractor_name} ({contractor_code})" if contractor_code else contractor_name)
+        cur_y -= 12
+        c.setFont(font_normal, 8)
+        c.setFillColor(c_muted)
+        c.drawString(mid_x + 10, cur_y, contractor_addr[:45])
+        cur_y -= 22
+        c.setFont(font_normal, 8.5)
+        c.setFillColor(c_text)
+        c.drawString(mid_x + 10, cur_y, f"PAN of Deductee: {contractor_pan}")
+        cur_y -= 14
+        c.drawString(mid_x + 10, cur_y, f"Assessment Year: {ay} (FY {fy})  |  Period: {quarter}")
+
+        # Jurisdiction Bar
+        bar_y = box_top - box_h - 20
+        c.setFillColor(colors.HexColor("#f1f5f9"))
+        c.rect(margin_l + 10, bar_y - 18, width - 20, 20, fill=1, stroke=1)
+        c.setFont(font_bold, 8)
+        c.setFillColor(c_text)
+        nature = str(data.get("nature_of_payment") or "Section 194J / 194C")
+        c.drawString(margin_l + 20, bar_y - 12, f"CIT (TDS) Jurisdiction: Range 1(1)  |  Nature: {nature}  |  Certificate No: 16A-{contractor_pan[-4:]}-{ay[:4]}")
+
+        # Summary of Tax Deductions Table Header
+        tbl_y = bar_y - 35
+        c.setFont(font_bold, 9)
+        c.setFillColor(c_primary)
+        c.drawString(margin_l + 10, tbl_y, "Summary of Payment Credited/Paid and Tax Deducted at Source:")
+
+        tbl_top = tbl_y - 8
+        c.setFillColor(colors.HexColor("#e2e8f0"))
+        c.rect(margin_l + 10, tbl_top - 20, width - 20, 20, fill=1, stroke=1)
+
+        c.setFont(font_bold, 7.5)
+        c.setFillColor(c_primary)
+        c.drawString(margin_l + 15, tbl_top - 14, "#")
+        c.drawString(margin_l + 32, tbl_top - 14, "Invoice No & Date")
+        c.drawString(margin_l + 140, tbl_top - 14, "Payment Date")
+        c.drawString(margin_l + 215, tbl_top - 14, "Nature of Payment")
+        c.drawRightString(margin_l + 355, tbl_top - 14, "Gross Paid (₹)")
+        c.drawRightString(margin_l + 400, tbl_top - 14, "Rate")
+        c.drawRightString(margin_r - 20, tbl_top - 14, "TDS Deducted (₹)")
+
+        cur_row_y = tbl_top - 20
+        payments = data.get("payments_breakdown") or []
+        tot_gross = float(data.get("total_gross_amount") or 0.0)
+        tot_tds = float(data.get("total_tds_deducted") or 0.0)
+
+        for idx, p in enumerate(payments[:10], 1):
+            cur_row_y -= 18
+            bg = c_bg if idx % 2 == 0 else colors.white
+            c.setFillColor(bg)
+            c.setStrokeColor(c_border)
+            c.rect(margin_l + 10, cur_row_y, width - 20, 18, fill=1, stroke=1)
+
+            c.setFont(font_normal, 7.5)
+            c.setFillColor(c_text)
+            c.drawString(margin_l + 15, cur_row_y + 5, str(idx))
+            inv_str = f"{p.get('invoice_number', 'N/A')} ({p.get('invoice_date', '')})"
+            c.drawString(margin_l + 32, cur_row_y + 5, inv_str[:22])
+            c.drawString(margin_l + 140, cur_row_y + 5, str(p.get("payment_date", "N/A")))
+            sec_desc = str(p.get("tds_section", "194J/194C"))
+            c.drawString(margin_l + 215, cur_row_y + 5, sec_desc[:24])
+            c.drawRightString(margin_l + 355, cur_row_y + 5, fmt_inr(p.get("gross_amount", 0)))
+            c.drawRightString(margin_l + 400, cur_row_y + 5, f"{float(p.get('tds_rate', 0)):.1f}%")
+            c.drawRightString(margin_r - 20, cur_row_y + 5, fmt_inr(p.get("tds_amount", 0)))
+
+        # Totals Row
+        cur_row_y -= 22
+        c.setFillColor(colors.HexColor("#f1f5f9"))
+        c.rect(margin_l + 10, cur_row_y, width - 20, 22, fill=1, stroke=1)
+        c.setFont(font_bold, 8.5)
+        c.setFillColor(c_primary)
+        c.drawString(margin_l + 20, cur_row_y + 7, "TOTAL")
+        c.drawRightString(margin_l + 355, cur_row_y + 7, fmt_inr(tot_gross))
+        c.drawRightString(margin_r - 20, cur_row_y + 7, fmt_inr(tot_tds))
+
+        # Amount in Words
+        cur_row_y -= 22
+        c.setFont(font_normal, 8)
+        c.setFillColor(c_muted)
+        c.drawString(margin_l + 15, cur_row_y + 5, f"Total TDS Amount in Words: {number_to_words_inr(tot_tds)}")
+
+        # Verification Box
+        cur_row_y -= 45
+        c.setStrokeColor(c_border)
+        c.setFillColor(c_bg)
+        c.rect(margin_l + 10, cur_row_y, width - 20, 75, fill=1, stroke=1)
+
+        c.setFont(font_bold, 8.5)
+        c.setFillColor(c_primary)
+        c.drawString(margin_l + 20, cur_row_y + 58, "Verification by Deductor:")
+
+        c.setFont(font_normal, 7.5)
+        c.setFillColor(c_text)
+        v_text1 = f"I, Principal Officer / Authorized Signatory of {deductor_name[:45]}, do hereby certify that a sum of"
+        v_text2 = f"{fmt_inr(tot_tds)} has been deducted at source and paid to the credit of the Central Government as per"
+        v_text3 = "the provisions of Chapter XVII-B of the Income-tax Act, 1961. The particulars furnished above are true and complete."
+        c.drawString(margin_l + 20, cur_row_y + 44, v_text1)
+        c.drawString(margin_l + 20, cur_row_y + 32, v_text2)
+        c.drawString(margin_l + 20, cur_row_y + 20, v_text3)
+
+        c.setFont(font_bold, 8)
+        c.drawString(margin_r - 180, cur_row_y + 10, "For " + deductor_name[:30])
+        c.setFont(font_normal, 7.5)
+        c.setFillColor(c_muted)
+        c.drawString(margin_r - 180, cur_row_y - 1, "Authorized Signatory (Digital Stamp)")
+
+        # Footer
+        c.setFont(font_normal, 7.5)
+        c.setFillColor(c_muted)
+        c.drawString(margin_l + 10, 48, "Form 16A Generated by b00k5 Financial OS • Section 194C / 194J Statutory Invariant • TRACES Compliant")
+        c.drawRightString(margin_r - 10, 48, "Page 1 of 1")
+
+        c.save()
+        buf.seek(0)
+        return buf.getvalue()
+
+    @staticmethod
     def compute_sha256(data: bytes) -> str:
         return hashlib.sha256(data).hexdigest()
+
 

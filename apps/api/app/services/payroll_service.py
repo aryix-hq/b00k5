@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
 from sqlalchemy.orm import selectinload
 
-from app.models.payroll import Employee, SalaryStructure, PayrollRun, Payslip, EmployeeTaxDeclaration
+from app.models.payroll import Employee, SalaryStructure, PayrollRun, Payslip, EmployeeTaxDeclaration, Contractor, ContractorPayment
 from app.models.tenant import Tenant
 from app.models.ledger import ChartOfAccounts, JournalEntry, JournalLine
 from app.services.ledger_service import LedgerService
@@ -1000,4 +1000,420 @@ class PayrollService:
         """
         data = await PayrollService.calculate_form_16(session, employee_id, fiscal_year)
         return PDFService.generate_form_16_pdf(data)
+
+    # =========================================================================
+    # CONTRACTORS & FREELANCERS MANAGEMENT (PHASE 3 / SECTION 194C & 194J)
+    # =========================================================================
+
+    @staticmethod
+    async def onboard_contractor(
+        session: AsyncSession,
+        tenant_id: uuid.UUID,
+        data: Any
+    ) -> Contractor:
+        """
+        Onboards a new contractor or professional freelancer under Section 194C or 194J.
+        """
+        stmt = select(Contractor).where(
+            and_(Contractor.tenant_id == tenant_id, Contractor.contractor_code == data.contractor_code)
+        )
+        existing = (await session.execute(stmt)).scalars().first()
+        if existing:
+            raise ValueError(f"Contractor with code {data.contractor_code} already exists for this tenant.")
+
+        stmt_pan = select(Contractor).where(
+            and_(Contractor.tenant_id == tenant_id, Contractor.pan_number == data.pan_number)
+        )
+        existing_pan = (await session.execute(stmt_pan)).scalars().first()
+        if existing_pan:
+            raise ValueError(f"Contractor with PAN {data.pan_number} already exists.")
+
+        contractor = Contractor(
+            id=uuid.uuid4(),
+            tenant_id=tenant_id,
+            contractor_code=data.contractor_code,
+            name=data.name,
+            contractor_type=data.contractor_type,
+            pan_number=data.pan_number,
+            gstin=data.gstin,
+            tds_section=data.tds_section,
+            tds_rate=Decimal(str(data.tds_rate or "2.00")),
+            email=data.email,
+            phone=data.phone,
+            address=data.address,
+            bank_name=data.bank_name,
+            bank_account_number=data.bank_account_number,
+            bank_ifsc_code=data.bank_ifsc_code,
+            status=data.status or "active"
+        )
+        session.add(contractor)
+        await session.commit()
+        await session.refresh(contractor)
+        return contractor
+
+    @staticmethod
+    async def get_contractors(
+        session: AsyncSession,
+        tenant_id: uuid.UUID
+    ) -> List[Contractor]:
+        stmt = select(Contractor).where(Contractor.tenant_id == tenant_id).order_by(Contractor.created_at.desc())
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+    @staticmethod
+    async def get_contractor(
+        session: AsyncSession,
+        tenant_id: uuid.UUID,
+        contractor_id: uuid.UUID
+    ) -> Optional[Contractor]:
+        stmt = select(Contractor).where(
+            and_(Contractor.tenant_id == tenant_id, Contractor.id == contractor_id)
+        )
+        result = await session.execute(stmt)
+        return result.scalars().first()
+
+    @staticmethod
+    async def create_contractor_payment(
+        session: AsyncSession,
+        tenant_id: uuid.UUID,
+        data: Any
+    ) -> ContractorPayment:
+        """
+        Creates a contractor payment / invoice claim with statutory TDS calculation.
+        TDS Rules:
+        - 194C: 1% for Individual/HUF, 2% for Company/Firm.
+        - 194J_TECH: 2% for Technical Services / Royalty.
+        - 194J_PROF: 10% for Professional Services.
+        - CBDT Circular 23/2017: TDS is calculated on gross amount EXCLUDING GST.
+        """
+        contractor = await PayrollService.get_contractor(session, tenant_id, data.contractor_id)
+        if not contractor:
+            raise ValueError(f"Contractor with ID {data.contractor_id} not found.")
+
+        tds_sec = data.tds_section or contractor.tds_section or "194J_TECH"
+        if data.tds_rate is not None:
+            tds_rate = Decimal(str(data.tds_rate))
+        else:
+            if tds_sec == "194C":
+                tds_rate = Decimal("1.00") if contractor.contractor_type == "individual_huf" else Decimal("2.00")
+            elif tds_sec == "194J_PROF":
+                tds_rate = Decimal("10.00")
+            else:
+                tds_rate = Decimal("2.00")
+
+        gross_amt = round_curr(data.gross_amount)
+        gst_rate = Decimal(str(data.gst_rate or "0.00"))
+        gst_amt = round_curr(data.gst_amount) if (data.gst_amount and data.gst_amount > 0) else round_curr(gross_amt * (gst_rate / Decimal("100.00")))
+        tds_amt = round_curr(gross_amt * (tds_rate / Decimal("100.00")))
+        net_payable = round_curr(gross_amt + gst_amt - tds_amt)
+
+        import random
+        rand_suffix = f"{random.randint(100, 999)}"
+        payment_num = f"CPAY-{data.invoice_date.year}-{rand_suffix}"
+
+        payment = ContractorPayment(
+            id=uuid.uuid4(),
+            tenant_id=tenant_id,
+            contractor_id=contractor.id,
+            payment_number=payment_num,
+            invoice_number=data.invoice_number,
+            invoice_date=data.invoice_date,
+            payment_date=data.payment_date,
+            description=data.description,
+            gross_amount=gross_amt,
+            gst_rate=gst_rate,
+            gst_amount=gst_amt,
+            tds_section=tds_sec,
+            tds_rate=tds_rate,
+            tds_amount=tds_amt,
+            net_payable=net_payable,
+            status="pending"
+        )
+        session.add(payment)
+        await session.commit()
+        await session.refresh(payment)
+        return payment
+
+    @staticmethod
+    async def get_contractor_payments(
+        session: AsyncSession,
+        tenant_id: uuid.UUID,
+        contractor_id: Optional[uuid.UUID] = None
+    ) -> List[ContractorPayment]:
+        stmt = select(ContractorPayment).options(selectinload(ContractorPayment.contractor)).where(ContractorPayment.tenant_id == tenant_id)
+        if contractor_id:
+            stmt = stmt.where(ContractorPayment.contractor_id == contractor_id)
+        stmt = stmt.order_by(ContractorPayment.created_at.desc())
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+    @staticmethod
+    async def get_contractor_payment(
+        session: AsyncSession,
+        tenant_id: uuid.UUID,
+        payment_id: uuid.UUID
+    ) -> Optional[ContractorPayment]:
+        stmt = select(ContractorPayment).options(selectinload(ContractorPayment.contractor)).where(
+            and_(ContractorPayment.tenant_id == tenant_id, ContractorPayment.id == payment_id)
+        )
+        result = await session.execute(stmt)
+        return result.scalars().first()
+
+    @staticmethod
+    async def accrue_contractor_payment(
+        session: AsyncSession,
+        tenant_id: uuid.UUID,
+        payment_id: uuid.UUID,
+        user_id: Optional[uuid.UUID] = None
+    ) -> ContractorPayment:
+        payment = await PayrollService.get_contractor_payment(session, tenant_id, payment_id)
+        if not payment:
+            raise ValueError("Contractor payment record not found.")
+        if payment.status in ["approved", "disbursed"]:
+            raise ValueError(f"Contractor payment already in '{payment.status}' status.")
+
+        contractor = await PayrollService.get_contractor(session, tenant_id, payment.contractor_id)
+        c_name = contractor.name if contractor else "Contractor"
+
+        # Resolve Accounts
+        exp_code = "4040" if "194J" in payment.tds_section else "4020"
+        tds_code = "2060" if "194J" in payment.tds_section else "2061"
+
+        async def get_account(code: str) -> ChartOfAccounts:
+            stmt = select(ChartOfAccounts).where(
+                and_(ChartOfAccounts.tenant_id == tenant_id, ChartOfAccounts.code == code)
+            )
+            acc = (await session.execute(stmt)).scalars().first()
+            if not acc:
+                raise ValueError(f"Chart of Account {code} missing for tenant.")
+            return acc
+
+        acc_exp = await get_account(exp_code)
+        acc_tds = await get_account(tds_code)
+        acc_payable = await get_account("2040")
+
+        entry = JournalEntry(
+            id=uuid.uuid4(),
+            tenant_id=tenant_id,
+            entry_number=f"JV-CPAY-{payment.payment_number}",
+            entry_date=payment.invoice_date,
+            reference_type="contractor_payment",
+            reference_id=payment.id,
+            narration=f"Contractor Bill Accrual: {payment.description} - Inv #{payment.invoice_number} ({c_name})",
+            status="posted",
+            is_posted=True,
+            created_by=user_id
+        )
+        session.add(entry)
+        await session.flush()
+
+        lines: List[JournalLine] = []
+
+        lines.append(JournalLine(
+            id=uuid.uuid4(),
+            journal_entry_id=entry.id,
+            tenant_id=tenant_id,
+            account_id=acc_exp.id,
+            debit_amount=payment.gross_amount,
+            credit_amount=Decimal("0.00"),
+            description=f"Contractor Expense - Inv #{payment.invoice_number}"
+        ))
+
+        if payment.gst_amount > Decimal("0.00"):
+            acc_gst = await get_account("1030")
+            lines.append(JournalLine(
+                id=uuid.uuid4(),
+                journal_entry_id=entry.id,
+                tenant_id=tenant_id,
+                account_id=acc_gst.id,
+                debit_amount=payment.gst_amount,
+                credit_amount=Decimal("0.00"),
+                description=f"Input GST on Contractor Invoice #{payment.invoice_number}"
+            ))
+
+        if payment.tds_amount > Decimal("0.00"):
+            lines.append(JournalLine(
+                id=uuid.uuid4(),
+                journal_entry_id=entry.id,
+                tenant_id=tenant_id,
+                account_id=acc_tds.id,
+                debit_amount=Decimal("0.00"),
+                credit_amount=payment.tds_amount,
+                description=f"TDS u/s {payment.tds_section} @ {payment.tds_rate}% on Inv #{payment.invoice_number}"
+            ))
+
+        lines.append(JournalLine(
+            id=uuid.uuid4(),
+            journal_entry_id=entry.id,
+            tenant_id=tenant_id,
+            account_id=acc_payable.id,
+            debit_amount=Decimal("0.00"),
+            credit_amount=payment.net_payable,
+            description=f"Payable to {c_name} for Inv #{payment.invoice_number}"
+        ))
+
+        tot_dr = sum(l.debit_amount for l in lines)
+        tot_cr = sum(l.credit_amount for l in lines)
+        if tot_dr != tot_cr:
+            raise ValueError(f"Journal voucher out of balance! Debit: {tot_dr}, Credit: {tot_cr}")
+
+        session.add_all(lines)
+        payment.status = "approved"
+        payment.accrual_journal_id = entry.id
+        await session.commit()
+        await session.refresh(payment)
+        return payment
+
+    @staticmethod
+    async def disburse_contractor_payment(
+        session: AsyncSession,
+        tenant_id: uuid.UUID,
+        payment_id: uuid.UUID,
+        user_id: Optional[uuid.UUID] = None,
+        utr: Optional[str] = None
+    ) -> ContractorPayment:
+        payment = await PayrollService.get_contractor_payment(session, tenant_id, payment_id)
+        if not payment:
+            raise ValueError("Contractor payment record not found.")
+        if payment.status == "disbursed":
+            raise ValueError("Contractor payment has already been disbursed.")
+
+        contractor = await PayrollService.get_contractor(session, tenant_id, payment.contractor_id)
+        c_name = contractor.name if contractor else "Contractor"
+        c_bank = contractor.bank_name if contractor else "Bank"
+        c_acc_last4 = contractor.bank_account_number[-4:] if (contractor and contractor.bank_account_number) else "XXXX"
+
+        async def get_account(code: str) -> ChartOfAccounts:
+            stmt = select(ChartOfAccounts).where(
+                and_(ChartOfAccounts.tenant_id == tenant_id, ChartOfAccounts.code == code)
+            )
+            acc = (await session.execute(stmt)).scalars().first()
+            if not acc:
+                raise ValueError(f"Chart of Account {code} missing for tenant.")
+            return acc
+
+        acc_payable = await get_account("2040")
+        acc_bank = await get_account("1010")
+
+        entry = JournalEntry(
+            id=uuid.uuid4(),
+            tenant_id=tenant_id,
+            entry_number=f"JV-DISB-{payment.payment_number}",
+            entry_date=payment.payment_date,
+            reference_type="contractor_payment_disbursement",
+            reference_id=payment.id,
+            narration=f"Disbursement of Contractor Payout #{payment.payment_number} to {c_name} (UTR: {utr or 'N/A'})",
+            status="posted",
+            is_posted=True,
+            created_by=user_id
+        )
+        session.add(entry)
+        await session.flush()
+
+        lines = [
+            JournalLine(
+                id=uuid.uuid4(),
+                journal_entry_id=entry.id,
+                tenant_id=tenant_id,
+                account_id=acc_payable.id,
+                debit_amount=payment.net_payable,
+                credit_amount=Decimal("0.00"),
+                description=f"Clear Payable for {c_name} ({payment.payment_number})"
+            ),
+            JournalLine(
+                id=uuid.uuid4(),
+                journal_entry_id=entry.id,
+                tenant_id=tenant_id,
+                account_id=acc_bank.id,
+                debit_amount=Decimal("0.00"),
+                credit_amount=payment.net_payable,
+                description=f"Bank Remittance to {c_bank} A/C {c_acc_last4}"
+            )
+        ]
+
+        tot_dr = sum(l.debit_amount for l in lines)
+        tot_cr = sum(l.credit_amount for l in lines)
+        if tot_dr != tot_cr:
+            raise ValueError(f"Disbursement out of balance! Debit: {tot_dr}, Credit: {tot_cr}")
+
+        import random
+        session.add_all(lines)
+        payment.status = "disbursed"
+        payment.payout_utr = utr or f"UTR{random.randint(100000000000, 999999999999)}"
+        payment.payout_date = date.today()
+        payment.disbursement_journal_id = entry.id
+        await session.commit()
+        await session.refresh(payment)
+        return payment
+
+    @staticmethod
+    async def calculate_form_16a(
+        session: AsyncSession,
+        contractor_id: uuid.UUID,
+        fiscal_year: Optional[str] = None
+    ) -> Dict[str, Any]:
+        stmt_c = select(Contractor).where(Contractor.id == contractor_id)
+        contractor = (await session.execute(stmt_c)).scalars().first()
+        if not contractor:
+            raise ValueError(f"Contractor with ID {contractor_id} not found.")
+
+        stmt_t = select(Tenant).where(Tenant.id == contractor.tenant_id)
+        tenant = (await session.execute(stmt_t)).scalars().first()
+
+        stmt_p = select(ContractorPayment).where(ContractorPayment.contractor_id == contractor_id)
+        payments = list((await session.execute(stmt_p)).scalars().all())
+
+        fy = fiscal_year or "2026-27"
+        ay = "2027-28"
+
+        total_gross = sum(p.gross_amount for p in payments)
+        total_tds = sum(p.tds_amount for p in payments)
+
+        breakdown = [
+            {
+                "invoice_number": p.invoice_number,
+                "invoice_date": str(p.invoice_date),
+                "payment_date": str(p.payment_date),
+                "tds_section": p.tds_section,
+                "gross_amount": float(p.gross_amount),
+                "tds_rate": float(p.tds_rate),
+                "tds_amount": float(p.tds_amount),
+                "payout_utr": p.payout_utr or "PENDING"
+            }
+            for p in payments
+        ]
+
+        deductor_name = getattr(tenant, "legal_name", None) or getattr(tenant, "name", "Aryix Tech Private Limited")
+        deductor_pan = getattr(tenant, "pan", None) or getattr(tenant, "pan_number", "AABCA1234F")
+        deductor_tan = (tenant.statutory_profile or {}).get("tan", "BLRA12345D") if (tenant and hasattr(tenant, "statutory_profile") and tenant.statutory_profile) else "BLRA12345D"
+        deductor_addr = getattr(tenant, "registered_office", None) or getattr(tenant, "registered_address", "Bangalore, India")
+
+        return {
+            "contractor_id": contractor.id,
+            "contractor_name": contractor.name,
+            "contractor_pan": contractor.pan_number,
+            "contractor_code": contractor.contractor_code,
+            "contractor_address": contractor.address or "India",
+            "deductor_name": deductor_name,
+            "deductor_pan": deductor_pan,
+            "deductor_tan": deductor_tan,
+            "deductor_address": deductor_addr,
+            "assessment_year": ay,
+            "financial_year": fy,
+            "quarter": "Annual",
+            "nature_of_payment": f"Section {contractor.tds_section}",
+            "total_gross_amount": float(total_gross),
+            "total_tds_deducted": float(total_tds),
+            "payments_breakdown": breakdown
+        }
+
+    @staticmethod
+    async def generate_form_16a_pdf_for_contractor(
+        session: AsyncSession,
+        contractor_id: uuid.UUID,
+        fiscal_year: Optional[str] = None
+    ) -> bytes:
+        data = await PayrollService.calculate_form_16a(session, contractor_id, fiscal_year)
+        return PDFService.generate_form_16a_pdf(data)
+
 

@@ -16,6 +16,7 @@
 │ 6. Statutory Filings    │ Baseline anchors & 3-stage FY closing        │
 │ 7. Tax & GST Forecast   │ Advance Tax Sec 234B/C & Rule 88A GST runway │
 │ 8. Legal Vault          │ Encrypted S3 repository & Auditor ZIP dossier│
+│ 9. Payroll & Compliance │ Salaried runs, Form 16, EPFO/ESIC/PT, 194C/194J Contractors │
 └─────────────────────────┴──────────────────────────────┘
 ```
 
@@ -166,3 +167,96 @@
    * **Statutory Anchors & Filing Reconciliation Report.**
    * **Cryptographic SHA-256 Manifest.**
 5. Download the packaged ZIP file and transmit it directly to your statutory auditor.
+
+---
+
+### 2.10 Workflow 10: Processing Salaried Payroll & Filing Statutory Returns (EPFO, ESIC, PT, Form 16)
+**Objective:** Execute monthly salaried payroll runs, auto-post two-legged double-entry vouchers (Accrual & Disbursement), generate EPFO ECR electronic files, ESIC returns, PT challan exports, and download statutory Form 16 Part B tax certificates.
+
+1. Navigate to `/payroll` from the main navigation sidebar.
+2. **Review Monthly Payroll Runs (Tab 1: "Run Payroll"):**
+   * View all historical payroll runs with their respective pay periods, employee counts, total gross pay, deductions, and net disbursed amounts.
+   * Check run status: `Draft` -> `Calculated` -> `Accrued (Leg 1)` -> `Disbursed (Leg 2)`.
+3. **Execute a New Monthly Payroll Run:**
+   * Click **Execute Salaried Payroll Run** in the header.
+   * Select the target **Month** and **Year** (e.g., September 2026).
+   * Confirm the calculation. The payroll engine automatically applies Indian statutory rules:
+     * **Provident Fund (EPF):** Computes Employee Contribution (12% of Basic up to statutory ceiling ₹15,000, i.e., ₹1,800/mo cap unless voluntary PF) and Employer Contribution (12% split into 8.33% EPS and 3.67% EPF + 0.5% EDLI + 0.5% Admin).
+     * **Employees' State Insurance (ESIC):** Auto-detected if Gross $\le$ ₹21,000/mo. Computes Employee Contribution (0.75% of Gross) and Employer Contribution (3.25% of Gross).
+     * **Professional Tax (PT):** Applies state-specific slabs (e.g., Karnataka: ₹200/mo for gross $\ge$ ₹15,000; Maharashtra: ₹200/mo, ₹300 in Feb).
+     * **TDS under Section 192:** Computes monthly withholding under the New Tax Regime (default Section 115BAC) or Old Regime based on employee declarations.
+4. **Post Two-Legged General Ledger Vouchers:**
+   * **Leg 1: Accrual Voucher:** Click **Post Leg 1 Accrual**. Automatically posts and cryptographically seals a balanced General Ledger voucher:
+     * Debit: `Salaries & Wages (Code 4010)` (Gross Salary)
+     * Debit: `Employer PF Contribution (Code 4011)`
+     * Debit: `Employer ESIC Contribution (Code 4012)`
+     * Credit: `Net Salaries Payable (Code 2050)`
+     * Credit: `TDS Payable u/s 192 (Code 2060)`
+     * Credit: `Provident Fund Payable (Code 2070)`
+     * Credit: `ESIC Payable (Code 2071)`
+     * Credit: `Professional Tax Payable (Code 2072)`
+   * **Leg 2: Disbursement Voucher:** Click **Post Leg 2 Disbursement**. Enter bank payout reference / UTR number.
+     * Debit: `Net Salaries Payable (Code 2050)`
+     * Credit: `Bank Account (Code 1010)`
+5. **Download Statutory Filing Return Files (Tab 3: "Statutory Filings"):**
+   * **EPFO ECR Electronic File (`.txt`):** Click **Download ECR File**. Produces the official `#~#` delimited plain-text upload file containing UAN, Member Name, Gross Wages, EPF Wages, EPS Wages, EDLI Wages, EE Share, ER EPS Share, ER EPF Diff, and Non-Contributory Days (NCP). Upload directly to the EPFO Unified Portal without manual data entry.
+   * **ESIC Monthly Contribution Spreadsheet (`.xlsx`):** Click **Download ESIC Sheet**. Generates the standardized Excel schedule with IP Numbers, Insured Person Names, Total Days Worked, Wages, and Employee Share for the ESIC Insurance Portal.
+   * **Professional Tax (PT) Challan Reports:** Download state-wise PT monthly return schedules formatted for state commercial tax portals.
+6. **Generate Form 16 Part B Certificates (Tab 4: "Tax & Form 16"):**
+   * Select the employee and assessment year.
+   * View the annualized tax computation card: Gross Salary, Section 10 exemptions, Section 16(ia) standard deduction (₹75,000 for FY 2026-27), Chapter VI-A deductions, Total Taxable Income, Rebate u/s 87A, Health & Education Cess (4%), and Total Tax Deducted.
+   * Click **Download Form 16 Part B (PDF)** to produce a certified, printable Form 16 Part B PDF certificate with deductor/deductee identity grids and digital signature placeholder.
+
+---
+
+### 2.11 Workflow 11: Managing Contractors, Freelancers, Section 194C/194J TDS Withholding & Form 16A Certificates
+**Objective:** Onboard external vendors, consultants, and independent freelancers, withhold statutory TDS under Section 194C or 194J (compliant with CBDT Circular 23/2017), auto-post two-legged accrual/payout vouchers, and generate certified Form 16A PDF tax deduction certificates.
+
+1. Navigate to `/payroll` and switch to the **Contractors & Freelancers** tab (5th tab).
+2. **Onboard Contractor or Professional (Contractor Directory):**
+   * Click **Onboard Contractor / Freelancer**.
+   * Fill out the onboarding form:
+     * **Contractor Code:** Unique identifier (e.g., `CNT-001`).
+     * **Legal Name:** Official business or individual name matching income tax records.
+     * **Entity Type:** Select from `individual`, `huf`, `partnership`, `company`, or `llp`.
+     * **PAN (Permanent Account Number):** 10-character PAN. If not provided, statutory higher rate withholding (20% u/s 206AA) applies.
+     * **GSTIN (Optional):** 15-character GST identification number if registered.
+     * **Default Statutory Section & Rate:**
+       * `194C` (Contractors / Sub-contractors): **1%** for Individuals/HUF; **2%** for Companies/LLPs/Partnerships.
+       * `194J(a)` (Technical Services / Royalty): **2%**.
+       * `194J(b)` (Professional Services, Legal, Medical, Architectural): **10%**.
+     * **Bank Details:** Account Number and IFSC Code for direct NEFT/RTGS disbursals.
+   * Click **Save & Onboard**.
+3. **Record Contractor Invoice / Payout Claim:**
+   * Click **Record Payout Claim** in the contractor payouts section.
+   * Select the onboarded contractor.
+   * Enter the **Base Service Amount** (e.g., ₹1,00,000) and **GST Amount** (e.g., 18% = ₹18,000).
+   * Enter the contractor's **Invoice Number** and **Invoice Date**.
+   * **Live Statutory Breakdown Card:**
+     * The system instantly calculates TDS strictly on the **Base Service Amount** (excluding GST), in accordance with **CBDT Circular 23/2017**.
+     * *Example (194J Professional 10% on ₹1,00,000 + 18% GST):*
+       * Base Service Amount: ₹1,00,000
+       * GST Input (18%): ₹18,000
+       * Total Invoice: ₹1,18,000
+       * TDS Withheld (10% on ₹1,00,000): ₹10,000
+       * **Net Payable to Contractor:** ₹1,08,000
+   * Click **Save Contractor Payment**.
+4. **Post Two-Legged General Ledger Vouchers:**
+   * **Leg 1: Accrual Voucher:** On the payout row, click **Accrue (Leg 1)**.
+     * Debit: `Contractor / Professional Fees (Account 4040 / 4020)` (Base Amount: ₹1,00,000)
+     * Debit: `Input GST / Electronic Credit Ledger (Account 1030)` (GST: ₹18,000)
+     * Credit: `TDS Payable u/s 194C / 194J (Account 2060 / 2061)` (TDS: ₹10,000)
+     * Credit: `Trade Payables - Contractors (Account 2040)` (Net Payable: ₹1,08,000)
+   * **Leg 2: Disbursement Voucher:** After releasing payment via net banking, click **Disburse (Leg 2)** and enter the bank payment UTR / reference number.
+     * Debit: `Trade Payables - Contractors (Account 2040)` (₹1,08,000)
+     * Credit: `Bank Account (Account 1010)` (₹1,08,000)
+5. **Issue Certified Form 16A TDS Certificates:**
+   * Under the **Contractor Directory** or next to any disbursed claim, click **Form 16A (PDF)**.
+   * Select the target Quarter (e.g., `Q2`) and Financial Year (e.g., `2026-27`).
+   * The platform compiles all payments and TDS deposits for that quarter and streams a certified **Form 16A PDF Certificate** (under Section 203 of the Income-tax Act, 1961):
+     * Deductor identity & TAN/PAN header.
+     * Deductee identity, PAN, and address.
+     * Summary of payments credited and tax deducted at source.
+     * Bank Challan / BSR Code / Challan Identification Number (CIN) details.
+     * Statutory verification statement and digital signature block.
+   * Download and issue the PDF directly to your contractor or freelancer.

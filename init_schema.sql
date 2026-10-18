@@ -1596,8 +1596,73 @@ CREATE POLICY tenant_isolation_tax_declarations ON employee_tax_declarations
     USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
     WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
 
+CREATE TABLE IF NOT EXISTS contractors (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    contractor_code VARCHAR(32) NOT NULL,
+    name VARCHAR(150) NOT NULL,
+    contractor_type VARCHAR(32) NOT NULL DEFAULT 'individual_huf',
+    pan_number VARCHAR(10) NOT NULL,
+    gstin VARCHAR(15),
+    tds_section VARCHAR(20) NOT NULL DEFAULT '194J_TECH',
+    tds_rate NUMERIC(5, 2) NOT NULL DEFAULT 2.00,
+    email VARCHAR(255) NOT NULL,
+    phone VARCHAR(20),
+    address TEXT,
+    bank_name VARCHAR(100) NOT NULL,
+    bank_account_number VARCHAR(34) NOT NULL,
+    bank_ifsc_code VARCHAR(11) NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'active',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_tenant_contractor_code UNIQUE (tenant_id, contractor_code),
+    CONSTRAINT uq_tenant_contractor_pan UNIQUE (tenant_id, pan_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_contractors_tenant ON contractors(tenant_id, status);
+ALTER TABLE contractors ENABLE ROW LEVEL SECURITY;
+ALTER TABLE contractors FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation_contractors ON contractors
+    FOR ALL
+    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
+    WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
+
+CREATE TABLE IF NOT EXISTS contractor_payments (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    contractor_id UUID NOT NULL REFERENCES contractors(id) ON DELETE RESTRICT,
+    payment_number VARCHAR(64) NOT NULL,
+    invoice_number VARCHAR(64) NOT NULL,
+    invoice_date DATE NOT NULL,
+    payment_date DATE NOT NULL,
+    description TEXT NOT NULL,
+    gross_amount NUMERIC(15, 2) NOT NULL CHECK (gross_amount > 0),
+    gst_rate NUMERIC(5, 2) NOT NULL DEFAULT 0.00,
+    gst_amount NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    tds_section VARCHAR(20) NOT NULL,
+    tds_rate NUMERIC(5, 2) NOT NULL,
+    tds_amount NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+    net_payable NUMERIC(15, 2) NOT NULL CHECK (net_payable >= 0),
+    status VARCHAR(20) NOT NULL DEFAULT 'pending',
+    accrual_journal_id UUID REFERENCES journal_entries(id) ON DELETE SET NULL,
+    disbursement_journal_id UUID REFERENCES journal_entries(id) ON DELETE SET NULL,
+    payout_utr VARCHAR(64),
+    payout_date DATE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_contractor_payments_tenant ON contractor_payments(tenant_id, status);
+ALTER TABLE contractor_payments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE contractor_payments FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation_contractor_payments ON contractor_payments
+    FOR ALL
+    USING (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid)
+    WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid);
+
 -- Grant table, sequence, and function privileges to non-superuser application role b00k5_app
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO b00k5_app;
+
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO b00k5_app;
 GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO b00k5_app;
 

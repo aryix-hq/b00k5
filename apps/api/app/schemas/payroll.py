@@ -235,3 +235,106 @@ class Form16Response(BaseModel):
     quarterly_tds_summary: List[dict] = []
 
 
+class ContractorBase(BaseModel):
+    contractor_code: str = Field(..., max_length=32)
+    name: str = Field(..., max_length=150)
+    contractor_type: str = "individual_huf"  # individual_huf, company_firm
+    pan_number: str = Field(..., min_length=10, max_length=10)
+    gstin: Optional[str] = Field(None, max_length=15)
+    tds_section: str = "194J_TECH"  # 194C, 194J_TECH, 194J_PROF
+    tds_rate: Decimal = Field(default=Decimal("2.00"), ge=0, le=100)
+    email: EmailStr
+    phone: Optional[str] = None
+    address: Optional[str] = None
+    bank_name: str = Field(..., max_length=100)
+    bank_account_number: str = Field(..., max_length=34)
+    bank_ifsc_code: str = Field(..., max_length=11)
+    status: str = "active"
+
+
+class ContractorCreate(ContractorBase):
+    pass
+
+
+class ContractorUpdate(BaseModel):
+    name: Optional[str] = None
+    contractor_type: Optional[str] = None
+    pan_number: Optional[str] = None
+    gstin: Optional[str] = None
+    tds_section: Optional[str] = None
+    tds_rate: Optional[Decimal] = None
+    email: Optional[EmailStr] = None
+    phone: Optional[str] = None
+    address: Optional[str] = None
+    bank_name: Optional[str] = None
+    bank_account_number: Optional[str] = None
+    bank_ifsc_code: Optional[str] = None
+    status: Optional[str] = None
+
+
+class ContractorResponse(ContractorBase):
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ContractorPaymentBase(BaseModel):
+    contractor_id: uuid.UUID
+    invoice_number: str = Field(..., max_length=64)
+    invoice_date: date
+    payment_date: date
+    description: str
+    gross_amount: Decimal = Field(..., gt=0)
+    gst_rate: Decimal = Field(default=Decimal("0.00"), ge=0, le=100)
+    gst_amount: Decimal = Field(default=Decimal("0.00"), ge=0)
+    tds_section: Optional[str] = None
+    tds_rate: Optional[Decimal] = None
+
+
+class ContractorPaymentCreate(ContractorPaymentBase):
+    pass
+
+
+class ContractorPaymentResponse(ContractorPaymentBase):
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    payment_number: str
+    tds_section: str
+    tds_rate: Decimal
+    tds_amount: Decimal
+    net_payable: Decimal
+    status: str
+    accrual_journal_id: Optional[uuid.UUID] = None
+    disbursement_journal_id: Optional[uuid.UUID] = None
+    payout_utr: Optional[str] = None
+    payout_date: Optional[date] = None
+    contractor_name: Optional[str] = None
+    contractor_pan: Optional[str] = None
+    contractor_code: Optional[str] = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class Form16AResponse(BaseModel):
+    contractor_id: uuid.UUID
+    contractor_name: str
+    contractor_pan: str
+    contractor_address: Optional[str] = None
+    deductor_name: str
+    deductor_pan: Optional[str] = None
+    deductor_tan: Optional[str] = None
+    deductor_address: Optional[str] = None
+    assessment_year: str
+    financial_year: str
+    quarter: str
+    nature_of_payment: str
+    total_gross_amount: Decimal
+    total_tds_deducted: Decimal
+    payments_breakdown: List[dict] = []
+
+
+

@@ -155,7 +155,7 @@ async def test_payroll_api_employee_onboarding_and_validation(payroll_test_tenan
         # 2. Reject duplicate employee code
         res_dup_code = await client.post("/api/v1/payroll/employees", json={
             **emp_payload,
-            "pan_number": "XYZAB5678G",
+            "pan_number": "AAACA5678G",
             "email": "diff@payrolltech.io"
         }, headers=auth_headers)
         assert res_dup_code.status_code == 409
@@ -245,7 +245,7 @@ async def test_payroll_api_full_run_lifecycle_and_schedule_iii(payroll_test_tena
             "date_of_birth": "1999-12-05",
             "date_of_joining": "2025-04-01",
             "designation": "Support Associate",
-            "pan_number": "BBBCK1122N",
+            "pan_number": "AABCK1122N",
             "bank_account_number": "909080807070",
             "bank_ifsc_code": "SBIN0001234",
             "bank_name": "State Bank of India",

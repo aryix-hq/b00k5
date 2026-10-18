@@ -139,7 +139,7 @@ async def test_epfo_ecr_text_exporter(exporter_test_tenant: Tenant, db_session: 
         status="active",
         employment_type="full_time",
         designation="Lead Systems Engineer",
-        pan_number="BBVPS8891P",
+        pan_number="AABCS8891P",
         uan_number="100984920192",
         bank_account_number="912010048192019",
         bank_ifsc_code="HDFC0001234",
@@ -224,7 +224,7 @@ async def test_esic_and_pt_return_exporters(exporter_test_tenant: Tenant, db_ses
         status="active",
         employment_type="full_time",
         designation="Operations Associate",
-        pan_number="CCVPR1120Q",
+        pan_number="AAACA1120Q",
         esic_number="3109849201",
         bank_account_number="6010048192019",
         bank_ifsc_code="SBIN0001234",
@@ -263,7 +263,7 @@ async def test_esic_and_pt_return_exporters(exporter_test_tenant: Tenant, db_ses
         status="active",
         employment_type="full_time",
         designation="Senior Analyst",
-        pan_number="DDVPR1120M",
+        pan_number="AABCA1120M",
         bank_account_number="6010048192020",
         bank_ifsc_code="SBIN0001234",
         bank_name="State Bank of India",
@@ -339,7 +339,7 @@ async def test_form_16_calculation_and_pdf_generation(exporter_test_tenant: Tena
         status="active",
         employment_type="full_time",
         designation="VP of Engineering",
-        pan_number="AADPD9901M",
+        pan_number="ABCPD9901M",
         uan_number="100984920199",
         bank_account_number="12010048192019",
         bank_ifsc_code="ICIC0001234",
@@ -369,7 +369,7 @@ async def test_form_16_calculation_and_pdf_generation(exporter_test_tenant: Tena
     # 1. Compute Form 16 JSON
     f16_data = await PayrollService.calculate_form_16(db_session, emp.id, "2026-27")
     assert f16_data["employee_name"] == "Ananya Deshmukh"
-    assert f16_data["pan_number"] == "AADPD9901M"
+    assert f16_data["pan_number"] == "ABCPD9901M"
     assert f16_data["tax_regime"] == "new_115bac"
     assert f16_data["gross_salary"] == 1800000.0
     assert f16_data["standard_deduction"] == 75000.0  # Standard deduction under 115BAC
@@ -408,7 +408,7 @@ async def test_api_statutory_export_endpoints(exporter_test_tenant: Tenant, auth
         status="active",
         employment_type="full_time",
         designation="Staff Architect",
-        pan_number="AAMPP1101K",
+        pan_number="ABCPD1101K",
         uan_number="100984920194",
         esic_number="3109849204",
         bank_account_number="33010048192019",

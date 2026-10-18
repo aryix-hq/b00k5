@@ -137,7 +137,7 @@ async def test_contractor_onboarding_and_tds_calculation(contractor_test_tenant:
         contractor_code="CON-194J-01",
         name="Sharma & Associates Legal Counsel",
         contractor_type="individual_huf",
-        pan_number="XYZPA9876K",
+        pan_number="ABCPD9876K",
         tds_section="194J_PROF",
         tds_rate=Decimal("10.00"),
         email="sharma@law.com",
@@ -196,7 +196,7 @@ async def test_contractor_ledger_posting_and_form_16a(contractor_test_tenant: Te
         contractor_code="DEV-FREELANCE-01",
         name="Aditi Rao DevOps Consulting",
         contractor_type="individual_huf",
-        pan_number="BKPAR5555L",
+        pan_number="ABCPD5555L",
         tds_section="194J_TECH",
         tds_rate=Decimal("2.00"),
         email="aditi.dev@example.com",
@@ -253,7 +253,7 @@ async def test_contractor_ledger_posting_and_form_16a(contractor_test_tenant: Te
 
     # Form 16A Computation
     form16a = await PayrollService.calculate_form_16a(db_session, c.id, "2026-27")
-    assert form16a["contractor_pan"] == "BKPAR5555L"
+    assert form16a["contractor_pan"] == "ABCPD5555L"
     assert form16a["total_gross_amount"] == 80000.00
     assert form16a["total_tds_deducted"] == 1600.00
     assert len(form16a["payments_breakdown"]) == 1

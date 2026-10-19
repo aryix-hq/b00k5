@@ -155,23 +155,40 @@ class StatutoryAnchorService:
         for d in all_docs:
             meta = d.metadata_json or {}
             dname = d.document_name.lower()
+            key_low = (d.minio_s3_key or "").lower()
             dtype = str(meta.get("document_type") or "").lower()
             if not check_statutory_fy_match(clean_fy, meta, dname, d.minio_s3_key):
                 continue
-            if not aoc4_doc and (dtype == "form_aoc_4" or "aoc-4" in dname or "aoc 4" in dname or "aoc4" in dname or "aoc_4" in dname):
-                aoc4_doc = d
-            elif not mgt7_doc and (dtype in ("form_mgt_7", "form_mgt_7a") or "mgt-7" in dname or "mgt 7" in dname or "mgt7" in dname):
+            is_aoc_candidate = (
+                dtype == "form_aoc_4" or "aoc-4" in dname or "aoc 4" in dname or "aoc4" in dname or "aoc_4" in dname or
+                "aoc-4" in key_low or "aoc4" in key_low or "aoc_4" in key_low
+            )
+            if is_aoc_candidate:
+                # Prefer genuine AOC-4 over extract of auditor's report
+                if "auditor" in key_low and aoc4_doc and "auditor" not in (aoc4_doc.minio_s3_key or "").lower():
+                    continue
+                if aoc4_doc and "auditor" in (aoc4_doc.minio_s3_key or "").lower() and "auditor" not in key_low:
+                    aoc4_doc = d
+                elif not aoc4_doc:
+                    aoc4_doc = d
+            elif not mgt7_doc and (dtype in ("form_mgt_7", "form_mgt_7a") or "mgt-7" in dname or "mgt 7" in dname or "mgt7" in dname or "mgt" in key_low):
                 mgt7_doc = d
-            elif not itr_doc and (dtype == "itr" or "itr" in dname or "income tax return" in dname):
+            elif not itr_doc and (dtype == "itr" or "itr" in dname or "income tax return" in dname or "itr" in key_low):
                 itr_doc = d
 
         # Fallback if FY matching didn't catch due to naming
         if not aoc4_doc:
             for d in all_docs:
                 meta = d.metadata_json or {}
-                if meta.get("fiscal_year") == clean_fy and (meta.get("document_type") == "form_aoc_4" or "aoc" in d.document_name.lower()):
+                key_low = (d.minio_s3_key or "").lower()
+                if (meta.get("fiscal_year") == clean_fy or clean_fy in key_low) and (
+                    meta.get("document_type") == "form_aoc_4" or "aoc" in d.document_name.lower() or "aoc" in key_low
+                ):
+                    if "auditor" in key_low and aoc4_doc and "auditor" not in (aoc4_doc.minio_s3_key or "").lower():
+                        continue
                     aoc4_doc = d
-                    break
+                    if "auditor" not in key_low:
+                        break
         if not mgt7_doc:
             for d in all_docs:
                 meta = d.metadata_json or {}
@@ -270,24 +287,33 @@ class StatutoryAnchorService:
             ext = meta.get("extracted_fields") or {}
             srn_aoc = ext.get("srn") or "SRN-AOC4-FILED"
             sch_payload = dict(ext.get("schedule_iii_payload") or {})
+            filing_dt_aoc = None
 
-            # If payload is empty, extract from bytes or correlate with MGT-7
-            if not sch_payload and aoc4_doc.minio_s3_key:
+            # Always extract from raw PDF bytes if payload is missing key balance sheet lines (e.g. 1050 or 2030)
+            if (not sch_payload or not sch_payload.get("1050") or not sch_payload.get("2030")) and aoc4_doc.minio_s3_key:
                 try:
-                    pdf_bytes = storage_manager.get_document_bytes(
-                        getattr(settings, "BUCKET_VAULT", "b00k5-vault"),
-                        aoc4_doc.minio_s3_key
-                    )
-                    classified = StatutoryVaultEngine.classify_statutory_filing(pdf_bytes, aoc4_doc.document_name)
-                    sch_payload = classified.get("schedule_iii_payload", {})
-                    if classified.get("srn_or_ack_number"):
-                        srn_aoc = classified["srn_or_ack_number"]
+                    pdf_bytes = b""
+                    for b_name in [getattr(settings, "BUCKET_STATUTORY", "b00k5-statutory"), getattr(settings, "BUCKET_VAULT", "b00k5-vault"), "b00k5-statutory", "b00k5-vault"]:
+                        try:
+                            pdf_bytes = storage_manager.get_document_bytes(b_name, aoc4_doc.minio_s3_key)
+                            if pdf_bytes:
+                                break
+                        except Exception:
+                            continue
+                    if pdf_bytes:
+                        classified = StatutoryVaultEngine.classify_statutory_filing(pdf_bytes, aoc4_doc.document_name)
+                        extracted_sch = classified.get("schedule_iii_payload", {})
+                        if extracted_sch:
+                            sch_payload = extracted_sch
+                        if classified.get("srn_or_ack_number"):
+                            srn_aoc = classified["srn_or_ack_number"]
+                        if classified.get("filing_date"):
+                            filing_dt_aoc = classified["filing_date"]
                 except Exception as ex:
                     import logging
                     logging.getLogger("statutory_anchor").warning(f"Failed extracting AOC-4 bytes: {ex}")
 
-            # Correlate with MGT-7 / ITR-6 if balance sheet figures are minimal (e.g. Extract of Auditor's Report filing)
-            # Capital = ₹1,00,000; Net Worth = -₹63,851; Loss = ₹1,63,851; Borrowing = ₹63,851 -> Balanced zero-sum!
+            # Correlate with MGT-7 / ITR-6 only if balance sheet figures are minimal (e.g. non-statutory filing)
             if not sch_payload.get("2010"):
                 cap_val = mgt7_payload.get("paid_up_capital_inr") or 100000.0
                 sch_payload["2010"] = f"{float(cap_val):.2f}"
@@ -296,14 +322,12 @@ class StatutoryAnchorService:
                 nw_val = mgt7_payload.get("net_worth_inr")
                 cap_val = float(sch_payload.get("2010", 100000.0))
                 if nw_val is not None:
-                    # Retained earnings = Net worth - Capital
                     res_val = float(nw_val) - cap_val
                     sch_payload["2020"] = f"{res_val:.2f}"
                 else:
                     sch_payload["2020"] = "0.00"
 
             if not sch_payload.get("2030") and float(sch_payload.get("2020", "0")) < 0:
-                # Retained loss was financed by Director loan / borrowings to balance
                 net_loss = abs(float(sch_payload.get("2020"))) - float(sch_payload.get("2010"))
                 if net_loss > 0:
                     sch_payload["2030"] = f"{net_loss:.2f}"
@@ -312,7 +336,16 @@ class StatutoryAnchorService:
                 sch_payload["4040"] = f"{abs(float(sch_payload.get('2020'))):.2f}"
                 sch_payload["5020"] = sch_payload.get("2020")
 
-            if not aoc4_anchor or not aoc4_anchor.schedule_iii_payload:
+            needs_anchor_update = (
+                not aoc4_anchor or
+                not aoc4_anchor.schedule_iii_payload or
+                (sch_payload.get("1050") and not (aoc4_anchor.schedule_iii_payload or {}).get("1050")) or
+                (sch_payload.get("2030") and (aoc4_anchor.schedule_iii_payload or {}).get("2030") != sch_payload.get("2030")) or
+                (aoc4_anchor.s3_document_key != aoc4_doc.minio_s3_key) or
+                (srn_aoc != aoc4_anchor.srn_or_ack_number)
+            )
+
+            if needs_anchor_update:
                 aoc4_anchor = await StatutoryAnchorService.record_statutory_anchor(
                     db=db,
                     tenant=tenant,
@@ -320,7 +353,7 @@ class StatutoryAnchorService:
                     assessment_year=ay,
                     form_type="aoc_4",
                     srn_or_ack_number=srn_aoc,
-                    filing_date=aoc4_doc.issue_date or date(e_yr, 9, 30),
+                    filing_date=filing_dt_aoc or aoc4_doc.issue_date or date(e_yr, 9, 26),
                     schedule_iii_payload=sch_payload,
                     signatory_din=ext.get("signatory_din") or prof.get("director_din"),
                     auditor_udin=ext.get("auditor_udin") or prof.get("auditor_udin"),

@@ -503,6 +503,7 @@ class ScheduleIIIService:
                 long_term_borrowings += prior_long_term_borrowings
                 short_term_borrowings += prior_short_term_borrowings
                 trade_payables += prior_trade_payables
+                other_current_liabilities += prior_other_current_liabilities
                 short_term_provisions += prior_short_term_provisions
                 net_ppe += prior_net_ppe
                 loans_and_advances += prior_loans_and_advances

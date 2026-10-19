@@ -5,7 +5,9 @@
 -->
 
 ## 1. Ticket & Summary
-- **Wiki Ticket**: `[FEAT-XXX | DEF-XXX]` (e.g. `wiki/features/FEAT-042.md`)
+- **Wiki Feature Spec**: `wiki/features/FEAT-XXX.md`
+- **Implementation Plan**: `wiki/plans/PLAN-XXX.md` (Phase X)
+- **Defect Record**: `wiki/defects/DEF-XXX.md` (if applicable)
 - **Title**: `feat(scope): Description` or `fix(scope): Description`
 - **Summary of Changes**:
   [Provide a concise explanation of what this PR does and why.]
@@ -30,10 +32,12 @@
 
 ---
 
-## 4. Documentation & Standards Checklist
+## 4. Documentation & Living Document Checklist
+- [ ] Upstream Feature Spec (`wiki/features/FEAT-XXX.md`) and Implementation Plan (`wiki/plans/PLAN-XXX.md`) phase status updated
+- [ ] Living Architecture (`wiki/ARCHITECTURE.md`) and DB Schema (`wiki/DATABASE_SCHEMA.md`) updated if relevant
+- [ ] All defects logged in `wiki/defects/` are marked Remediated
 - [ ] `CHANGELOG.md` updated under `[Unreleased]` with Keep a Changelog syntax
-- [ ] Relevant `wiki/` documentation (specs, ADRs, or defect records) updated
-- [ ] Zero secrets, unmasked PII, or credentials committed
+- [ ] Zero secrets, unmasked PII, or credentials committed (Vault compliant)
 - [ ] No floating-point math introduced into financial ledgers
 
 ---

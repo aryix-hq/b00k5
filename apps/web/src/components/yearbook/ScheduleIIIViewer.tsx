@@ -524,14 +524,6 @@ export function ScheduleIIIViewer({ selectedFY }: { selectedFY: string }) {
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
-          {/* Schedule III Clause 4 Automatic Rounding Badge */}
-          <div className="flex items-center gap-2 bg-slate-900 border border-slate-800 rounded-xl px-3 py-1.5 text-xs shadow-inner">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-            <span className="text-slate-400 font-mono text-[11px] uppercase tracking-wider font-semibold">Schedule III Cl. 4:</span>
-            <span className="text-amber-400 font-mono font-medium">{getUnitDescription(roundingUnit)}</span>
-            <span className="text-[10px] text-slate-400 bg-slate-800 px-1.5 py-0.5 rounded border border-slate-700">Auto</span>
-          </div>
-
           <button
             onClick={loadScheduleIII}
             className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition"

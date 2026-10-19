@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased] - 2026-10-18
 
 ### Fixed
+- **DEF-24 Form AOC-4 Vault Misclassification, SRN Truncation & Statutory Anchor Discrepancy**:
+  - Remediated statutory filing classification in `apps/api/app/services/statutory_vault_engine.py` to prevent auditor report extracts (`EXTRACT OF AUDITOR`) containing `"ATTACHED WITH FORM AOC-4"` from being misclassified as Form AOC-4 and overwriting authentic financial statements in `DocumentVault`.
+  - Preserved authentic 11-digit MCA V3 Service Request Numbers (e.g. `1-27616438562`) by eliminating string-truncation bugs.
+  - Added multi-bucket vault probing in `apps/api/app/services/statutory_anchor_service.py` to discover and synchronize filings stored across both `b00k5-statutory` and `b00k5-vault` MinIO storage buckets.
+  - Added `other_current_liabilities` roll-forward in `apps/api/app/services/schedule_iii_service.py`, ensuring complete permanent account continuity.
+  - Synchronized statutory figures with full balance sheet and P&L line-item fidelity matching uploaded Form AOC-4 documents, verifying zero balance sheet drift ($\left|\text{Assets} - \text{Liabilities}\right| \equiv 0.00$) across both historical and current reporting periods.
 - **DEF-23 Schedule III PDF Export Header Overlap & Permanent Account Roll-Forward**:
   - Remediated table column header overlap in `ScheduleIIIService._render_schedule_iii_pdf` on Page 1 (Balance Sheet) and Page 2 (Statement of Profit and Loss) by refactoring the single-line header box to a structured 2-line layout (`Particulars`, `Note No.`, `Figures as at` / date, and `For period ended` / date) with generous column clearances.
   - Eliminated artificial ₹1,00,000 balance sheet drift in `ScheduleIIIService._resolve_schedule_iii_components` by rolling forward permanent balance sheet accounts (opening retained deficit and director long-term borrowings) from filed Form AOC-4 anchors into ongoing fiscal year operations, achieving exact equilibrium ($\text{Assets} \equiv \text{Liabilities} \equiv ₹5,000.00$) with zero mathematical drift.

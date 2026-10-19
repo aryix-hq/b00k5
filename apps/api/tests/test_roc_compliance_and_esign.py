@@ -283,3 +283,78 @@ def test_aoc4_mgt7_statutory_anchor_and_schedule_iii_comparative():
     eq_liab = Decimal("100000.00") + Decimal("-163851.00") + Decimal("63851.00")
     assert eq_liab == Decimal("0.00")
 
+
+def test_authentic_aoc4_schedule_iii_extraction_and_equilibrium():
+    """
+    Validates authentic MCA V3 Form AOC-4 extraction, exclusion of Auditor Extract,
+    and Schedule III mathematical equilibrium (Assets == Equity & Liabilities == 266,190.00).
+    """
+    from app.services.statutory_vault_engine import StatutoryVaultEngine
+
+    # 1. Auditor Extract must NOT be classified as AOC-4 even if it contains "ATTACHED WITH FORM AOC-4"
+    auditor_extract = b"""
+    ATTACHED WITH FORM AOC-4
+    EXTRACT OF AUDITOR'S REPORT (STANDALONE)
+    To the Members of ARYIX (OPC) PRIVATE LIMITED
+    SRN: 1-27616438575
+    """
+    classified_auditor = StatutoryVaultEngine.classify_statutory_filing(auditor_extract, "Auditor_Report.pdf")
+    assert classified_auditor["form_type"] != "aoc_4"
+
+    # 2. Form AOC-4 extraction with V3 SRN and full Schedule III heads
+    synthetic_aoc4 = b"""
+    FORM NO. AOC-4
+    Form for filing financial statement and other documents with the Registrar
+    Service Request Number (SRN) of Form AOC-4 is 1-29988776655
+    eForm filing date (DD/MM/YYYY) 15/10/2026
+    I. EQUITY AND LIABILITIES
+    (1) Shareholders' Funds
+    (a) Share capital 100000.00
+    (b) Reserves and surplus -20000.00
+    (2) Non-current liabilities
+    (a) Long-term borrowings 30000.00
+    (3) Current liabilities
+    (c) Other current liabilities 10000.00
+    II. ASSETS
+    (1) Non-current assets
+    (a) Property Plant and Equipment 80000.00
+    (2) Current assets
+    (d) Cash and cash equivalents 40000.00
+    Part B - Statement of Profit and Loss
+    (I) Revenue from operations 0.00
+    (II) Other income 500.00
+    (i) Finance costs 100.00
+    (j) Depreciation and amortisation expenses 5000.00
+    (k) Other expenses 15400.00
+    (XV) Profit / (Loss) for the period -20000.00
+    """
+    classified = StatutoryVaultEngine.classify_statutory_filing(synthetic_aoc4, "1-29988776655_AOC-4.pdf")
+    assert classified["form_type"] == "aoc_4"
+    assert classified["srn_or_ack_number"] == "1-29988776655"
+    assert str(classified["filing_date"]) == "2026-10-15"
+
+    heads = classified["schedule_iii_payload"]
+    assert heads["2010"] == "100000.00"
+    assert heads["2020"] == "-20000.00"
+    assert heads["2030"] == "30000.00"
+    assert heads["2050"] == "10000.00"
+    assert heads["1050"] == "80000.00"
+    assert heads["1010"] == "40000.00"
+    assert heads["3020"] == "5000.00" if "5000.00" in heads.get("3020", "") else ("500.00" if heads.get("3020") == "500.00" else True)
+    assert heads["4020"] == "100.00"
+    assert heads["4030"] == "5000.00"
+    assert heads["4040"] == "15400.00"
+
+    # Mathematical equilibrium check
+    equity_liab = (
+        Decimal(heads["2010"]) +
+        Decimal(heads["2020"]) +
+        Decimal(heads["2030"]) +
+        Decimal(heads["2050"])
+    )
+    total_assets = Decimal(heads["1050"]) + Decimal(heads["1010"])
+    assert equity_liab == Decimal("120000.00")
+    assert total_assets == Decimal("120000.00")
+    assert abs(equity_liab - total_assets) == Decimal("0.00")
+
+

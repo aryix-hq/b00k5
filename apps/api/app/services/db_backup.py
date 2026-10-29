@@ -337,6 +337,15 @@ class DatabaseBackupManager:
                     gdrive_file_id = f"{gdrive_file_id} | {up_s3['s3_uri']}" if gdrive_file_id else up_s3["s3_uri"]
                     status_val = "completed"
                     logger.info(f"Database backup mirrored to remote S3: {up_s3['s3_uri']}")
+
+                    # Enforce S3 backup retention policy (auto-prune old snapshots to preserve quota)
+                    retention_cfg = s3_cfg.get("retention_policy", {})
+                    if retention_cfg.get("auto_prune_backups", True):
+                        keep_count = int(retention_cfg.get("keep_backups_count", 7))
+                        max_age = int(retention_cfg.get("max_backup_age_days", 30))
+                        prune_res = s3_cli.enforce_retention_policy(keep_backups_count=keep_count, max_age_days=max_age)
+                        if prune_res.get("pruned_count", 0) > 0:
+                            logger.info(f"S3 backup retention pruned {prune_res['pruned_count']} old snapshot(s), reclaimed {prune_res.get('reclaimed_mb', 0)} MB")
                 except Exception as s3_err:
                     logger.warning(f"Failed to mirror backup to remote S3: {s3_err}")
 

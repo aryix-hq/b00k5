@@ -88,3 +88,77 @@ def test_s3_mirror_upload_file_mock():
         assert "sha256" in res
         mock_minio.put_object.assert_called_once()
 
+
+def test_s3_storage_usage_calculation():
+    client = S3RemoteMirrorClient(
+        endpoint="https://account.r2.cloudflarestorage.com",
+        access_key="test_key",
+        secret_key="test_secret",
+        bucket_name="my-bucket",
+        root_prefix="b00k5_TEST"
+    )
+
+    mock_obj1 = MagicMock()
+    mock_obj1.is_dir = False
+    mock_obj1.object_name = "b00k5_TEST/Database Backups/backup_1.tar.gz.enc"
+    mock_obj1.size = 10 * 1024 * 1024 # 10 MB
+
+    mock_obj2 = MagicMock()
+    mock_obj2.is_dir = False
+    mock_obj2.object_name = "b00k5_TEST/FY 2025-26/Sales Invoices/INV-001.pdf"
+    mock_obj2.size = 200 * 1024 # 200 KB
+
+    mock_obj3 = MagicMock()
+    mock_obj3.is_dir = False
+    mock_obj3.object_name = "b00k5_TEST/FY 2025-26/Vendor Bills & Receipts/EXP-001.pdf"
+    mock_obj3.size = 300 * 1024 # 300 KB
+
+    mock_minio = MagicMock()
+    mock_minio.list_objects.return_value = [mock_obj1, mock_obj2, mock_obj3]
+
+    with patch.object(S3RemoteMirrorClient, "client", new=mock_minio):
+        usage = client.get_storage_usage()
+        assert usage["file_count"] == 3
+        assert usage["total_mb"] > 10.0
+        assert usage["categories"]["database_backups"]["count"] == 1
+        assert usage["categories"]["sales_invoices"]["count"] == 1
+        assert usage["categories"]["vendor_bills"]["count"] == 1
+        assert usage["remaining_free_gb"] > 9.9
+        assert usage["free_tier_gb"] == 10.0
+
+
+def test_s3_retention_policy_enforcement():
+    from datetime import datetime, timedelta
+
+    client = S3RemoteMirrorClient(
+        endpoint="https://account.r2.cloudflarestorage.com",
+        access_key="test_key",
+        secret_key="test_secret",
+        bucket_name="my-bucket",
+        root_prefix="b00k5_TEST"
+    )
+
+    now = datetime.utcnow()
+    # Create 10 mock backups
+    backup_objs = []
+    for i in range(10):
+        obj = MagicMock()
+        obj.is_dir = False
+        obj.object_name = f"b00k5_TEST/Database Backups/b00k5_backup_{i}.tar.gz.enc"
+        obj.size = 5 * 1024 * 1024 # 5 MB
+        obj.last_modified = now - timedelta(days=i)
+        backup_objs.append(obj)
+
+    mock_minio = MagicMock()
+    mock_minio.list_objects.return_value = backup_objs
+    mock_minio.remove_object.return_value = None
+
+    with patch.object(S3RemoteMirrorClient, "client", new=mock_minio):
+        # Retain last 7, prune 3 oldest
+        res = client.enforce_retention_policy(keep_backups_count=7)
+        assert res["retained_count"] == 7
+        assert res["pruned_count"] == 3
+        assert res["reclaimed_mb"] == 15.0 # 3 * 5MB
+        assert mock_minio.remove_object.call_count == 3
+
+

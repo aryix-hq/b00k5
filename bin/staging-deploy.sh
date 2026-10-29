@@ -140,16 +140,28 @@ cmd_test() {
   S3_CFG_RESP=$(curl -s "${API_URL}/api/v1/storage/s3-config" \
     -H "Authorization: Bearer ${ACCESS_TOKEN}" \
     -H "X-Tenant-ID: 11111111-1111-1111-1111-111111111111")
-  if echo "${S3_CFG_RESP}" | grep -q '"provider"'; then
-    log_success "S3 / Cloudflare R2 Mirror configuration endpoint responding normally!"
+  if echo "${S3_CFG_RESP}" | grep -q '"provider"' && echo "${S3_CFG_RESP}" | grep -q '"retention_policy"'; then
+    log_success "S3 / Cloudflare R2 Mirror config & retention policy verified!"
   else
     log_error "S3 / Cloudflare R2 Mirror endpoint validation failed: ${S3_CFG_RESP}"
     exit 1
   fi
 
-  # 6. Pytest Integration Suite inside staging container
-  log_info "Test 6: Running pytest regression suite in Staging container..."
-  ${COMPOSE_CMD} exec -T b00k5_staging_api pytest apps/api/tests/test_gstr1_table13_and_uqc.py apps/api/tests/test_compliance.py apps/api/tests/test_s3_remote_mirror.py -q
+  # 6. S3 Live Storage Usage & Free Tier Gauge Test
+  log_info "Test 6: GET ${API_URL}/api/v1/storage/s3-usage"
+  USAGE_RESP=$(curl -s "${API_URL}/api/v1/storage/s3-usage" \
+    -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+    -H "X-Tenant-ID: 11111111-1111-1111-1111-111111111111")
+  if echo "${USAGE_RESP}" | grep -q '"free_tier_gb":10.0'; then
+    log_success "S3 Storage Usage & 10 GB Free Tier gauge verified!"
+  else
+    log_error "S3 Storage Usage validation failed: ${USAGE_RESP}"
+    exit 1
+  fi
+
+  # 7. Pytest Integration Suite inside staging container
+  log_info "Test 7: Running pytest regression suite in Staging container..."
+  ${COMPOSE_CMD} exec -T b00k5_staging_api pytest tests/test_gstr1_table13_and_uqc.py tests/test_compliance.py tests/test_s3_remote_mirror.py -q
   log_success "All test suites PASSED in isolated Staging environment!"
 }
 

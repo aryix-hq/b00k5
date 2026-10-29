@@ -10,6 +10,7 @@ import io
 import time
 import hashlib
 import logging
+from datetime import datetime
 from typing import Dict, Any, Optional, List
 from urllib.parse import urlparse
 
@@ -227,4 +228,161 @@ class S3RemoteMirrorClient:
         except Exception as e:
             logger.warning(f"Failed to list remote S3 files: {e}")
             return []
+
+    def delete_file(self, object_key_or_rel_path: str) -> bool:
+        """
+        Deletes an object key from the remote bucket.
+        Accepts either full object_key or relative path.
+        """
+        cli = self.client
+        if not cli:
+            return False
+
+        target_key = object_key_or_rel_path
+        if self.root_prefix and not target_key.startswith(self.root_prefix):
+            target_key = f"{self.root_prefix}/{target_key.lstrip('/')}"
+
+        try:
+            cli.remove_object(self.bucket_name, target_key)
+            logger.info(f"Deleted remote S3 object: {self.bucket_name}/{target_key}")
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to delete remote S3 object {target_key}: {e}")
+            return False
+
+    def get_storage_usage(self) -> Dict[str, Any]:
+        """
+        Calculates storage consumption breakdown on the remote S3 / Cloudflare R2 bucket.
+        Cloudflare R2 provides 10 GB free forever (10,737,418,240 bytes).
+        """
+        cli = self.client
+        FREE_TIER_BYTES = 10 * 1024 * 1024 * 1024  # 10 GB
+
+        if not cli:
+            return {
+                "total_bytes": 0,
+                "total_mb": 0.0,
+                "free_tier_bytes": FREE_TIER_BYTES,
+                "free_tier_gb": 10.0,
+                "used_percentage": 0.0,
+                "remaining_free_bytes": FREE_TIER_BYTES,
+                "remaining_free_gb": 10.0,
+                "categories": {},
+                "file_count": 0
+            }
+
+        prefix = f"{self.root_prefix}/" if self.root_prefix else ""
+        total_bytes = 0
+        categories = {
+            "database_backups": {"bytes": 0, "count": 0},
+            "sales_invoices": {"bytes": 0, "count": 0},
+            "vendor_bills": {"bytes": 0, "count": 0},
+            "bank_statements": {"bytes": 0, "count": 0},
+            "statutory_vault": {"bytes": 0, "count": 0},
+            "other": {"bytes": 0, "count": 0}
+        }
+        total_count = 0
+
+        try:
+            objs = cli.list_objects(self.bucket_name, prefix=prefix, recursive=True)
+            for o in objs:
+                if not o.is_dir:
+                    sz = o.size or 0
+                    total_bytes += sz
+                    total_count += 1
+                    name = o.object_name.lower()
+                    if "database backups" in name or "database_backups" in name or ".tar.gz" in name:
+                        categories["database_backups"]["bytes"] += sz
+                        categories["database_backups"]["count"] += 1
+                    elif "sales invoices" in name or "sales_invoices" in name or "inv-" in name or "inv_" in name:
+                        categories["sales_invoices"]["bytes"] += sz
+                        categories["sales_invoices"]["count"] += 1
+                    elif "vendor bills" in name or "receipt" in name or "exp_" in name:
+                        categories["vendor_bills"]["bytes"] += sz
+                        categories["vendor_bills"]["count"] += 1
+                    elif "bank statements" in name or "statement" in name:
+                        categories["bank_statements"]["bytes"] += sz
+                        categories["bank_statements"]["count"] += 1
+                    elif "corporate legal" in name or "tax registrations" in name or "statutory filings" in name:
+                        categories["statutory_vault"]["bytes"] += sz
+                        categories["statutory_vault"]["count"] += 1
+                    else:
+                        categories["other"]["bytes"] += sz
+                        categories["other"]["count"] += 1
+        except Exception as e:
+            logger.warning(f"Failed to calculate storage usage for {self.bucket_name}: {e}")
+
+        used_pct = round((total_bytes / FREE_TIER_BYTES) * 100, 2)
+        remaining = max(0, FREE_TIER_BYTES - total_bytes)
+
+        return {
+            "total_bytes": total_bytes,
+            "total_mb": round(total_bytes / (1024 * 1024), 2),
+            "total_gb": round(total_bytes / (1024 * 1024 * 1024), 4),
+            "free_tier_bytes": FREE_TIER_BYTES,
+            "free_tier_gb": 10.0,
+            "used_percentage": used_pct,
+            "remaining_free_bytes": remaining,
+            "remaining_free_gb": round(remaining / (1024 * 1024 * 1024), 2),
+            "categories": categories,
+            "file_count": total_count
+        }
+
+    def enforce_retention_policy(
+        self,
+        keep_backups_count: int = 7,
+        max_age_days: int = 30
+    ) -> Dict[str, Any]:
+        """
+        Enforces retention policy specifically for database backups.
+        Preserves the N newest database backups and prunes older ones to prevent running out of space.
+        Statutory Invariant: Invoices, bills, receipts, and legal vault documents are NEVER pruned.
+        """
+        cli = self.client
+        if not cli:
+            return {"pruned_count": 0, "retained_count": 0, "reclaimed_bytes": 0, "reclaimed_mb": 0.0, "pruned_files": []}
+
+        subpath = "Database Backups"
+        clean_sub = subpath.strip().lstrip("/")
+        prefix = f"{self.root_prefix}/{clean_sub}/" if self.root_prefix else f"{clean_sub}/"
+
+        try:
+            objs = list(cli.list_objects(self.bucket_name, prefix=prefix, recursive=True))
+            backup_objs = [
+                o for o in objs 
+                if not o.is_dir and (o.object_name.endswith(".enc") or o.object_name.endswith(".meta.txt") or ".tar.gz" in o.object_name)
+            ]
+            
+            # Sort newest first
+            backup_objs.sort(key=lambda o: o.last_modified if o.last_modified else datetime.min, reverse=True)
+
+            retained = backup_objs[:keep_backups_count]
+            to_prune = backup_objs[keep_backups_count:]
+
+            pruned_files = []
+            reclaimed_bytes = 0
+
+            for o in to_prune:
+                try:
+                    cli.remove_object(self.bucket_name, o.object_name)
+                    reclaimed_bytes += (o.size or 0)
+                    pruned_files.append({
+                        "object_key": o.object_name,
+                        "size_bytes": o.size,
+                        "last_modified": o.last_modified.isoformat() if o.last_modified else None
+                    })
+                    logger.info(f"Retention policy pruned old S3 backup: {o.object_name} ({o.size} bytes)")
+                except Exception as e:
+                    logger.warning(f"Failed to prune old backup {o.object_name}: {e}")
+
+            return {
+                "pruned_count": len(pruned_files),
+                "retained_count": len(retained),
+                "reclaimed_bytes": reclaimed_bytes,
+                "reclaimed_mb": round(reclaimed_bytes / (1024 * 1024), 2),
+                "pruned_files": pruned_files
+            }
+        except Exception as e:
+            logger.warning(f"Failed to enforce retention policy on S3 backups: {e}")
+            return {"pruned_count": 0, "retained_count": 0, "reclaimed_bytes": 0, "reclaimed_mb": 0.0, "pruned_files": []}
 

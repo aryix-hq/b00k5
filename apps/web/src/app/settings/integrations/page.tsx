@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { Cloud, Shield, Database, CheckCircle2, RefreshCw, AlertCircle, ArrowLeft, Lock, HardDrive, Server, Archive, RotateCcw, X, ShieldAlert, Eye, EyeOff, Check, ExternalLink, Layers, ArrowUpRight } from 'lucide-react';
+import { Cloud, Shield, Database, CheckCircle2, RefreshCw, AlertCircle, ArrowLeft, Lock, HardDrive, Server, Archive, RotateCcw, X, ShieldAlert, Eye, EyeOff, Check, ExternalLink, Layers, ArrowUpRight, FileText, Receipt, ShieldCheck, Building } from 'lucide-react';
 import Link from 'next/link';
 import { Sidebar } from '@/components/Sidebar';
 import { Navbar } from '@/components/Navbar';
@@ -38,6 +38,21 @@ interface S3MirrorConfig {
   has_secret: boolean;
   secret_access_key_masked: string;
   status: string;
+  retention_policy?: {
+    keep_backups_count: number;
+    auto_prune_backups: boolean;
+    max_backup_age_days: number;
+  };
+  storage_usage?: {
+    total_bytes: number;
+    total_mb: number;
+    total_gb: number;
+    free_tier_gb: number;
+    used_percentage: number;
+    remaining_free_gb: number;
+    categories?: Record<string, { bytes: number; count: number }>;
+    file_count: number;
+  };
   last_tested_at?: string | null;
   last_synced_at?: string | null;
 }
@@ -73,7 +88,14 @@ export default function IntegrationsSettingsPage() {
   const [savingS3, setSavingS3] = useState<boolean>(false);
   const [syncingS3, setSyncingS3] = useState<boolean>(false);
   const [s3TestStatus, setS3TestStatus] = useState<{ success: boolean; message: string; latency_ms?: number } | null>(null);
-  const [s3SyncStatus, setS3SyncStatus] = useState<{ success: boolean; message: string; count?: number } | null>(null);
+  const [s3SyncStatus, setS3SyncStatus] = useState<{ success: boolean; message: string; count?: number; retention?: any } | null>(null);
+
+  // Retention & Storage Quota State
+  const [retentionKeepCount, setRetentionKeepCount] = useState<number>(7);
+  const [retentionAutoPrune, setRetentionAutoPrune] = useState<boolean>(true);
+  const [savingRetention, setSavingRetention] = useState<boolean>(false);
+  const [pruningBackups, setPruningBackups] = useState<boolean>(false);
+  const [pruneResult, setPruneResult] = useState<{ pruned_count: number; reclaimed_mb: number } | null>(null);
 
   const fetchS3Config = async () => {
     try {
@@ -86,9 +108,51 @@ export default function IntegrationsSettingsPage() {
         if (data.region) setS3Region(data.region);
         if (data.root_prefix) setS3Prefix(data.root_prefix);
         if (data.access_key_id) setS3AccessKey(data.access_key_id);
+        if (data.retention_policy) {
+          if (data.retention_policy.keep_backups_count) setRetentionKeepCount(data.retention_policy.keep_backups_count);
+          if (typeof data.retention_policy.auto_prune_backups === 'boolean') setRetentionAutoPrune(data.retention_policy.auto_prune_backups);
+        }
       }
     } catch (e) {
       console.warn('Failed to load S3 mirror config:', e);
+    }
+  };
+
+  const handleSaveRetention = async () => {
+    setSavingRetention(true);
+    try {
+      const res = await fetchApi('/api/v1/storage/s3-retention-policy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          keep_backups_count: retentionKeepCount,
+          auto_prune_backups: retentionAutoPrune,
+          max_backup_age_days: 30
+        })
+      });
+      alert(res.message || 'Retention policy saved.');
+      await fetchS3Config();
+    } catch (err: any) {
+      alert(err.message || 'Failed to save retention policy.');
+    } finally {
+      setSavingRetention(false);
+    }
+  };
+
+  const handlePruneBackups = async () => {
+    if (!window.confirm(`Prune older database snapshots on Cloudflare R2 / S3, retaining the ${retentionKeepCount} newest? (Invoices, bills, and tax filings will NOT be deleted).`)) return;
+    setPruningBackups(true);
+    try {
+      const res = await fetchApi('/api/v1/storage/s3-prune-backups', {
+        method: 'POST'
+      });
+      setPruneResult(res.prune_details || { pruned_count: 0, reclaimed_mb: 0 });
+      alert(res.message || 'Backups pruned successfully.');
+      await fetchS3Config();
+    } catch (err: any) {
+      alert(err.message || 'Failed to prune backups.');
+    } finally {
+      setPruningBackups(false);
     }
   };
 
@@ -622,6 +686,178 @@ export default function IntegrationsSettingsPage() {
               className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white font-mono text-xs focus:border-sky-500 focus:outline-none"
             />
           </div>
+        </div>
+
+        {/* Scope of Mirroring: Invoices, Bills, Vault, Statements & Backups */}
+        <div className="p-4 rounded-xl bg-slate-950/80 border border-slate-800/80 space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
+              <Shield className="w-3.5 h-3.5 text-sky-400" />
+              Complete Off-Site Backup Scope (All Invoices, Bills, Documents &amp; DB)
+            </span>
+            <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+              MCA Sec 128 Compliant
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+            <div className="p-3 rounded-lg bg-slate-900 border border-slate-800">
+              <div className="flex items-center gap-2 text-sky-400 mb-1">
+                <FileText className="w-4 h-4" />
+                <span className="text-xs font-medium text-white">Sales Invoices</span>
+              </div>
+              <p className="text-[11px] text-slate-400 leading-tight">
+                All client tax invoices, debit/credit notes archived as PDF documents with SHA-256 hashes.
+              </p>
+            </div>
+
+            <div className="p-3 rounded-lg bg-slate-900 border border-slate-800">
+              <div className="flex items-center gap-2 text-emerald-400 mb-1">
+                <Receipt className="w-4 h-4" />
+                <span className="text-xs font-medium text-white">Vendor Bills</span>
+              </div>
+              <p className="text-[11px] text-slate-400 leading-tight">
+                All vendor bills, OCR receipt attachments, and statutory expense vouchers.
+              </p>
+            </div>
+
+            <div className="p-3 rounded-lg bg-slate-900 border border-slate-800">
+              <div className="flex items-center gap-2 text-purple-400 mb-1">
+                <ShieldCheck className="w-4 h-4" />
+                <span className="text-xs font-medium text-white">Legal &amp; Tax Vault</span>
+              </div>
+              <p className="text-[11px] text-slate-400 leading-tight">
+                Certificate of Incorporation (COI), MOA, AOA, PAN, GST, and ROC filings.
+              </p>
+            </div>
+
+            <div className="p-3 rounded-lg bg-slate-900 border border-slate-800">
+              <div className="flex items-center gap-2 text-amber-400 mb-1">
+                <Building className="w-4 h-4" />
+                <span className="text-xs font-medium text-white">Bank Statements</span>
+              </div>
+              <p className="text-[11px] text-slate-400 leading-tight">
+                Reconciled bank statements and monthly financial institution transaction records.
+              </p>
+            </div>
+
+            <div className="p-3 rounded-lg bg-slate-900 border border-slate-800">
+              <div className="flex items-center gap-2 text-rose-400 mb-1">
+                <Database className="w-4 h-4" />
+                <span className="text-xs font-medium text-white">Database Dumps</span>
+              </div>
+              <p className="text-[11px] text-slate-400 leading-tight">
+                Encrypted PostgreSQL archives (AES-256-GCM) with double-entry integrity checks.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Cloudflare R2 Storage Quota & Retention Policy Card */}
+        <div className="p-4 rounded-xl bg-slate-950/80 border border-slate-800 space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800/80 pb-3">
+            <div>
+              <h3 className="text-xs font-semibold text-white uppercase tracking-wider flex items-center gap-2">
+                <Archive className="w-3.5 h-3.5 text-amber-400" />
+                Storage Quota &amp; Database Backup Retention Policy
+              </h3>
+              <p className="text-[11px] text-slate-400">
+                Prevents running out of space by automatically pruning older database snapshots while permanently preserving statutory invoices and bills.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] font-mono text-slate-300">
+                {s3Config?.storage_usage?.total_mb ?? 0} MB / 10 GB Free Tier
+              </span>
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-sky-500/10 text-sky-400 border border-sky-500/20">
+                {s3Config?.storage_usage?.remaining_free_gb ?? 10.0} GB Free Remaining
+              </span>
+            </div>
+          </div>
+
+          {/* Quota Progress Bar */}
+          <div className="space-y-1.5">
+            <div className="w-full h-2 rounded-full bg-slate-800 overflow-hidden">
+              <div
+                className={`h-full transition-all duration-500 ${
+                  (s3Config?.storage_usage?.used_percentage ?? 0) > 80
+                    ? 'bg-rose-500'
+                    : (s3Config?.storage_usage?.used_percentage ?? 0) > 50
+                    ? 'bg-amber-500'
+                    : 'bg-emerald-500'
+                }`}
+                style={{ width: `${Math.max(1, Math.min(100, s3Config?.storage_usage?.used_percentage ?? 0.5))}%` }}
+              />
+            </div>
+            <div className="flex items-center justify-between text-[10px] text-slate-400 font-mono">
+              <span>Used: {s3Config?.storage_usage?.used_percentage ?? 0}%</span>
+              <span>{s3Config?.storage_usage?.file_count ?? 0} Total Objects in Bucket</span>
+              <span>10 GB Free Forever Limit</span>
+            </div>
+          </div>
+
+          {/* Retention Controls */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-1 items-end">
+            <div>
+              <label className="text-slate-300 text-xs font-medium block mb-1">
+                Keep Database Snapshots:
+              </label>
+              <select
+                value={retentionKeepCount}
+                onChange={(e) => setRetentionKeepCount(Number(e.target.value))}
+                className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-white font-mono text-xs focus:border-amber-500 focus:outline-none cursor-pointer"
+              >
+                <option value={5}>Keep 5 Most Recent Backups (~50 MB)</option>
+                <option value={7}>Keep 7 Daily Backups (~70 MB - Default)</option>
+                <option value={14}>Keep 14 Backups (~140 MB)</option>
+                <option value={30}>Keep 30 Backups (~300 MB)</option>
+              </select>
+            </div>
+
+            <div className="flex items-center gap-2 pb-2">
+              <input
+                type="checkbox"
+                id="auto-prune-toggle"
+                checked={retentionAutoPrune}
+                onChange={(e) => setRetentionAutoPrune(e.target.checked)}
+                className="rounded border-slate-700 bg-slate-900 text-amber-500 focus:ring-0 w-4 h-4 cursor-pointer"
+              />
+              <label htmlFor="auto-prune-toggle" className="text-xs text-slate-300 cursor-pointer select-none">
+                Auto-prune older snapshots during backups
+              </label>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleSaveRetention}
+                disabled={savingRetention || !s3Config?.configured}
+                className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 text-xs font-semibold rounded-lg transition"
+              >
+                {savingRetention ? 'Saving...' : 'Save Policy'}
+              </button>
+              <button
+                type="button"
+                onClick={handlePruneBackups}
+                disabled={pruningBackups || !s3Config?.configured}
+                className="px-3.5 py-2 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-amber-300 text-xs font-semibold rounded-lg transition"
+              >
+                {pruningBackups ? 'Pruning...' : 'Prune Now'}
+              </button>
+            </div>
+          </div>
+
+          {pruneResult && (
+            <div className="p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs flex items-center gap-2 font-mono">
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+              <span>Pruned {pruneResult.pruned_count} old snapshot(s). Reclaimed {pruneResult.reclaimed_mb} MB space.</span>
+            </div>
+          )}
+
+          <p className="text-[10px] text-slate-500 italic pt-1">
+            * Statutory Invariant: Sales invoices, vendor expense bills, and MCA legal filings are protected by Companies Act 2013 Section 128 (8-year audit mandate) and will never be deleted by the retention engine.
+          </p>
         </div>
 
         {/* S3 Action Buttons */}

@@ -29,6 +29,7 @@ class ContactResponse(ContactBase):
 class InvoiceItemBase(BaseModel):
     item_description: str
     hsn_sac_code: str
+    uqc: Optional[str] = Field(default="OTH")
     quantity: Decimal = Field(default=Decimal("1.000"))
     unit_price: Decimal
     gst_rate_percent: Decimal = Field(default=Decimal("18.00")) # 0, 5, 12, 18, 28

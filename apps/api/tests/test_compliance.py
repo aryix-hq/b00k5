@@ -50,3 +50,39 @@ def test_due_soon_status():
     assert metrics["status"] == "due_soon"
     assert metrics["days_remaining"] == 8
     assert metrics["accumulated_penalty_inr"] == Decimal("0.00")
+
+
+def test_advance_tax_corporate_regime_115baa():
+    from app.services.advance_tax_service import AdvanceTaxService
+
+    # Section 115BAA corporate regime: 22% base + 10% surcharge + 4% cess = 25.168% effective
+    breakdown = AdvanceTaxService.calculate_corporate_tax_breakdown(
+        entity_type="PVT_LTD",
+        projected_profit=Decimal("1000000.00"),  # 10 Lakhs profit
+        annualized_turnover=Decimal("5000000.00"),
+        selected_regime="sec_115baa_22"
+    )
+
+    assert breakdown["base_rate_pct"] == 22.0
+    assert breakdown["surcharge_pct"] == 10.0
+    assert breakdown["cess_pct"] == 4.0
+    assert breakdown["effective_rate_pct"] == 25.168
+    # Gross tax: 1,000,000 * 25.168% = 251,680.00
+    assert Decimal(str(breakdown["gross_tax_amount"])) == Decimal("251680.00")
+
+
+def test_advance_tax_llp_regime():
+    from app.services.advance_tax_service import AdvanceTaxService
+
+    # LLP flat 30% + 4% cess = 31.2% (under 1 Cr profit)
+    breakdown = AdvanceTaxService.calculate_corporate_tax_breakdown(
+        entity_type="LLP",
+        projected_profit=Decimal("500000.00"),
+        annualized_turnover=Decimal("2000000.00")
+    )
+
+    assert breakdown["base_rate_pct"] == 30.0
+    assert breakdown["surcharge_pct"] == 0.0
+    assert breakdown["effective_rate_pct"] == 31.2
+    assert Decimal(str(breakdown["gross_tax_amount"])) == Decimal("156000.00")
+

@@ -5,6 +5,29 @@ All notable changes to `b00k5` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-10-29
+
+### Added
+- **FEAT-GST-04 GSTR-1 Table 13 Document Summary, 44+ GSTN UQC Validation, and Section 234B/C Advance Tax Penalty Warning Gauges**:
+  - **GSTR-1 Table 13 Document Summary Engine (`apps/api/app/services/gstr1_service.py`)**:
+    - Automated calculation of document issuance numbers across 6 statutory natures (1: Invoices, 4: Debit Notes, 5: Credit Notes, 6: Receipt Vouchers, 7: Payment Vouchers, 12: Delivery Challans).
+    - Added prefix-aware natural serial decomposition (`from`, `to`, `totnum`, `canc`, `net_issue`) adhering to GST Rule 46(b) 16-character limits and GSTN Table 13 official schema specifications.
+    - Updated Table 12 HSN Summary to aggregate by composite key `(hsn_code, uqc)` with automatic `NA` enforcement on Chapter 99 services.
+  - **UQC Core Model & Validation Architecture (`apps/api/app/core/uqc.py`, `apps/api/app/models/invoice.py`, `apps/api/app/schemas/invoice.py`)**:
+    - Added persistent `uqc VARCHAR(10)` column on `invoice_items` with auto-migration.
+    - Introduced GSTN official catalog with 44+ unit quantity codes (`NOS`, `BOX`, `KGS`, `MTR`, etc.).
+    - Strictly enforced GST Rule 46 service invariant: HSN codes starting with `99` (SAC) mandate `uqc = "NA"` while goods mandate non-`NA` codes.
+    - Exposed `GET /api/v1/invoices/uqc-catalog` endpoint for frontend dropdown integration.
+  - **Frontend InvoiceForm & UQC Validation (`apps/web/src/components/invoices/InvoiceForm.tsx`, `apps/web/src/app/invoices/new/page.tsx`)**:
+    - Built reusable line-item editor with real-time Chapter 99 auto-detection, disabling unit selection with statutory tooltip guidance for service SAC codes, and standard 44+ GSTN dropdowns for goods.
+    - Added live intra-state (CGST+SGST) vs inter-state (IGST) split computation with banker's precision rounding.
+  - **Year Book Advance Tax §234B/C Penalty Warning Gauges (`apps/web/src/components/yearbook/AdvanceTaxGauges.tsx`, `apps/web/src/app/yearbook/page.tsx`)**:
+    - Built interactive quarterly gauge widget (Q1 15%, Q2 45%, Q3 75%, Q4 100%) integrated with `/api/v1/compliance/advance-tax/forecast`.
+    - Visualized Section 208 statutory thresholds (₹10,000 net liability), Safe Harbor markers (12% Q1, 36% Q2), and real-time penal interest tracking for §234C deferral and §234B default interest.
+    - Provided proactive monthly recommended savings reserve callouts and quick ITNS 280 challan recording triggers.
+  - **Zero-Mock Unit Tests (`apps/api/tests/test_gstr1_table13_and_uqc.py`, `apps/api/tests/test_compliance.py`)**:
+    - Verified Table 13 document summary generation, contiguous prefix-based grouping, cancellation counts, UQC service invariant enforcement, and corporate tax regime calculations with 100% test pass rate.
+
 ## [Unreleased] - 2026-10-18
 
 ### Fixed

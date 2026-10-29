@@ -6,20 +6,7 @@ import { FilePlus, IndianRupee, Calendar, User, Plus, Trash2, CheckCircle2, Aler
 import Link from 'next/link';
 import { Sidebar } from '@/components/Sidebar';
 import { Navbar } from '@/components/Navbar';
-
-interface LineItem {
-  id: string;
-  description: string;
-  hsn_sac: string;
-  unit_price: number;
-  quantity: number;
-  gst_rate: number;
-  taxable_amount: number;
-  cgst_amount: number;
-  sgst_amount: number;
-  igst_amount: number;
-  total_amount: number;
-}
+import { InvoiceForm, InvoiceLineItem, isServiceHSN } from '@/components/invoices/InvoiceForm';
 
 function NewInvoiceInner() {
   const router = useRouter();
@@ -40,11 +27,12 @@ function NewInvoiceInner() {
   const [confirmDuplicate, setConfirmDuplicate] = useState<boolean>(false);
   const [contactId, setContactId] = useState<string | null>(null);
 
-  const [lineItems, setLineItems] = useState<LineItem[]>([
+  const [lineItems, setLineItems] = useState<InvoiceLineItem[]>([
     {
       id: 'item-1',
       description: '',
       hsn_sac: '998314',
+      uqc: 'NA',
       unit_price: 0.00,
       quantity: 1,
       gst_rate: 18,
@@ -89,6 +77,7 @@ function NewInvoiceInner() {
               id: 'converted-1',
               description: item.description || 'Software Consulting & Development Services',
               hsn_sac: item.hsn_sac || '998314',
+              uqc: isServiceHSN(item.hsn_sac || '998314') ? 'NA' : (item.uqc || 'NOS'),
               unit_price: Number(item.unit_price) || 16000.00,
               quantity: Number(item.quantity) || 1,
               gst_rate: Number(item.gst_rate) || 18,
@@ -210,6 +199,7 @@ function NewInvoiceInner() {
             id: `scanned-${idx}`,
             description: it.item_description,
             hsn_sac: it.hsn_sac_code || '998314',
+            uqc: isServiceHSN(it.hsn_sac_code || '') ? 'NA' : (it.uqc || 'NOS'),
             unit_price: Number(it.unit_price) || 0,
             quantity: Number(it.quantity) || 1,
             gst_rate: Number(it.gst_rate_percent) || 18,
@@ -298,6 +288,7 @@ function NewInvoiceInner() {
           items: lineItems.map(it => ({
             item_description: it.description,
             hsn_sac_code: it.hsn_sac,
+            uqc: it.uqc || (isServiceHSN(it.hsn_sac) ? 'NA' : 'NOS'),
             quantity: it.quantity,
             unit_price: it.unit_price,
             gst_rate_percent: it.gst_rate
@@ -460,47 +451,13 @@ function NewInvoiceInner() {
           </div>
         </div>
 
-        {/* Line Items Table */}
-        <div className="p-6 rounded-2xl bg-slate-900/60 border border-slate-800 space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-white">Invoice Items & HSN/SAC Decomposition</h3>
-            <span className="text-xs text-sky-400 font-mono">1 Item Attached</span>
-          </div>
-
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs text-slate-300">
-              <thead className="bg-slate-950 text-slate-400 font-mono uppercase text-[11px] border-b border-slate-800">
-                <tr>
-                  <th className="py-2.5 px-3">Description</th>
-                  <th className="py-2.5 px-3">HSN/SAC</th>
-                  <th className="py-2.5 px-3">Taxable Price (₹)</th>
-                  <th className="py-2.5 px-3">GST %</th>
-                  <th className="py-2.5 px-3">Tax (₹)</th>
-                  <th className="py-2.5 px-3 text-right">Total (₹)</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-800/60 font-mono">
-                {lineItems.map((item, idx) => (
-                  <tr key={item.id} className="hover:bg-slate-800/30">
-                    <td className="py-3 px-3 font-sans font-medium text-white">{item.description}</td>
-                    <td className="py-3 px-3 text-slate-400">{item.hsn_sac}</td>
-                    <td className="py-3 px-3 text-slate-100 font-bold" id="item-unit-price">
-                      ₹{item.unit_price.toFixed(2)}
-                    </td>
-                    <td className="py-3 px-3 text-amber-300 font-bold" id="item-gst-rate">
-                      {item.gst_rate}%
-                    </td>
-                    <td className="py-3 px-3 text-slate-300">
-                      ₹{(item.cgst_amount + item.sgst_amount + item.igst_amount).toFixed(2)}
-                    </td>
-                    <td className="py-3 px-3 text-right font-bold text-emerald-400">
-                      ₹{item.total_amount.toFixed(2)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+        {/* Line Items Table & UQC Decomposition */}
+        <div className="p-6 rounded-2xl bg-slate-900/60 border border-slate-800">
+          <InvoiceForm
+            lineItems={lineItems}
+            onChange={setLineItems}
+            placeOfSupply={placeOfSupply}
+          />
         </div>
 
         {/* Totals Summary */}

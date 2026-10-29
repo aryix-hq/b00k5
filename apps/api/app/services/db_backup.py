@@ -312,6 +312,34 @@ class DatabaseBackupManager:
                 status_val = "failed"
                 err_msg = str(minio_err)
 
+        # Mirror to remote Cloudflare R2 / AWS S3 if configured
+        if tenant:
+            s3_cfg = (tenant.statutory_profile or {}).get("s3_mirror_config", {})
+            if s3_cfg.get("endpoint") and s3_cfg.get("access_key_id") and s3_cfg.get("secret_access_key") and s3_cfg.get("bucket_name"):
+                try:
+                    from app.services.s3_mirror_client import S3RemoteMirrorClient
+                    safe_name = getattr(tenant, "legal_name", "company").replace(" ", "_")
+                    root_prefix = s3_cfg.get("root_prefix") or f"b00k5_{safe_name}"
+                    s3_cli = S3RemoteMirrorClient(
+                        endpoint=s3_cfg.get("endpoint"),
+                        access_key=s3_cfg.get("access_key_id"),
+                        secret_key=s3_cfg.get("secret_access_key"),
+                        bucket_name=s3_cfg.get("bucket_name"),
+                        region=s3_cfg.get("region", "auto"),
+                        root_prefix=root_prefix
+                    )
+                    up_s3 = s3_cli.upload_file(
+                        relative_path=f"Database Backups/{backup_data['filename']}",
+                        file_bytes=backup_data["encrypted_bytes"],
+                        content_type="application/octet-stream"
+                    )
+                    # If local/minio was primary, log remote S3 mirror location
+                    gdrive_file_id = f"{gdrive_file_id} | {up_s3['s3_uri']}" if gdrive_file_id else up_s3["s3_uri"]
+                    status_val = "completed"
+                    logger.info(f"Database backup mirrored to remote S3: {up_s3['s3_uri']}")
+                except Exception as s3_err:
+                    logger.warning(f"Failed to mirror backup to remote S3: {s3_err}")
+
         total_duration = round(time.time() - start_time, 2)
 
         backup_log = DatabaseBackupLog(

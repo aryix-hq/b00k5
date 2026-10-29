@@ -141,6 +141,7 @@ services:
       - "127.0.0.1:8001:8000"
     volumes:
       - ./apps/api/app:/app/apps/api/app
+      - ./apps/api/tests:/app/apps/api/tests
       - ./seed_data.py:/app/seed_data.py
       - ./scripts:/app/scripts
       - ./tests:/app/tests

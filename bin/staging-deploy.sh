@@ -149,7 +149,7 @@ cmd_test() {
 
   # 6. Pytest Integration Suite inside staging container
   log_info "Test 6: Running pytest regression suite in Staging container..."
-  ${COMPOSE_CMD} exec -T b00k5_staging_api pytest tests/test_gstr1_table13_and_uqc.py tests/test_compliance.py tests/test_s3_remote_mirror.py -q
+  ${COMPOSE_CMD} exec -T b00k5_staging_api pytest apps/api/tests/test_gstr1_table13_and_uqc.py apps/api/tests/test_compliance.py apps/api/tests/test_s3_remote_mirror.py -q
   log_success "All test suites PASSED in isolated Staging environment!"
 }
 

@@ -1,0 +1,185 @@
+# ==============================================================================
+# b00k5 - ISOLATED STAGING / QA DOCKER COMPOSE CONFIGURATION
+# ==============================================================================
+# Invariant: Must run strictly on dedicated ports (3001, 8001, 5433, 6380, 9010, 28046)
+# Completely isolated network and ephemeral volumes to NEVER touch production!
+# ==============================================================================
+
+name: b00k5_staging
+
+services:
+  b00k5_staging_postgres:
+    image: postgres:16-alpine
+    container_name: b00k5_staging_postgres
+    restart: "no"
+    environment:
+      POSTGRES_DB: b00k5_staging_db
+      POSTGRES_USER: b00k5_admin
+      POSTGRES_PASSWORD: staging_secure_password_2026
+    volumes:
+      - staging_postgres_data:/var/lib/postgresql/data
+      - ./init_schema.sql:/docker-entrypoint-initdb.d/init_schema.sql
+    ports:
+      - "127.0.0.1:5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U b00k5_admin -d b00k5_staging_db"]
+      interval: 3s
+      timeout: 3s
+      retries: 5
+    networks:
+      b00k5_staging_net:
+        aliases:
+          - staging-postgres
+
+  b00k5_staging_redis:
+    image: redis:7-alpine
+    container_name: b00k5_staging_redis
+    restart: "no"
+    ports:
+      - "127.0.0.1:6380:6379"
+    volumes:
+      - staging_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 5
+    networks:
+      b00k5_staging_net:
+        aliases:
+          - staging-redis
+
+  b00k5_staging_minio:
+    image: ghcr.io/coollabsio/minio@sha256:69b55a1c1c5dc285ce04db96689f5b2102317fc77a50680a1874ca6efd1c87f9
+    container_name: b00k5_staging_minio
+    restart: "no"
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minio_staging_admin
+      MINIO_ROOT_PASSWORD: minio_staging_secret_key_2026
+    volumes:
+      - staging_minio_data:/data
+    ports:
+      - "127.0.0.1:9010:9000"
+      - "127.0.0.1:9011:9001"
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 5
+    networks:
+      b00k5_staging_net:
+        aliases:
+          - staging-minio
+
+  b00k5_staging_minio_init:
+    image: b00k5-b00k5_staging_minio_init:latest
+    build:
+      context: .
+      dockerfile: docker/minio-init.Dockerfile
+    container_name: b00k5_staging_minio_init
+    restart: "no"
+    environment:
+      MINIO_HOST: staging-minio
+      MINIO_PORT: 9000
+      MINIO_ROOT_USER: minio_staging_admin
+      MINIO_ROOT_PASSWORD: minio_staging_secret_key_2026
+    depends_on:
+      b00k5_staging_minio:
+        condition: service_healthy
+    networks:
+      - b00k5_staging_net
+
+  b00k5_staging_bridge_mock:
+    image: b00k5-b00k5_staging_bridge_mock:latest
+    build:
+      context: .
+      dockerfile: docker/bridge-mock.Dockerfile
+    container_name: b00k5_staging_bridge_mock
+    restart: "no"
+    ports:
+      - "127.0.0.1:28046:28045"
+    networks:
+      b00k5_staging_net:
+        aliases:
+          - staging-bridge-mock
+
+  b00k5_staging_api:
+    image: b00k5-b00k5_staging_api:latest
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    container_name: b00k5_staging_api
+    restart: "no"
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://b00k5_admin:staging_secure_password_2026@staging-postgres:5432/b00k5_staging_db
+      - SYNC_DATABASE_URL=postgresql://b00k5_admin:staging_secure_password_2026@staging-postgres:5432/b00k5_staging_db
+      - REDIS_URL=redis://staging-redis:6379/0
+      - MINIO_ENDPOINT=http://staging-minio:9000
+      - MINIO_ACCESS_KEY=minio_staging_admin
+      - MINIO_SECRET_KEY=minio_staging_secret_key_2026
+      - MINIO_BUCKET_VAULT=b00k5-vault
+      - MINIO_BUCKET_RECEIPTS=b00k5-receipts
+      - MINIO_BUCKET_STATEMENTS=b00k5-statements
+      - MINIO_BUCKET_SIGNED=b00k5-signed
+      - MINIO_BUCKET_STATUTORY=b00k5-statutory
+      - SECRET_KEY=staging_jwt_secret_key_test_2026
+      - DSC_BRIDGE_URL=http://staging-bridge-mock:28045
+      - DSC_MODE=simulated
+      - APP_ENV=staging
+    depends_on:
+      b00k5_staging_postgres:
+        condition: service_healthy
+      b00k5_staging_redis:
+        condition: service_healthy
+      b00k5_staging_minio:
+        condition: service_healthy
+      b00k5_staging_minio_init:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:8001:8000"
+    volumes:
+      - ./apps/api/app:/app/apps/api/app
+      - ./seed_data.py:/app/seed_data.py
+      - ./scripts:/app/scripts
+      - ./tests:/app/tests
+    networks:
+      b00k5_staging_net:
+        aliases:
+          - staging-api
+
+  b00k5_staging_web:
+    image: b00k5-b00k5_staging_web:latest
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+    container_name: b00k5_staging_web
+    restart: "no"
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_API_URL=http://localhost:8001
+      - NEXT_PUBLIC_BRIDGE_URL=http://localhost:28046
+      - PORT=3000
+    ports:
+      - "127.0.0.1:3001:3000"
+    depends_on:
+      - b00k5_staging_api
+    networks:
+      b00k5_staging_net:
+        aliases:
+          - staging-web
+
+networks:
+  b00k5_staging_net:
+    name: b00k5_staging_net
+    driver: bridge
+
+volumes:
+  staging_postgres_data:
+    name: b00k5_staging_postgres_data
+  staging_redis_data:
+    name: b00k5_staging_redis_data
+  staging_minio_data:
+    name: b00k5_staging_minio_data
+

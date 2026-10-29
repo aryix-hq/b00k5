@@ -1,6 +1,9 @@
 import re
 from decimal import Decimal
-import numpy as np
+try:
+    import numpy as np
+except ImportError:
+    np = None
 from app.core.celery_app import celery_app
 from app.services.gst_calculator import validate_gstin_checksum
 

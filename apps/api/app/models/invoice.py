@@ -74,6 +74,7 @@ class InvoiceItem(Base):
     invoice_id = Column(UUID(as_uuid=True), ForeignKey("invoices.id", ondelete="CASCADE"), nullable=False)
     item_description = Column(Text, nullable=False)
     hsn_sac_code = Column(String(10), nullable=False)
+    uqc = Column(String(10), default="OTH", nullable=True)
     quantity = Column(Numeric(12, 3), default=1.000, nullable=False)
     unit_price = Column(Numeric(15, 2), nullable=False)
     taxable_value = Column(Numeric(15, 2), nullable=False)

@@ -24,6 +24,7 @@ from app.core.fiscal_year import get_or_create_fiscal_year
 from app.core.iam import require_owner, require_ca_or_owner, IAMContext
 from app.services.einvoice_service import EInvoiceService
 from app.services.gstr1_export_service import GSTR1ExportService
+from app.core.uqc import resolve_uqc, validate_uqc
 from app.schemas.einvoice import EInvoiceResponse, EInvoiceGenerateRequest
 from fastapi.responses import JSONResponse
 
@@ -33,6 +34,12 @@ router = APIRouter()
 def get_hsn_catalog():
     """Returns standard Indian HSN/SAC master database."""
     return [{"code": k, **v} for k, v in COMMON_HSN_SAC.items()]
+
+@router.get("/uqc-catalog")
+def get_uqc_catalog():
+    """Returns official GSTN Unique Quantity Codes (UQC) list."""
+    from app.core.uqc import GSTN_UQC_CATALOG
+    return [{"code": k, "description": v} for k, v in GSTN_UQC_CATALOG.items()]
 
 @router.post("/contacts", response_model=ContactResponse)
 async def create_contact(
@@ -205,6 +212,7 @@ async def create_invoice(
         item = InvoiceItem(
             item_description=item_in.item_description,
             hsn_sac_code=item_in.hsn_sac_code,
+            uqc=resolve_uqc(item_in.hsn_sac_code, getattr(item_in, "uqc", None)),
             quantity=item_in.quantity,
             unit_price=item_in.unit_price,
             taxable_value=taxable_val,
@@ -624,6 +632,7 @@ async def update_invoice(
                 invoice_id=inv.id,
                 item_description=it_in.item_description,
                 hsn_sac_code=it_in.hsn_sac_code,
+                uqc=resolve_uqc(it_in.hsn_sac_code, getattr(it_in, "uqc", None)),
                 quantity=it_in.quantity,
                 unit_price=it_in.unit_price,
                 taxable_value=taxable_val,
@@ -1344,6 +1353,7 @@ async def import_razorpay_invoices(
             item_obj = InvoiceItem(
                 item_description=item_in.item_description,
                 hsn_sac_code=item_in.hsn_sac_code or "998314",
+                uqc=resolve_uqc(item_in.hsn_sac_code or "998314", getattr(item_in, "uqc", None)),
                 quantity=item_in.quantity,
                 unit_price=item_in.unit_price,
                 taxable_value=taxable_val,

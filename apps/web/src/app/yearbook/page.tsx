@@ -31,6 +31,7 @@ import {
 import { fetchApi } from '@/lib/api';
 import Link from 'next/link';
 import { ScheduleIIIViewer } from '@/components/yearbook/ScheduleIIIViewer';
+import { AdvanceTaxGauges } from '@/components/yearbook/AdvanceTaxGauges';
 
 interface ExpenseItem {
   id: string;
@@ -1350,42 +1351,9 @@ export default function YearBookPage() {
                   </div>
                 </div>
 
-                {/* Advance Tax Cadence & Filing Deadlines */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {/* Advance Tax Schedule */}
-                  <div className="p-5 bg-slate-900 border border-slate-800 rounded-xl space-y-3">
-                    <div className="flex items-center justify-between">
-                      <h4 className="text-xs font-semibold text-white uppercase tracking-wider flex items-center gap-2">
-                        <IndianRupee className="w-4 h-4 text-amber-400" />
-                        Advance Tax Cadence (Sec 208)
-                      </h4>
-                      <span className="text-[10px] text-amber-400 font-mono">FY {selectedFY}</span>
-                    </div>
-                    <div className="space-y-2 text-xs">
-                      <div className="p-2.5 bg-slate-950/70 border border-slate-800 rounded-lg flex items-center justify-between">
-                        <span>15% Cumulative (Q1) — 15th June {startYear}</span>
-                        <span className="px-2 py-0.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded font-mono text-[10px]">
-                          Scheduled
-                        </span>
-                      </div>
-                      <div className="p-2.5 bg-slate-950/70 border border-slate-800 rounded-lg flex items-center justify-between">
-                        <span>45% Cumulative (Q2) — 15th Sept {startYear}</span>
-                        <span className="px-2 py-0.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded font-mono text-[10px]">
-                          Scheduled
-                        </span>
-                      </div>
-                      <div className="p-2.5 bg-slate-950/70 border border-slate-800 rounded-lg flex items-center justify-between">
-                        <span>75% Cumulative (Q3) — 15th Dec {startYear}</span>
-                        <span className="px-2 py-0.5 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded font-mono text-[10px]">
-                          Scheduled
-                        </span>
-                      </div>
-                      <div className="p-2.5 bg-slate-950/70 border border-slate-800 rounded-lg flex items-center justify-between">
-                        <span>100% Cumulative (Q4) — 15th March {endYear}</span>
-                        <span className="text-slate-500 font-mono text-[10px]">Scheduled</span>
-                      </div>
-                    </div>
-                  </div>
+                {/* Advance Tax Cadence, §234B/C Penalty Gauges & Filing Deadlines */}
+                <div className="space-y-4">
+                  <AdvanceTaxGauges selectedFY={selectedFY} />
 
                   {/* MCA Statutory Returns */}
                   <div className="p-5 bg-slate-900 border border-slate-800 rounded-xl space-y-3">

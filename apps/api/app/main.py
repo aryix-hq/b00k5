@@ -17,6 +17,13 @@ async def lifespan(app: FastAPI):
         ensure_buckets_exist()
     except Exception as e:
         logger.warning(f"Could not initialize S3 buckets at startup: {e}")
+    try:
+        from app.core.database import engine
+        from sqlalchemy import text
+        async with engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE invoice_items ADD COLUMN IF NOT EXISTS uqc VARCHAR(10) DEFAULT 'OTH'"))
+    except Exception as e:
+        logger.warning(f"Could not initialize uqc column on invoice_items: {e}")
     yield
     logger.info("Shutting down b00k5 API...")
     try:

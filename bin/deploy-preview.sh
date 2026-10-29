@@ -92,16 +92,57 @@ if [[ -f "tsconfig.json" ]] && command -v tsc >/dev/null 2>&1; then
   log_success "TypeScript typecheck passed."
 fi
 
-# 3. SECRET & PII SANITIZATION AUDIT
-log_info "Step 2/5: Scanning for uncommitted secrets and credentials..."
-SUSPICIOUS_SECRETS=$(git diff HEAD 2>/dev/null | grep -E '(?i)(api[_-]?key|secret[_-]?key|password|jwt[_-]?token|private[_-]?key)\s*[:=]\s*["'\''][^"'\'']{8,}["'\'']' || true)
-if [[ -n "${SUSPICIOUS_SECRETS}" ]]; then
-  log_error "Potential hardcoded secret discovered in git diff:"
-  echo "${SUSPICIOUS_SECRETS}"
-  log_error "Deployment halted by DevSecOps / Open Source Observer policy."
-  exit 1
+# 3. DEVSECOPS SECURITY & DEPENDENCY AUDIT (SEC-03)
+log_info "Step 2/5: Running DevSecOps security, secret and dependency audit..."
+
+# 3.1 Deep Secret & Confidentiality Auditor
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+AUDIT_SCRIPT=""
+if [[ -x "${SCRIPT_DIR}/audit-secrets.sh" ]]; then
+  AUDIT_SCRIPT="${SCRIPT_DIR}/audit-secrets.sh"
+elif [[ -x "./bin/audit-secrets.sh" ]]; then
+  AUDIT_SCRIPT="./bin/audit-secrets.sh"
 fi
-log_success "No leaked credentials detected."
+
+if [[ -n "${AUDIT_SCRIPT}" ]]; then
+  log_info "Running secret & confidentiality audit (${AUDIT_SCRIPT})..."
+  if ! "${AUDIT_SCRIPT}"; then
+    log_error "DevSecOps Gate FAILED: Secret or confidentiality audit violations detected."
+    exit 1
+  fi
+  log_success "Secret and confidentiality audit passed."
+else
+  # Fallback inline scanner if audit-secrets.sh is absent
+  SUSPICIOUS_SECRETS=$(git diff HEAD 2>/dev/null | grep -E '(?i)(api[_-]?key|secret[_-]?key|password|jwt[_-]?token|private[_-]?key)\s*[:=]\s*["'\''][^"'\'']{8,}["'\'']' || true)
+  if [[ -n "${SUSPICIOUS_SECRETS}" ]]; then
+    log_error "Potential hardcoded secret discovered in git diff:"
+    echo "${SUSPICIOUS_SECRETS}"
+    log_error "Deployment halted by DevSecOps / Open Source Observer policy."
+    exit 1
+  fi
+  log_success "No leaked credentials detected (inline scan)."
+fi
+
+# 3.2 Dependency Vulnerability Audit
+if [[ -f "package-lock.json" && -f "package.json" ]] && command -v npm >/dev/null 2>&1; then
+  log_info "Auditing Node.js package dependencies for high/critical vulnerabilities..."
+  if npm audit --audit-level=high >/dev/null 2>&1; then
+    log_success "Zero high/critical npm package vulnerabilities detected."
+  else
+    log_warn "npm audit identified vulnerability advisories. Run 'npm audit fix' before production merge."
+    if [[ "${ENV_TYPE:-preview}" == "production" ]]; then
+      log_error "Deployment halted: High/critical dependency vulnerabilities in production build."
+      exit 1
+    fi
+  fi
+elif [[ -f "requirements.txt" || -f "pyproject.toml" ]] && command -v pip-audit >/dev/null 2>&1; then
+  log_info "Auditing Python dependencies via pip-audit..."
+  if pip-audit >/dev/null 2>&1; then
+    log_success "Zero Python package vulnerabilities detected."
+  else
+    log_warn "pip-audit identified package vulnerabilities. Review dependencies."
+  fi
+fi
 
 # 4. CONTAINER BUILD & EPHEMERAL LAUNCH
 log_info "Step 3/5: Building and starting preview environment on port ${PORT}..."

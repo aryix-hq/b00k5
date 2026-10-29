@@ -135,9 +135,21 @@ cmd_test() {
     log_warn "Staging Web UI returned HTTP ${WEB_STATUS} (may still be initializing)."
   fi
 
-  # 5. Pytest Integration Suite inside staging container
-  log_info "Test 5: Running pytest regression suite in Staging container..."
-  ${COMPOSE_CMD} exec -T b00k5_staging_api pytest tests/test_gstr1_table13_and_uqc.py tests/test_compliance.py -q
+  # 5. S3 / Cloudflare R2 Remote Mirror Endpoint Test
+  log_info "Test 5: GET ${API_URL}/api/v1/storage/s3-config"
+  S3_CFG_RESP=$(curl -s "${API_URL}/api/v1/storage/s3-config" \
+    -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+    -H "X-Tenant-ID: 11111111-1111-1111-1111-111111111111")
+  if echo "${S3_CFG_RESP}" | grep -q '"provider"'; then
+    log_success "S3 / Cloudflare R2 Mirror configuration endpoint responding normally!"
+  else
+    log_error "S3 / Cloudflare R2 Mirror endpoint validation failed: ${S3_CFG_RESP}"
+    exit 1
+  fi
+
+  # 6. Pytest Integration Suite inside staging container
+  log_info "Test 6: Running pytest regression suite in Staging container..."
+  ${COMPOSE_CMD} exec -T b00k5_staging_api pytest tests/test_gstr1_table13_and_uqc.py tests/test_compliance.py tests/test_s3_remote_mirror.py -q
   log_success "All test suites PASSED in isolated Staging environment!"
 }
 

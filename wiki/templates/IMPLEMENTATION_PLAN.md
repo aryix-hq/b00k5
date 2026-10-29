@@ -35,15 +35,88 @@ As phases execute, the Technical Project Manager (`@project-manager`) dynamicall
 
 ## 3. Associated Living Artifacts
 All linked artifacts must be kept continuously synchronized as phases progress:
-- **Stage 1 Research**: [`wiki/research/RES-{{ID}}.md`](../research/)
-- **Stage 2 Feature Spec**: [`wiki/features/FEAT-{{ID}}.md`](../features/)
-- **System Architecture**: [`wiki/ARCHITECTURE.md`](../ARCHITECTURE.md) (ADR updates)
-- **Database Schema**: [`wiki/DATABASE_SCHEMA.md`](../DATABASE_SCHEMA.md) (Entity models, migrations, RLS)
+- **Stage 1 Research**: [`wiki/research/RES-{{ID}}.md`](../research/) (Queried via `ai-agents memory query`)
+- **Stage 2 Feature Spec**: [`wiki/features/FEAT-{{ID}}.md`](../features/) (Stitch UI Project ID: `[Project-ID]`)
+- **System Topology**: [`wiki/ARCHITECTURE.md`](../ARCHITECTURE.md) (Flowchart & network boundaries)
+- **Database Schema**: [`wiki/DATABASE_SCHEMA.md`](../DATABASE_SCHEMA.md) (ER diagram, entity models, migrations, RLS)
+- **Domain Models**: [`wiki/DOMAIN_MODELS.md`](../DOMAIN_MODELS.md) (Class diagrams, interfaces, value objects)
+- **State Machines**: [`wiki/STATE_MACHINES.md`](../STATE_MACHINES.md) (State machines, transition guards, concurrency)
 - **Active Defects**: [`wiki/defects/`](../defects/) (Logged upon any test regression)
 
 ---
 
-## 4. Phase Execution Details & Deliverables
+## 4. Mandatory Living UML & Data Flow Specifications (Mermaid)
+
+### 4.1 Sequence & Request Lifecycle (Data Flow)
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client as User / Frontend (Stitch UI)
+    participant API as Controller (/api/v1/{{ENDPOINT}})
+    participant Svc as Domain Service
+    participant DB as PostgreSQL / Redis Cache
+    participant Queue as Event Broker (Kafka / Redis Streams)
+
+    Client->>API: POST /api/v1/{{ENDPOINT}} (Idempotency-Key)
+    API->>API: Ingress Schema Boundary Check (Zod / Pydantic)
+    API->>Svc: ProcessRequest(tenant_id, payload)
+    Svc->>DB: Atomic Query / State Mutation (Tenant Scoped)
+    DB-->>Svc: Success Confirmation
+    Svc->>Queue: Publish Domain Event (Transactional Outbox)
+    Svc-->>API: Domain Result DTO
+    API-->>Client: 200/201 JSON Response Contract
+```
+
+### 4.2 Entity-Relationship Diagram (ERD Segment)
+```mermaid
+erDiagram
+    TENANTS ||--o{ {{ENTITY_NAME}} : owns
+    {{ENTITY_NAME}} {
+        uuid id PK
+        uuid tenant_id FK
+        string status
+        timestamptz created_at
+    }
+```
+
+### 4.3 Class & Domain Model Diagram (Class/Object Hierarchy)
+```mermaid
+classDiagram
+    class {{ENTITY_NAME}} {
+        +UUID id
+        +UUID tenantId
+        +string status
+        +executeAction()
+    }
+    class I{{ENTITY_NAME}}Repository {
+        <<Interface>>
+        +findById(UUID tenantId, UUID id) {{ENTITY_NAME}}
+        +save({{ENTITY_NAME}} entity)
+    }
+    I{{ENTITY_NAME}}Repository ..> {{ENTITY_NAME}} : persists
+```
+
+### 4.4 State Machine Diagram (Lifecycle & Guards)
+```mermaid
+stateDiagram-v2
+    [*] --> Draft: Created
+    Draft --> InReview: Submit for Review
+    InReview --> Approved: EM / Lead Sign-off
+    Approved --> Deployed: Release Cut
+    Deployed --> [*]
+```
+
+### 4.5 System Topology Placement
+```mermaid
+flowchart LR
+    Ingress["API Gateway"] --> Service["{{SERVICE_NAME}} (Stateless)"]
+    Service --> DB[("PostgreSQL 16")]
+    Service --> Cache[("Redis 7")]
+```
+
+---
+
+## 5. Phase Execution Details & Deliverables
 
 ### Phase 1: Foundation, Contracts & Schema (Planning Trio & Architect)
 - [ ] Requirements validated against RICE score priority.

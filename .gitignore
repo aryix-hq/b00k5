@@ -65,4 +65,12 @@ AGENTS.md
 DEFECT_INVENTORY.md
 AUDIT_REPORT_360.md
 plans/*
-PROJECT_EXECUTION_PLAN.md
+PROJECT_EXECUTION_PLAN.md.agents/mode
+.agents/memory/sessions/
+.agents/memory/token_ledger.json
+.agents/memory/active_feature.md
+wiki/defects/DEF-*.md
+wiki/incidents/INC-*.md
+wiki/vulnerabilities/VULN-*.md
+wiki/research/RES-*.md
+.agents/mode

@@ -162,11 +162,12 @@ export default function GDriveSyncPage() {
 
       if (res.ok) {
         const data = await res.json();
-        setSyncResult(data.message || 'Background synchronization dispatched to Celery worker queue.');
+        setSyncResult(data.message || 'Background synchronization dispatched.');
         await loadStatus();
         await loadMirroredFiles();
       } else {
-        setSyncResult('Failed to trigger synchronization sweep.');
+        const errData = await res.json().catch(() => null);
+        setSyncResult(errData?.detail || errData?.message || 'Failed to trigger synchronization sweep.');
       }
     } catch (e: any) {
       setSyncResult(e.message || 'Error executing sync');

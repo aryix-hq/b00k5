@@ -160,7 +160,7 @@ class DatabaseBackupManager:
         """
         client = gdrive_client or GoogleDriveSyncClient()
 
-        # Target remote path: /b00k5_Statutory_Archive/DB_Backups/
+        # Target remote path: /b00k5_Statutory_Archive/DB_Backups/ or tenant root
         folder_parts = ["b00k5_Statutory_Archive", "DB_Backups"]
         folder_id = client.get_or_create_remote_folders(folder_parts)
 
@@ -242,6 +242,7 @@ class DatabaseBackupManager:
         cls,
         db: AsyncSession,
         tenant_id: Optional[uuid.UUID] = None,
+        tenant: Optional[Any] = None,
         gdrive_client: Optional[GoogleDriveSyncClient] = None
     ) -> DatabaseBackupLog:
         """
@@ -250,6 +251,24 @@ class DatabaseBackupManager:
         """
         start_time = time.time()
         backup_data = cls.generate_encrypted_backup_payload(tenant_id=tenant_id)
+
+        # Resolve tenant if tenant_id is provided but tenant is None
+        if tenant is None and tenant_id is not None:
+            from app.models.tenant import Tenant
+            tenant_res = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
+            tenant = tenant_res.scalar_one_or_none()
+
+        # If tenant has Google Drive configured and client not provided, resolve it
+        if gdrive_client is None and tenant is not None:
+            gdrive_cfg = (tenant.statutory_profile or {}).get("gdrive_config", {})
+            sa_json = gdrive_cfg.get("service_account_json")
+            if sa_json:
+                import json
+                sa_str = json.dumps(sa_json) if isinstance(sa_json, dict) else sa_json
+                gdrive_client = GoogleDriveSyncClient(
+                    service_account_json=sa_str,
+                    root_folder_id=gdrive_cfg.get("root_folder_id")
+                )
 
         # Detect Google Drive configuration
         gdrive_configured = bool(
@@ -275,10 +294,11 @@ class DatabaseBackupManager:
                 gdrive_folder_path = gdrive_res["gdrive_folder_path"]
                 status_val = "completed"
             except Exception as e:
-                logger.warning(f"Google Drive upload failed: {e}. Falling back to MinIO storage.", exc_info=True)
+                logger.warning(f"Google Drive upload skipped/failed: {e}. Falling back to MinIO sovereign checkpoint storage.", exc_info=True)
+                err_msg = f"Cloud upload note: {e}. Saved to sovereign MinIO vault."
                 gdrive_configured = False
 
-        if not gdrive_configured:
+        if not gdrive_configured or not gdrive_file_id:
             try:
                 minio_res = cls.upload_to_minio(
                     filename=backup_data["filename"],

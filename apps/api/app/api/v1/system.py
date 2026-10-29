@@ -136,7 +136,8 @@ async def trigger_database_backup(
         tenant_id = tenant.id if tenant else None
         log_record = await DatabaseBackupManager.run_backup_and_record(
             db=db,
-            tenant_id=tenant_id
+            tenant_id=tenant_id,
+            tenant=tenant
         )
         return BackupLogResponse(
             id=str(log_record.id),

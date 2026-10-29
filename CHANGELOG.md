@@ -27,6 +27,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Provided proactive monthly recommended savings reserve callouts and quick ITNS 280 challan recording triggers.
   - **Zero-Mock Unit Tests (`apps/api/tests/test_gstr1_table13_and_uqc.py`, `apps/api/tests/test_compliance.py`)**:
     - Verified Table 13 document summary generation, contiguous prefix-based grouping, cancellation counts, UQC service invariant enforcement, and corporate tax regime calculations with 100% test pass rate.
+  - **Option 2: Cloudflare R2 & AWS S3 Sovereign Cloud Mirror & Retention Engine (`apps/api/app/services/s3_mirror_client.py`, `apps/api/app/api/v1/storage.py`)**:
+    - Created `S3RemoteMirrorClient` supporting Cloudflare R2 (10 GB free forever, $0 egress fees), AWS S3, and S3-compatible endpoints with static API key authentication.
+    - Expanded backup synchronization to mirror all statutory documents, sales invoices (PDFs), vendor bills & OCR receipt attachments, bank statements, and AES-256-GCM encrypted PostgreSQL database snapshots.
+    - Implemented automated database snapshot retention policy (prunes older backups past the user-selected threshold e.g. 7 snapshots, while permanently protecting invoices and bills per MCA Section 128 8-year audit rules).
+    - Added endpoints for `/s3-config`, `/s3-test-connection`, `/s3-sync-all`, `/s3-usage`, `/s3-retention-policy`, and `/s3-prune-backups`.
+    - Integrated with `DatabaseBackupManager` to automatically mirror and prune backups to R2 on every backup run.
+    - Built comprehensive frontend UI in `apps/web/src/app/settings/integrations/page.tsx` with credentials setup, live connectivity testing, storage quota progress bar, and retention policy controls.
 
 ## [Unreleased] - 2026-10-18
 

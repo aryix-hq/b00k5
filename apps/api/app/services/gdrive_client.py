@@ -183,21 +183,7 @@ class GoogleDriveSyncClient:
         oauth_cid = oauth2_client_id or os.getenv("GDRIVE_OAUTH_CLIENT_ID")
         oauth_sec = oauth2_client_secret or os.getenv("GDRIVE_OAUTH_CLIENT_SECRET")
 
-        if HAVE_GOOGLE_CLIENT and (sa_json or (cred_path and os.path.exists(cred_path))):
-            try:
-                # Use full drive scope so Service Account can access user-shared folders and shared drives
-                scopes = ["https://www.googleapis.com/auth/drive"]
-                if sa_json:
-                    info = json.loads(sa_json) if isinstance(sa_json, str) else sa_json
-                    creds = service_account.Credentials.from_service_account_info(info, scopes=scopes)
-                else:
-                    creds = service_account.Credentials.from_service_account_file(cred_path, scopes=scopes)
-                self.service = build("drive", "v3", credentials=creds)
-                logger.info("Initialized Google Drive v3 API client with Service Account")
-            except Exception as e:
-                logger.warning(f"Failed to initialize live Google Drive service: {e}. Falling back to virtual mirror.")
-                self.virtual_client = VirtualGDriveClient(root_storage_dir=root_storage_dir)
-        elif HAVE_GOOGLE_CLIENT and oauth_ref and oauth_cid and oauth_sec:
+        if HAVE_GOOGLE_CLIENT and oauth_ref and oauth_cid and oauth_sec:
             try:
                 creds = Credentials(
                     token=oauth2_token,
@@ -211,6 +197,20 @@ class GoogleDriveSyncClient:
                 logger.info("Initialized Google Drive v3 API client with OAuth2 credentials")
             except Exception as e:
                 logger.warning(f"Failed to initialize Google Drive OAuth client: {e}. Falling back to virtual mirror.")
+                self.virtual_client = VirtualGDriveClient(root_storage_dir=root_storage_dir)
+        elif HAVE_GOOGLE_CLIENT and (sa_json or (cred_path and os.path.exists(cred_path))):
+            try:
+                # Use full drive scope so Service Account can access user-shared folders and shared drives
+                scopes = ["https://www.googleapis.com/auth/drive"]
+                if sa_json:
+                    info = json.loads(sa_json) if isinstance(sa_json, str) else sa_json
+                    creds = service_account.Credentials.from_service_account_info(info, scopes=scopes)
+                else:
+                    creds = service_account.Credentials.from_service_account_file(cred_path, scopes=scopes)
+                self.service = build("drive", "v3", credentials=creds)
+                logger.info("Initialized Google Drive v3 API client with Service Account")
+            except Exception as e:
+                logger.warning(f"Failed to initialize live Google Drive service: {e}. Falling back to virtual mirror.")
                 self.virtual_client = VirtualGDriveClient(root_storage_dir=root_storage_dir)
         else:
             self.virtual_client = VirtualGDriveClient(root_storage_dir=root_storage_dir)

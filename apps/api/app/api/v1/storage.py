@@ -294,13 +294,26 @@ async def get_gdrive_sync_dashboard(
 
 def get_tenant_gdrive_client(tenant: Tenant) -> GoogleDriveSyncClient:
     gdrive_cfg = (tenant.statutory_profile or {}).get("gdrive_config", {})
+    auth_type = gdrive_cfg.get("auth_type", "service_account")
     sa_json = gdrive_cfg.get("service_account_json")
     root_folder_id = gdrive_cfg.get("root_folder_id")
+
+    # If OAuth2 credentials are configured or selected, give them precedence over Service Account
+    if (auth_type == "oauth2" or not sa_json) and gdrive_cfg.get("oauth2_refresh_token") and gdrive_cfg.get("oauth2_client_id"):
+        return GoogleDriveSyncClient(
+            oauth2_token=gdrive_cfg.get("oauth2_token"),
+            oauth2_refresh_token=gdrive_cfg.get("oauth2_refresh_token"),
+            oauth2_client_id=gdrive_cfg.get("oauth2_client_id"),
+            oauth2_client_secret=gdrive_cfg.get("oauth2_client_secret"),
+            root_folder_id=root_folder_id
+        )
+
     if sa_json:
         if isinstance(sa_json, dict):
             import json
             sa_json = json.dumps(sa_json)
         return GoogleDriveSyncClient(service_account_json=sa_json, root_folder_id=root_folder_id)
+
     if gdrive_cfg.get("oauth2_refresh_token") and gdrive_cfg.get("oauth2_client_id"):
         return GoogleDriveSyncClient(
             oauth2_token=gdrive_cfg.get("oauth2_token"),
@@ -309,6 +322,7 @@ def get_tenant_gdrive_client(tenant: Tenant) -> GoogleDriveSyncClient:
             oauth2_client_secret=gdrive_cfg.get("oauth2_client_secret"),
             root_folder_id=root_folder_id
         )
+
     return GoogleDriveSyncClient(root_folder_id=root_folder_id)
 
 

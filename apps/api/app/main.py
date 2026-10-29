@@ -91,6 +91,7 @@ app.include_router(payroll.router, prefix=f"{settings.API_V1_STR}/payroll", tags
 
 @app.get("/")
 @app.get("/health")
+@app.get("/healthz")
 @app.get(f"{settings.API_V1_STR}/health")
 def health_check():
     return {

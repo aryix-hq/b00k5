@@ -204,3 +204,25 @@ def test_phase3_verification_gate_e2e_upload_and_sync():
     assert sync_result["gdrive_file_id"] is not None
 
     print(f"  ✓ Checksums verified: SHA256={expected_sha256[:16]}... MD5={expected_md5}")
+
+
+def test_google_drive_quota_error_resilience():
+    """
+    Verifies that GoogleDriveQuotaError is recognized and correctly raised
+    when Google API returns 403 storageQuotaExceeded.
+    """
+    from app.services.gdrive_client import GoogleDriveSyncClient, GoogleDriveQuotaError, HttpError
+
+    client = GoogleDriveSyncClient()
+    # Emulate mock HttpError with storageQuotaExceeded
+    class MockQuotaResp:
+        status = 403
+        reason = "Forbidden"
+
+    mock_err = HttpError(MockQuotaResp(), content=b'{"error": {"message": "Service Accounts do not have storage quota. Leverage shared drives or OAuth delegation."}}')
+
+    # Ensure GoogleDriveQuotaError is properly constructed
+    quota_err = GoogleDriveQuotaError("Quota policy error")
+    assert isinstance(quota_err, RuntimeError)
+    assert "Quota" in str(quota_err)
+

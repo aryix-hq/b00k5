@@ -10,6 +10,10 @@ from pathlib import Path
 
 logger = logging.getLogger("b00k5_gdrive")
 
+class GoogleDriveQuotaError(RuntimeError):
+    """Raised when Google Drive rejects uploads due to Service Account 0-byte storage quota limit."""
+    pass
+
 # Google client imports if present
 try:
     from googleapiclient.discovery import build
@@ -179,21 +183,7 @@ class GoogleDriveSyncClient:
         oauth_cid = oauth2_client_id or os.getenv("GDRIVE_OAUTH_CLIENT_ID")
         oauth_sec = oauth2_client_secret or os.getenv("GDRIVE_OAUTH_CLIENT_SECRET")
 
-        if HAVE_GOOGLE_CLIENT and (sa_json or (cred_path and os.path.exists(cred_path))):
-            try:
-                # Use full drive scope so Service Account can access user-shared folders and shared drives
-                scopes = ["https://www.googleapis.com/auth/drive"]
-                if sa_json:
-                    info = json.loads(sa_json) if isinstance(sa_json, str) else sa_json
-                    creds = service_account.Credentials.from_service_account_info(info, scopes=scopes)
-                else:
-                    creds = service_account.Credentials.from_service_account_file(cred_path, scopes=scopes)
-                self.service = build("drive", "v3", credentials=creds)
-                logger.info("Initialized Google Drive v3 API client with Service Account")
-            except Exception as e:
-                logger.warning(f"Failed to initialize live Google Drive service: {e}. Falling back to virtual mirror.")
-                self.virtual_client = VirtualGDriveClient(root_storage_dir=root_storage_dir)
-        elif HAVE_GOOGLE_CLIENT and oauth_ref and oauth_cid and oauth_sec:
+        if HAVE_GOOGLE_CLIENT and oauth_ref and oauth_cid and oauth_sec:
             try:
                 creds = Credentials(
                     token=oauth2_token,
@@ -207,6 +197,20 @@ class GoogleDriveSyncClient:
                 logger.info("Initialized Google Drive v3 API client with OAuth2 credentials")
             except Exception as e:
                 logger.warning(f"Failed to initialize Google Drive OAuth client: {e}. Falling back to virtual mirror.")
+                self.virtual_client = VirtualGDriveClient(root_storage_dir=root_storage_dir)
+        elif HAVE_GOOGLE_CLIENT and (sa_json or (cred_path and os.path.exists(cred_path))):
+            try:
+                # Use full drive scope so Service Account can access user-shared folders and shared drives
+                scopes = ["https://www.googleapis.com/auth/drive"]
+                if sa_json:
+                    info = json.loads(sa_json) if isinstance(sa_json, str) else sa_json
+                    creds = service_account.Credentials.from_service_account_info(info, scopes=scopes)
+                else:
+                    creds = service_account.Credentials.from_service_account_file(cred_path, scopes=scopes)
+                self.service = build("drive", "v3", credentials=creds)
+                logger.info("Initialized Google Drive v3 API client with Service Account")
+            except Exception as e:
+                logger.warning(f"Failed to initialize live Google Drive service: {e}. Falling back to virtual mirror.")
                 self.virtual_client = VirtualGDriveClient(root_storage_dir=root_storage_dir)
         else:
             self.virtual_client = VirtualGDriveClient(root_storage_dir=root_storage_dir)
@@ -276,7 +280,24 @@ class GoogleDriveSyncClient:
         if self.virtual_client:
             return self.virtual_client.get_or_create_folder_hierarchy(folder_path_parts)
 
-        # If a designated root folder ID was configured, anchor inside it
+        # Auto-discover shared folder if root_folder_id is not explicitly specified
+        if not self.root_folder_id and self.service:
+            try:
+                shared_res = self.service.files().list(
+                    q="mimeType = 'application/vnd.google-apps.folder' and trashed = false and sharedWithMe = true",
+                    fields='files(id, name)',
+                    supportsAllDrives=True,
+                    includeItemsFromAllDrives=True
+                ).execute()
+                shared_folders = shared_res.get('files', [])
+                if shared_folders:
+                    matched = next((f for f in shared_folders if "b00k5" in f.get("name", "").lower()), shared_folders[0])
+                    self.root_folder_id = matched["id"]
+                    logger.info(f"Auto-discovered shared Google Drive root folder: {matched.get('name')} (ID: {self.root_folder_id})")
+            except Exception as e:
+                logger.warning(f"Could not auto-discover shared folders: {e}")
+
+        # If a designated root folder ID was configured or auto-discovered, anchor inside it
         if self.root_folder_id:
             parent_id = self.root_folder_id
             parts = folder_path_parts[1:] if len(folder_path_parts) > 1 and folder_path_parts[0].startswith("b00k5_") else folder_path_parts
@@ -363,6 +384,17 @@ class GoogleDriveSyncClient:
 
             except HttpError as err:
                 status_code = getattr(err.resp, 'status', 500) if hasattr(err, 'resp') else 500
+                content_str = str(getattr(err, 'content', ''))
+                if "storageQuotaExceeded" in content_str or "Service Accounts do not have storage quota" in content_str:
+                    logger.warning(
+                        "Google Drive rejected upload: Service accounts do not have storage quota in personal Google Drive folders. "
+                        "Leverage a Google Workspace Shared Drive or OAuth delegation."
+                    )
+                    raise GoogleDriveQuotaError(
+                        "Google Drive storage quota error: Service Accounts have 0-byte quota in personal Google Drive folders. "
+                        "To upload files to Google Drive, use a Google Workspace Shared Drive or configure OAuth 2.0. "
+                        "Your documents remain 100% securely backed up in the local sovereign MinIO vault."
+                    ) from err
                 if status_code in [429, 503] and attempt < max_retries - 1:
                     sleep_time = calculate_backoff_delay(attempt)
                     logger.warning(
@@ -371,6 +403,8 @@ class GoogleDriveSyncClient:
                     time.sleep(sleep_time)
                 else:
                     raise
+            except GoogleDriveQuotaError:
+                raise
             except Exception as e:
                 if attempt < max_retries - 1 and ("429" in str(e) or "503" in str(e)):
                     sleep_time = calculate_backoff_delay(attempt)

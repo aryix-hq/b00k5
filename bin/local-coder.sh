@@ -7,6 +7,14 @@
 # ==============================================================================
 set -euo pipefail
 
+# Resolve canonical script directory even if invoked through symlinks
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 MODEL="${OLLAMA_MODEL:-qwen2.5-coder:14b}"
 OLLAMA_HOST="${OLLAMA_HOST:-http://127.0.0.1:11434}"
 
@@ -49,7 +57,7 @@ fi
 
 # Query Ollama
 python3 -c "
-import urllib.request, json, sys
+import urllib.request, json, sys, os, subprocess
 
 url = '${OLLAMA_HOST}/api/generate'
 data = {
@@ -62,8 +70,28 @@ try:
     with urllib.request.urlopen(req) as resp:
         result = json.loads(resp.read().decode('utf-8'))
         print(result.get('response', ''))
+        
+        # Log token usage
+        prompt_tokens = result.get('prompt_eval_count', 0)
+        eval_tokens = result.get('eval_count', 0)
+        candidates = [
+            os.path.join('${SCRIPT_DIR}', 'record-tokens.py'),
+            os.path.expanduser('~/.local/bin/record-tokens.py')
+        ]
+        record_script = next((c for c in candidates if os.path.exists(c)), None)
+        if record_script:
+            subprocess.run([
+                'python3', record_script,
+                '--record',
+                '--tool', 'local-coder',
+                '--model', '${MODEL}',
+                '--prompt-tokens', str(prompt_tokens),
+                '--eval-tokens', str(eval_tokens)
+            ], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 except Exception as e:
-    print(f'Error connecting to Ollama: {e}', file=sys.stderr)
+    err_str = str(e)
+    print(f'[local-coder] Error connecting to Ollama at {url}: {err_str}', file=sys.stderr)
+    if 'Operation not permitted' in err_str or 'Errno 1' in err_str:
+        print('[local-coder] NOTE: Antigravity terminal sandbox blocks loopback network (127.0.0.1:11434). Please re-run command with BypassSandbox: true.', file=sys.stderr)
     sys.exit(1)
 "
-

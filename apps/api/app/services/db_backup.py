@@ -160,7 +160,7 @@ class DatabaseBackupManager:
         """
         client = gdrive_client or GoogleDriveSyncClient()
 
-        # Target remote path: /b00k5_Statutory_Archive/DB_Backups/
+        # Target remote path: /b00k5_Statutory_Archive/DB_Backups/ or tenant root
         folder_parts = ["b00k5_Statutory_Archive", "DB_Backups"]
         folder_id = client.get_or_create_remote_folders(folder_parts)
 
@@ -242,6 +242,7 @@ class DatabaseBackupManager:
         cls,
         db: AsyncSession,
         tenant_id: Optional[uuid.UUID] = None,
+        tenant: Optional[Any] = None,
         gdrive_client: Optional[GoogleDriveSyncClient] = None
     ) -> DatabaseBackupLog:
         """
@@ -250,6 +251,24 @@ class DatabaseBackupManager:
         """
         start_time = time.time()
         backup_data = cls.generate_encrypted_backup_payload(tenant_id=tenant_id)
+
+        # Resolve tenant if tenant_id is provided but tenant is None
+        if tenant is None and tenant_id is not None:
+            from app.models.tenant import Tenant
+            tenant_res = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
+            tenant = tenant_res.scalar_one_or_none()
+
+        # If tenant has Google Drive configured and client not provided, resolve it
+        if gdrive_client is None and tenant is not None:
+            gdrive_cfg = (tenant.statutory_profile or {}).get("gdrive_config", {})
+            sa_json = gdrive_cfg.get("service_account_json")
+            if sa_json:
+                import json
+                sa_str = json.dumps(sa_json) if isinstance(sa_json, dict) else sa_json
+                gdrive_client = GoogleDriveSyncClient(
+                    service_account_json=sa_str,
+                    root_folder_id=gdrive_cfg.get("root_folder_id")
+                )
 
         # Detect Google Drive configuration
         gdrive_configured = bool(
@@ -275,10 +294,11 @@ class DatabaseBackupManager:
                 gdrive_folder_path = gdrive_res["gdrive_folder_path"]
                 status_val = "completed"
             except Exception as e:
-                logger.warning(f"Google Drive upload failed: {e}. Falling back to MinIO storage.", exc_info=True)
+                logger.warning(f"Google Drive upload skipped/failed: {e}. Falling back to MinIO sovereign checkpoint storage.", exc_info=True)
+                err_msg = f"Cloud upload note: {e}. Saved to sovereign MinIO vault."
                 gdrive_configured = False
 
-        if not gdrive_configured:
+        if not gdrive_configured or not gdrive_file_id:
             try:
                 minio_res = cls.upload_to_minio(
                     filename=backup_data["filename"],
@@ -291,6 +311,43 @@ class DatabaseBackupManager:
                 logger.error(f"Failed to upload backup to MinIO checkpoint bucket: {minio_err}", exc_info=True)
                 status_val = "failed"
                 err_msg = str(minio_err)
+
+        # Mirror to remote Cloudflare R2 / AWS S3 if configured
+        if tenant:
+            s3_cfg = (tenant.statutory_profile or {}).get("s3_mirror_config", {})
+            if s3_cfg.get("endpoint") and s3_cfg.get("access_key_id") and s3_cfg.get("secret_access_key") and s3_cfg.get("bucket_name"):
+                try:
+                    from app.services.s3_mirror_client import S3RemoteMirrorClient
+                    safe_name = getattr(tenant, "legal_name", "company").replace(" ", "_")
+                    root_prefix = s3_cfg.get("root_prefix") or f"b00k5_{safe_name}"
+                    s3_cli = S3RemoteMirrorClient(
+                        endpoint=s3_cfg.get("endpoint"),
+                        access_key=s3_cfg.get("access_key_id"),
+                        secret_key=s3_cfg.get("secret_access_key"),
+                        bucket_name=s3_cfg.get("bucket_name"),
+                        region=s3_cfg.get("region", "auto"),
+                        root_prefix=root_prefix
+                    )
+                    up_s3 = s3_cli.upload_file(
+                        relative_path=f"Database Backups/{backup_data['filename']}",
+                        file_bytes=backup_data["encrypted_bytes"],
+                        content_type="application/octet-stream"
+                    )
+                    # If local/minio was primary, log remote S3 mirror location
+                    gdrive_file_id = f"{gdrive_file_id} | {up_s3['s3_uri']}" if gdrive_file_id else up_s3["s3_uri"]
+                    status_val = "completed"
+                    logger.info(f"Database backup mirrored to remote S3: {up_s3['s3_uri']}")
+
+                    # Enforce S3 backup retention policy (auto-prune old snapshots to preserve quota)
+                    retention_cfg = s3_cfg.get("retention_policy", {})
+                    if retention_cfg.get("auto_prune_backups", True):
+                        keep_count = int(retention_cfg.get("keep_backups_count", 7))
+                        max_age = int(retention_cfg.get("max_backup_age_days", 30))
+                        prune_res = s3_cli.enforce_retention_policy(keep_backups_count=keep_count, max_age_days=max_age)
+                        if prune_res.get("pruned_count", 0) > 0:
+                            logger.info(f"S3 backup retention pruned {prune_res['pruned_count']} old snapshot(s), reclaimed {prune_res.get('reclaimed_mb', 0)} MB")
+                except Exception as s3_err:
+                    logger.warning(f"Failed to mirror backup to remote S3: {s3_err}")
 
         total_duration = round(time.time() - start_time, 2)
 

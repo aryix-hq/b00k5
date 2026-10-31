@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-10-31
 
+### Fixed
+- **FIX-OPS-06 Sidebar Icon Import & Turnkey Production Deployment Script**:
+  - Fixed missing `HardDrive` named import from `lucide-react` in `apps/web/src/components/Sidebar.tsx` that caused `tsc --noEmit` and `npm run build` in Docker production builds to fail with `Cannot find name 'HardDrive'`.
+  - Replaced 0-byte `docker-compose.prod.yml` with clean production container overrides and restart policies.
+  - Created first-class production deployment engine `bin/prod-deploy.sh` (with `bin/deploy-prod.sh` symlink) providing pre-flight type checking, container fleet builds, readiness polling, and ledger drift assertions.
+
 ### Added
 - **FEAT-OPS-05 Unified Cloud & Database Management, Frictionless Freelancer Payments, Year Book Compensation Visibility, and Bank Statement Reconciliation**:
   - **Unified Cloud Storage & Database Management Console (`apps/web/src/app/settings/integrations/page.tsx`, `apps/web/src/components/storage/GoogleDriveSyncView.tsx`)**:

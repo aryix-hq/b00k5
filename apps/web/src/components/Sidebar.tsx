@@ -85,7 +85,7 @@ export function Sidebar() {
           { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
           { name: 'Tenant Directory', href: '/admin/tenants', icon: Building2 },
           { name: 'Global IAM & Access', href: '/iam', icon: Users },
-          { name: 'Database Backup & Restore', href: '/settings/integrations', icon: Database },
+          { name: 'Cloud Storage & Backups', href: '/settings/integrations', icon: HardDrive },
           { name: 'System Telemetry', href: '/admin/system', icon: Activity },
         ],
       },
@@ -119,8 +119,7 @@ export function Sidebar() {
       {
         title: 'Cloud & Database',
         items: [
-          { name: 'Google Drive Sync', href: '/gdrive', icon: Cloud },
-          { name: 'Database Backups', href: '/settings/integrations', icon: Database },
+          { name: 'Cloud Storage & Backups', href: '/settings/integrations', icon: HardDrive },
         ],
       },
     ];
@@ -211,8 +210,7 @@ export function Sidebar() {
       {
         title: 'Cloud & Database',
         items: [
-          { name: 'Google Drive Sync', href: '/gdrive', icon: Cloud },
-          { name: 'Database Backups', href: '/settings/integrations', icon: Database },
+          { name: 'Cloud Storage & Backups', href: '/settings/integrations', icon: HardDrive },
         ],
       },
     ];

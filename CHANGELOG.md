@@ -5,6 +5,33 @@ All notable changes to `b00k5` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-10-31
+
+### Added
+- **FEAT-OPS-05 Unified Cloud & Database Management, Frictionless Freelancer Payments, Year Book Compensation Visibility, and Bank Statement Reconciliation**:
+  - **Unified Cloud Storage & Database Management Console (`apps/web/src/app/settings/integrations/page.tsx`, `apps/web/src/components/storage/GoogleDriveSyncView.tsx`)**:
+    - Consolidated Google Drive sync, S3/Cloudflare R2 cloud mirroring, and PostgreSQL database backup/restore into a single unified 3-tab console (`cloud`, `backups`, `restore`), eliminating navigation clutter and duplicate entry points.
+    - Encapsulated Google Drive service account credentials, connection health verification, multi-bucket mirroring, and file archiving into `GoogleDriveSyncView`.
+    - Added live 10 GB quota gauge with backup auto-retention policy and password-gated recovery modal (`AdminPass2026!`) with automatic pre-restore safety snapshot generation.
+    - Added auto-redirection on legacy `/gdrive` route and updated navigation sidebar to "Cloud Storage & Backups".
+  - **⚡ Frictionless Quick-Pay Freelancer & Contractor Payments (`apps/api/app/services/payroll_service.py`, `apps/web/src/components/payroll/QuickPayFreelancerModal.tsx`)**:
+    - Added `QuickContractorPaymentRequest` schema with auto-onboarding (`name`, `pan`, `bank_account_number`, `ifsc_code`), `amount_type` (`gross` vs `net`), and `service_type` (`194J_TECH` at 2%, `194J_PROF` at 10%, `194C` at 1%/2%, `NO_TDS`).
+    - Implemented `quick_pay_contractor` service to auto-provision contractors, compute TDS deductions, post Leg 1 Accrual JV (DR 4040, CR 2060, CR 2040), and post Leg 2 Bank Remittance JV (DR 2040, CR 1010) when immediate payout is selected.
+    - Built responsive `QuickPayFreelancerModal` with real-time tax calculation preview and 1-click execution integrated into `/payroll` and `/yearbook`.
+    - Exposed `POST /api/v1/payroll/contractor-payments/quick-pay` with full idempotency and double-entry balance sheet equilibrium.
+  - **Year Book Compensation Visibility & Schedule III Statutory Realignment (`apps/api/app/services/schedule_iii_service.py`, `apps/web/src/app/yearbook/page.tsx`)**:
+    - Recalibrated Schedule III P&L line-item mapping in `apps/api/app/services/schedule_iii_service.py` so GL account `4040` (Legal, MCA & Professional Fees) maps to `other_expenses` (Note 19) instead of being erroneously directed to `depreciation_exp`, while `4020` remains under `employee_benefits` (Note 17).
+    - Added `get_yearbook_compensation_summary` service and `GET /api/v1/payroll/yearbook-summary` endpoint for aggregated FY employee salaries, contractor fees, and TDS deductions.
+    - Added `'payroll_contractors'` ("Salaries & Freelancers") tab to `/yearbook` featuring Compensation Outflow KPI cards, Freelancer Payments Register, and Payroll Runs Register.
+    - Recalibrated top-level Year Book Operating Expenses metric card to include personnel and freelancer burn: `totalBillsAmount + compensationSummary.grand_total_compensation_gross`.
+  - **Bank Statement Withdrawal Reconciliation Engine (`apps/api/app/services/reconciliation_engine.py`, `apps/web/src/app/reconciliation/page.tsx`)**:
+    - Enhanced `reconcile_statement` withdrawal processing: Tier 1 exact match against UTR/reference number and Tier 2 fuzzy contractor name + exact amount matching against open `ContractorPayment` and `PayrollRun` disbursements.
+    - Automatically marks pending contractor payments as `PAID` and posts Leg 2 Disbursement JV upon verified statement match.
+    - Added `matched_contractor_payment_id` and `matched_payroll_run_id` to `ConfirmMatchRequest` and `POST /api/v1/bank/statements/lines/{line_id}/confirm-match`.
+    - Built interactive Action Center UI candidate cards for manual 1-click confirmation of candidate salary and freelancer payouts.
+  - **Zero-Mock Verification & Docker Staging Certification (`apps/api/tests/test_quick_pay_and_reconciliation.py`, `bin/staging-deploy.sh`)**:
+    - Verified quick-pay tax withholding formulas, immediate vs. deferred settlement JVs, Schedule III note separation, and statement withdrawal matching across 20 test cases with 100% pass rate in isolated Docker staging.
+
 ## [Unreleased] - 2026-10-29
 
 ### Added

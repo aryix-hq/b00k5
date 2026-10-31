@@ -20,7 +20,7 @@ from app.schemas.payroll import (
     Form16Response,
     ContractorCreate, ContractorUpdate, ContractorResponse,
     ContractorPaymentCreate, ContractorPaymentResponse,
-    Form16AResponse
+    Form16AResponse, QuickContractorPaymentRequest
 )
 from app.services.payroll_service import PayrollService
 from app.core.iam import require_owner, require_ca_or_owner, IAMContext
@@ -810,6 +810,45 @@ async def create_contractor_payment(
             res.contractor_code = contractor.contractor_code
         return res
     except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.post("/contractor-payments/quick-pay", response_model=ContractorPaymentResponse, status_code=status.HTTP_201_CREATED)
+async def quick_pay_contractor(
+    payload: QuickContractorPaymentRequest,
+    ctx: IAMContext = Depends(require_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    ⚡ Frictionless 1-Click Quick-Pay for Freelancers and Contractors.
+    Auto-onboards contractor if not found, computes statutory TDS (194J/194C/0%),
+    and creates accrual + bank disbursement GL vouchers in one operation.
+    """
+    try:
+        payment = await PayrollService.quick_pay_contractor(db, ctx.tenant.id, payload, ctx.user.id)
+        contractor = await PayrollService.get_contractor(db, ctx.tenant.id, payment.contractor_id)
+        res = ContractorPaymentResponse.model_validate(payment)
+        if contractor:
+            res.contractor_name = contractor.name
+            res.contractor_pan = contractor.pan_number
+            res.contractor_code = contractor.contractor_code
+        return res
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.get("/yearbook-summary")
+async def get_yearbook_compensation_summary(
+    fiscal_year: Optional[str] = None,
+    ctx: IAMContext = Depends(require_ca_or_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Retrieves full aggregated Year Book compensation summary (Salaries & Freelancers).
+    """
+    try:
+        return await PayrollService.get_yearbook_compensation_summary(db, ctx.tenant.id, fiscal_year)
+    except Exception as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 

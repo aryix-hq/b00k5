@@ -1,11 +1,41 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
-import { Cloud, Shield, Database, CheckCircle2, RefreshCw, AlertCircle, ArrowLeft, Lock, HardDrive, Server, Archive, RotateCcw, X, ShieldAlert, Eye, EyeOff, Check, ExternalLink, Layers, ArrowUpRight, FileText, Receipt, ShieldCheck, Building } from 'lucide-react';
+import React, { useState, useEffect, Suspense } from 'react';
+import { useSearchParams, useRouter } from 'next/navigation';
+import {
+  Cloud,
+  Shield,
+  Database,
+  CheckCircle2,
+  RefreshCw,
+  AlertCircle,
+  ArrowLeft,
+  Lock,
+  HardDrive,
+  Server,
+  Archive,
+  RotateCcw,
+  X,
+  ShieldAlert,
+  Eye,
+  EyeOff,
+  Check,
+  ExternalLink,
+  Layers,
+  ArrowUpRight,
+  FileText,
+  Receipt,
+  ShieldCheck,
+  Building,
+  Sliders,
+  ChevronRight,
+  AlertTriangle
+} from 'lucide-react';
 import Link from 'next/link';
 import { Sidebar } from '@/components/Sidebar';
 import { Navbar } from '@/components/Navbar';
 import { fetchApi } from '@/lib/api';
+import { GoogleDriveSyncView } from '@/components/storage/GoogleDriveSyncView';
 
 interface BackupLog {
   id: string;
@@ -57,14 +87,25 @@ interface S3MirrorConfig {
   last_synced_at?: string | null;
 }
 
-export default function IntegrationsSettingsPage() {
+function IntegrationsContent() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
+  // URL state sync
+  const initialTab = (searchParams.get('tab') as 'cloud' | 'backups' | 'restore') || 'cloud';
+  const initialProvider = (searchParams.get('provider') as 'gdrive' | 's3') || 'gdrive';
+
+  const [activeTab, setActiveTab] = useState<'cloud' | 'backups' | 'restore'>(initialTab);
+  const [cloudProvider, setCloudProvider] = useState<'gdrive' | 's3'>(initialProvider);
+
+  // Backup & DB Log state
   const [backingUp, setBackingUp] = useState<boolean>(false);
   const [backupStatus, setBackupStatus] = useState<string | null>(null);
   const [logs, setLogs] = useState<BackupLog[]>([]);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [gdriveConfigured, setGdriveConfigured] = useState<boolean>(false);
 
-  // MinIO S3 Checkpoints State
+  // MinIO S3 Checkpoints & Restore State
   const [minioSnapshots, setMinioSnapshots] = useState<MinioSnapshot[]>([]);
   const [creatingCheckpoint, setCreatingCheckpoint] = useState<boolean>(false);
   const [checkpointStatus, setCheckpointStatus] = useState<string | null>(null);
@@ -96,6 +137,21 @@ export default function IntegrationsSettingsPage() {
   const [savingRetention, setSavingRetention] = useState<boolean>(false);
   const [pruningBackups, setPruningBackups] = useState<boolean>(false);
   const [pruneResult, setPruneResult] = useState<{ pruned_count: number; reclaimed_mb: number } | null>(null);
+
+  // Update URL on tab/provider switch
+  const handleTabChange = (tab: 'cloud' | 'backups' | 'restore') => {
+    setActiveTab(tab);
+    const params = new URLSearchParams(window.location.search);
+    params.set('tab', tab);
+    router.replace(`/settings/integrations?${params.toString()}`);
+  };
+
+  const handleProviderChange = (provider: 'gdrive' | 's3') => {
+    setCloudProvider(provider);
+    const params = new URLSearchParams(window.location.search);
+    params.set('provider', provider);
+    router.replace(`/settings/integrations?${params.toString()}`);
+  };
 
   const fetchS3Config = async () => {
     try {
@@ -248,921 +304,985 @@ export default function IntegrationsSettingsPage() {
     } catch (err: any) {
       setS3SyncStatus({
         success: false,
-        message: err.message || 'Failed to synchronize files to S3.'
+        message: err.message || 'S3 Sync failed.'
       });
     } finally {
       setSyncingS3(false);
     }
   };
 
-  const handleDisconnectS3 = async () => {
-    if (!window.confirm('Are you sure you want to disconnect this remote S3 / Cloudflare R2 bucket?')) return;
-    try {
-      await fetchApi('/api/v1/storage/s3-disconnect', { method: 'POST' });
-      setS3Config(null);
-      setS3Endpoint('');
-      setS3Bucket('');
-      setS3AccessKey('');
-      setS3SecretKey('');
-      setS3TestStatus(null);
-      setS3SyncStatus(null);
-      await fetchS3Config();
-    } catch (err: any) {
-      alert(err.message || 'Failed to disconnect.');
-    }
-  };
-
   const fetchLogs = async () => {
     try {
-      const data = await fetchApi('/api/v1/system/backup-logs');
-      if (Array.isArray(data)) {
-        setLogs(data);
-      }
-
-      const cfg = await fetchApi('/api/v1/storage/gdrive-config');
-      if (cfg) {
-        setGdriveConfigured(Boolean(cfg?.configured));
-      }
+      const data = await fetchApi('/api/v1/backup/logs');
+      setLogs(data);
     } catch (e) {
       console.warn('Failed to fetch backup logs:', e);
     }
   };
 
-  const fetchMinioSnapshots = async () => {
+  const checkGDriveConfig = async () => {
     try {
-      const data = await fetchApi('/api/v1/system/backup/snapshots');
-      if (Array.isArray(data)) {
-        setMinioSnapshots(data);
+      const config = await fetchApi('/api/v1/storage/gdrive-config');
+      if (config && config.configured) {
+        setGdriveConfigured(true);
       }
     } catch (e) {
-      console.warn('Failed to fetch MinIO snapshots:', e);
+      console.warn('Failed to fetch gdrive config:', e);
     }
   };
 
-  useEffect(() => {
-    fetchLogs();
-    fetchMinioSnapshots();
-    fetchS3Config();
-  }, []);
-
-  const handleRunBackup = async () => {
-    setBackingUp(true);
-    setBackupStatus('Executing pg_dump & AES-256-GCM encryption...');
-    setErrorMsg(null);
-
+  const fetchMinioSnapshots = async () => {
     try {
-      const newLog = await fetchApi('/api/v1/system/backup-database', {
-        method: 'POST',
-      });
-
-      setBackupStatus('Success');
-      setLogs(prev => [newLog, ...prev]);
-      await fetchMinioSnapshots();
-    } catch (err: any) {
-      setErrorMsg(err.message || 'Backup failed');
-      setBackupStatus('Failed');
-    } finally {
-      setBackingUp(false);
+      const res = await fetchApi('/api/v1/backup/minio-snapshots');
+      if (res && res.snapshots) {
+        setMinioSnapshots(res.snapshots);
+      }
+    } catch (e) {
+      console.warn('Failed to fetch minio snapshots:', e);
     }
   };
 
-  const handleCreateMinioCheckpoint = async () => {
+  const handleCreateCheckpoint = async () => {
     setCreatingCheckpoint(true);
-    setCheckpointStatus('Creating encrypted pg_dump checkpoint & streaming to MinIO...');
-    setErrorMsg(null);
-
+    setCheckpointStatus(null);
     try {
-      await fetchApi('/api/v1/system/backup/checkpoint', {
+      const res = await fetchApi('/api/v1/backup/minio-checkpoint', {
         method: 'POST'
       });
-      setCheckpointStatus('Checkpoint Created Successfully');
-      await Promise.all([fetchMinioSnapshots(), fetchLogs()]);
+      setCheckpointStatus(res.message || 'Local MinIO Checkpoint snapshot created successfully.');
+      await fetchMinioSnapshots();
     } catch (err: any) {
-      setErrorMsg(err.message || 'MinIO checkpoint failed');
-      setCheckpointStatus('Failed');
+      setCheckpointStatus(`Failed: ${err.message || 'Error creating checkpoint.'}`);
     } finally {
       setCreatingCheckpoint(false);
     }
   };
 
-  const handleRestoreCheckpoint = async () => {
-    if (!targetSnapshot) return;
-    setRestoringKey(targetSnapshot.object_key);
+  const handleTriggerBackup = async () => {
+    setBackingUp(true);
+    setBackupStatus(null);
     setErrorMsg(null);
-    setRestoreResult(null);
-
     try {
-      const res = await fetchApi('/api/v1/system/backup/restore', {
+      const res = await fetchApi('/api/v1/backup/trigger', {
+        method: 'POST'
+      });
+      setBackupStatus(`Database backup snapshot successfully created: ${res.filename} (${(res.file_size_bytes / 1024).toFixed(1)} KB)`);
+      await fetchLogs();
+      await fetchMinioSnapshots();
+      await fetchS3Config();
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Failed to trigger backup.');
+    } finally {
+      setBackingUp(false);
+    }
+  };
+
+  const openRestoreModal = (snapshot: MinioSnapshot) => {
+    setTargetSnapshot(snapshot);
+    setRestoreSecret('');
+    setRestoreResult(null);
+    setRestoreModalOpen(true);
+  };
+
+  const handleExecuteRestore = async () => {
+    if (!targetSnapshot) return;
+    if (!restoreSecret.trim()) {
+      alert('Administrator password is required to authorize database restore.');
+      return;
+    }
+
+    setRestoringKey(targetSnapshot.object_key);
+    try {
+      const res = await fetchApi('/api/v1/backup/restore', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          object_key: targetSnapshot.object_key,
-          decryption_secret: restoreSecret.trim() || undefined
+          snapshot_key: targetSnapshot.object_key,
+          admin_secret: restoreSecret.trim(),
+          create_safety_checkpoint: true
         })
       });
 
-      setRestoreResult(res);
-      if (res.restore_approved) {
-        setCheckpointStatus('Database restored successfully from MinIO checkpoint!');
-      } else {
-        setErrorMsg(`Restore rejected by 7-Point Staging Gate: ${res.reason || res.stage_status}`);
-      }
+      setRestoreResult({
+        success: true,
+        message: res.message || 'Database restored successfully!',
+        details: res
+      });
+      await fetchMinioSnapshots();
     } catch (err: any) {
-      setErrorMsg(err.message || 'Failed to restore MinIO checkpoint');
+      setRestoreResult({
+        success: false,
+        message: err.message || 'Restore execution failed.'
+      });
     } finally {
       setRestoringKey(null);
     }
   };
 
+  useEffect(() => {
+    fetchLogs();
+    checkGDriveConfig();
+    fetchMinioSnapshots();
+    fetchS3Config();
+  }, []);
+
   return (
-    <div className="flex h-screen bg-slate-950 text-slate-100 overflow-hidden">
+    <div className="flex h-screen bg-slate-950 text-slate-100 antialiased overflow-hidden">
       <Sidebar />
-      <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="flex-1 flex flex-col min-w-0 overflow-y-auto">
         <Navbar />
-        <main className="flex-1 overflow-y-auto p-8 max-w-6xl mx-auto w-full space-y-6">
-          <div className="flex items-center justify-between border-b border-slate-800 pb-4">
+
+        <main className="p-8 max-w-7xl mx-auto w-full space-y-8">
+          {/* Header */}
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-800 pb-6">
+            <div>
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-xl bg-sky-500/10 border border-sky-500/20 text-sky-400">
+                  <HardDrive className="w-6 h-6" />
+                </div>
+                <div>
+                  <h1 className="text-2xl font-bold tracking-tight text-white flex items-center gap-2">
+                    Cloud Storage & Database Backups
+                    <span className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-mono font-medium">
+                      Unified Console
+                    </span>
+                  </h1>
+                  <p className="text-sm text-slate-400 mt-0.5">
+                    Offsite cloud sync (Google Drive & Cloudflare R2 / S3), on-demand database snapshots, and point-in-time recovery.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Quick Actions */}
             <div className="flex items-center gap-3">
-          <Link href="/settings" className="p-2 rounded-lg bg-slate-800 text-slate-400 hover:text-white transition">
-            <ArrowLeft className="w-5 h-5" />
-          </Link>
-          <div>
-            <h1 className="text-xl font-bold text-white flex items-center gap-2">
-              <Cloud className="w-5 h-5 text-sky-400" />
-              Cloud Integrations & Database Archival
-            </h1>
-            <p className="text-xs text-slate-400">
-              AES-256-GCM Encrypted PostgreSQL Backups Streamed to Google Drive (/b00k5_Statutory_Archive/DB_Backups/)
-            </p>
-          </div>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          {gdriveConfigured ? (
-            <span className="text-xs font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-3 py-1 rounded-full flex items-center gap-1.5">
-              <CheckCircle2 className="w-3.5 h-3.5" />
-              Google Drive Connected
-            </span>
-          ) : (
-            <Link href="/gdrive" className="text-xs font-mono text-slate-400 bg-slate-800/60 border border-slate-700 px-3 py-1 rounded-full flex items-center gap-1.5 hover:bg-slate-700 transition">
-              <AlertCircle className="w-3.5 h-3.5 text-amber-400" />
-              Google Drive: Not Configured
-            </Link>
-          )}
-
-          {s3Config?.configured ? (
-            <span className="text-xs font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-3 py-1 rounded-full flex items-center gap-1.5">
-              <CheckCircle2 className="w-3.5 h-3.5" />
-              {s3Config.provider === 'cloudflare_r2' ? 'Cloudflare R2' : s3Config.provider === 'aws_s3' ? 'AWS S3' : 'S3 Bucket'} Connected
-            </span>
-          ) : (
-            <span className="text-xs font-mono text-amber-400 bg-amber-500/10 border border-amber-500/30 px-3 py-1 rounded-full flex items-center gap-1.5">
-              <AlertCircle className="w-3.5 h-3.5" />
-              Cloudflare R2 / S3: Setup Required
-            </span>
-          )}
-
-          <span className="text-xs font-mono text-sky-400 bg-sky-500/10 border border-sky-500/20 px-3 py-1 rounded-full flex items-center gap-1.5">
-            <Lock className="w-3.5 h-3.5" />
-            AES-256-GCM Encryption
-          </span>
-        </div>
-      </div>
-
-      {/* Backup Action Banner */}
-      <div className="p-6 rounded-2xl bg-gradient-to-r from-slate-900/90 to-slate-950 border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div className="space-y-1">
-          <h2 className="text-base font-semibold text-white flex items-center gap-2">
-            <Database className="w-4 h-4 text-sky-400" />
-            PostgreSQL Database Dump & Google Drive Sync
-          </h2>
-          <p className="text-xs text-slate-400">
-            Nightly scheduled dump at 02:00 AM IST. On-demand streaming with 30-day snapshot pruning.
-          </p>
-        </div>
-
-        <div className="flex items-center gap-3">
-          <button
-            id="run-db-backup-btn"
-            onClick={handleRunBackup}
-            disabled={backingUp}
-            className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-sky-600 hover:bg-sky-500 font-semibold text-white text-xs shadow-lg shadow-sky-600/30 transition disabled:opacity-50"
-          >
-            {backingUp ? <RefreshCw className="w-4 h-4 animate-spin" /> : <HardDrive className="w-4 h-4" />}
-            Run Full Database Backup to Google Drive
-          </button>
-        </div>
-      </div>
-
-      {/* Progress & Status Modal/Banner */}
-      {backupStatus && (
-        <div
-          id="backup-status-badge"
-          className={`p-4 rounded-xl border flex items-center gap-3 text-xs font-medium transition-all ${
-            backupStatus === 'Success'
-              ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
-              : backupStatus === 'Failed'
-              ? 'bg-rose-500/10 border-rose-500/30 text-rose-400'
-              : 'bg-sky-500/10 border-sky-500/30 text-sky-300'
-          }`}
-        >
-          {backupStatus === 'Success' ? (
-            <CheckCircle2 className="w-5 h-5 shrink-0" />
-          ) : backupStatus === 'Failed' ? (
-            <AlertCircle className="w-5 h-5 shrink-0" />
-          ) : (
-            <RefreshCw className="w-5 h-5 shrink-0 animate-spin" />
-          )}
-          <span>Status: {backupStatus}</span>
-        </div>
-      )}
-
-      {/* Cloudflare R2 & AWS S3 Off-Site Cloud Mirror Card */}
-      <div className="p-6 rounded-2xl bg-gradient-to-r from-slate-900/90 to-slate-950 border border-slate-800 space-y-5">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800 pb-4">
-          <div className="space-y-1">
-            <div className="flex items-center gap-2">
-              <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded bg-sky-500/10 text-sky-300 border border-sky-500/30">
-                Option 2: Cloudflare R2 / AWS S3
-              </span>
-              <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
-                Zero OAuth / Zero Quota Limits
-              </span>
-            </div>
-            <h2 className="text-base font-semibold text-white flex items-center gap-2 mt-1">
-              <Cloud className="w-4 h-4 text-sky-400" />
-              Cloudflare R2 &amp; AWS S3 Off-Site Cloud Mirror
-            </h2>
-            <p className="text-xs text-slate-400">
-              Enterprise set-and-forget archival. Completely bypasses Google's personal 0-byte Service Account quota and 7-day token expirations.
-            </p>
-          </div>
-
-          <div className="flex items-center gap-3">
-            {s3Config?.configured && (
               <button
-                id="sync-s3-mirror-btn"
-                onClick={handleSyncS3}
-                disabled={syncingS3}
-                className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 font-semibold text-white text-xs shadow-lg shadow-emerald-600/30 transition disabled:opacity-50"
+                onClick={handleTriggerBackup}
+                disabled={backingUp}
+                className="px-4 py-2.5 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white font-medium text-sm flex items-center gap-2 transition-colors shadow-sm"
               >
-                {syncingS3 ? <RefreshCw className="w-4 h-4 animate-spin" /> : <HardDrive className="w-4 h-4" />}
-                Sync All Vault &amp; Backups to S3
-              </button>
-            )}
-          </div>
-        </div>
-
-        {s3TestStatus && (
-          <div
-            className={`p-3.5 rounded-xl border flex items-center gap-3 text-xs font-medium ${
-              s3TestStatus.success
-                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
-                : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
-            }`}
-          >
-            {s3TestStatus.success ? (
-              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-            ) : (
-              <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
-            )}
-            <div className="flex-1">
-              <span>{s3TestStatus.message}</span>
-              {s3TestStatus.latency_ms && (
-                <span className="text-[11px] font-mono opacity-75 ml-2">({s3TestStatus.latency_ms}ms)</span>
-              )}
-            </div>
-          </div>
-        )}
-
-        {s3SyncStatus && (
-          <div
-            className={`p-3.5 rounded-xl border flex items-center gap-3 text-xs font-medium ${
-              s3SyncStatus.success
-                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
-                : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
-            }`}
-          >
-            {s3SyncStatus.success ? (
-              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-            ) : (
-              <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
-            )}
-            <span>{s3SyncStatus.message}</span>
-          </div>
-        )}
-
-        {/* Provider Selector Tabs */}
-        <div className="flex items-center gap-2 pt-1">
-          <button
-            type="button"
-            onClick={() => {
-              setS3Provider('cloudflare_r2');
-              setS3Region('auto');
-              if (!s3Endpoint || s3Endpoint.includes('amazonaws.com')) {
-                setS3Endpoint('https://<ACCOUNT_ID>.r2.cloudflarestorage.com');
-              }
-            }}
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${
-              s3Provider === 'cloudflare_r2'
-                ? 'bg-sky-500/20 text-sky-300 border border-sky-500/40 font-semibold'
-                : 'bg-slate-800 text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            Cloudflare R2 (10GB Free Forever)
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setS3Provider('aws_s3');
-              setS3Region('ap-south-1');
-              if (!s3Endpoint || s3Endpoint.includes('r2.cloudflarestorage.com')) {
-                setS3Endpoint('https://s3.ap-south-1.amazonaws.com');
-              }
-            }}
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${
-              s3Provider === 'aws_s3'
-                ? 'bg-sky-500/20 text-sky-300 border border-sky-500/40 font-semibold'
-                : 'bg-slate-800 text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            AWS S3 (Global Standard)
-          </button>
-          <button
-            type="button"
-            onClick={() => setS3Provider('custom_s3')}
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${
-              s3Provider === 'custom_s3'
-                ? 'bg-sky-500/20 text-sky-300 border border-sky-500/40 font-semibold'
-                : 'bg-slate-800 text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            Custom S3 (MinIO / Wasabi / B2)
-          </button>
-        </div>
-
-        {/* S3 Credentials Form */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
-          <div>
-            <label className="text-slate-300 font-medium block mb-1">
-              S3 Endpoint URL:
-              {s3Provider === 'cloudflare_r2' && (
-                <span className="text-[11px] text-sky-400 font-normal ml-2">https://&lt;account_id&gt;.r2.cloudflarestorage.com</span>
-              )}
-            </label>
-            <input
-              type="text"
-              value={s3Endpoint}
-              onChange={(e) => setS3Endpoint(e.target.value)}
-              placeholder="e.g. https://abc12345.r2.cloudflarestorage.com"
-              className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white font-mono text-xs focus:border-sky-500 focus:outline-none"
-            />
-          </div>
-
-          <div>
-            <label className="text-slate-300 font-medium block mb-1">Bucket Name:</label>
-            <input
-              type="text"
-              value={s3Bucket}
-              onChange={(e) => setS3Bucket(e.target.value)}
-              placeholder="e.g. aryix-b00k5-vault"
-              className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white font-mono text-xs focus:border-sky-500 focus:outline-none"
-            />
-          </div>
-
-          <div>
-            <label className="text-slate-300 font-medium block mb-1">Access Key ID:</label>
-            <input
-              type="text"
-              value={s3AccessKey}
-              onChange={(e) => setS3AccessKey(e.target.value)}
-              placeholder="e.g. 7f4a... or AKIA..."
-              className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white font-mono text-xs focus:border-sky-500 focus:outline-none"
-            />
-          </div>
-
-          <div>
-            <label className="text-slate-300 font-medium block mb-1 flex items-center justify-between">
-              <span>Secret Access Key:</span>
-              {s3Config?.has_secret && (
-                <span className="text-[10px] text-emerald-400 font-mono">Secret saved (leave blank to keep)</span>
-              )}
-            </label>
-            <div className="relative">
-              <input
-                type={showSecret ? 'text' : 'password'}
-                value={s3SecretKey}
-                onChange={(e) => setS3SecretKey(e.target.value)}
-                placeholder={s3Config?.has_secret ? '••••••••••••••••' : 'Paste S3 Secret Key'}
-                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 pr-10 text-white font-mono text-xs focus:border-sky-500 focus:outline-none"
-              />
-              <button
-                type="button"
-                onClick={() => setShowSecret(!showSecret)}
-                className="absolute right-2.5 top-2.5 text-slate-500 hover:text-slate-300"
-              >
-                {showSecret ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                <Database className={`w-4 h-4 ${backingUp ? 'animate-spin' : ''}`} />
+                {backingUp ? 'Creating Snapshot...' : 'Run Instant DB Backup'}
               </button>
             </div>
           </div>
 
-          <div>
-            <label className="text-slate-300 font-medium block mb-1">Region:</label>
-            <input
-              type="text"
-              value={s3Region}
-              onChange={(e) => setS3Region(e.target.value)}
-              placeholder="auto (for Cloudflare R2) or ap-south-1"
-              className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white font-mono text-xs focus:border-sky-500 focus:outline-none"
-            />
-          </div>
-
-          <div>
-            <label className="text-slate-300 font-medium block mb-1">Root Folder / Prefix (Optional):</label>
-            <input
-              type="text"
-              value={s3Prefix}
-              onChange={(e) => setS3Prefix(e.target.value)}
-              placeholder="e.g. b00k5_ARYIX"
-              className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white font-mono text-xs focus:border-sky-500 focus:outline-none"
-            />
-          </div>
-        </div>
-
-        {/* Scope of Mirroring: Invoices, Bills, Vault, Statements & Backups */}
-        <div className="p-4 rounded-xl bg-slate-950/80 border border-slate-800/80 space-y-3">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
-              <Shield className="w-3.5 h-3.5 text-sky-400" />
-              Complete Off-Site Backup Scope (All Invoices, Bills, Documents &amp; DB)
-            </span>
-            <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
-              MCA Sec 128 Compliant
-            </span>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
-            <div className="p-3 rounded-lg bg-slate-900 border border-slate-800">
-              <div className="flex items-center gap-2 text-sky-400 mb-1">
-                <FileText className="w-4 h-4" />
-                <span className="text-xs font-medium text-white">Sales Invoices</span>
-              </div>
-              <p className="text-[11px] text-slate-400 leading-tight">
-                All client tax invoices, debit/credit notes archived as PDF documents with SHA-256 hashes.
-              </p>
-            </div>
-
-            <div className="p-3 rounded-lg bg-slate-900 border border-slate-800">
-              <div className="flex items-center gap-2 text-emerald-400 mb-1">
-                <Receipt className="w-4 h-4" />
-                <span className="text-xs font-medium text-white">Vendor Bills</span>
-              </div>
-              <p className="text-[11px] text-slate-400 leading-tight">
-                All vendor bills, OCR receipt attachments, and statutory expense vouchers.
-              </p>
-            </div>
-
-            <div className="p-3 rounded-lg bg-slate-900 border border-slate-800">
-              <div className="flex items-center gap-2 text-purple-400 mb-1">
-                <ShieldCheck className="w-4 h-4" />
-                <span className="text-xs font-medium text-white">Legal &amp; Tax Vault</span>
-              </div>
-              <p className="text-[11px] text-slate-400 leading-tight">
-                Certificate of Incorporation (COI), MOA, AOA, PAN, GST, and ROC filings.
-              </p>
-            </div>
-
-            <div className="p-3 rounded-lg bg-slate-900 border border-slate-800">
-              <div className="flex items-center gap-2 text-amber-400 mb-1">
-                <Building className="w-4 h-4" />
-                <span className="text-xs font-medium text-white">Bank Statements</span>
-              </div>
-              <p className="text-[11px] text-slate-400 leading-tight">
-                Reconciled bank statements and monthly financial institution transaction records.
-              </p>
-            </div>
-
-            <div className="p-3 rounded-lg bg-slate-900 border border-slate-800">
-              <div className="flex items-center gap-2 text-rose-400 mb-1">
-                <Database className="w-4 h-4" />
-                <span className="text-xs font-medium text-white">Database Dumps</span>
-              </div>
-              <p className="text-[11px] text-slate-400 leading-tight">
-                Encrypted PostgreSQL archives (AES-256-GCM) with double-entry integrity checks.
-              </p>
-            </div>
-          </div>
-        </div>
-
-        {/* Cloudflare R2 Storage Quota & Retention Policy Card */}
-        <div className="p-4 rounded-xl bg-slate-950/80 border border-slate-800 space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800/80 pb-3">
-            <div>
-              <h3 className="text-xs font-semibold text-white uppercase tracking-wider flex items-center gap-2">
-                <Archive className="w-3.5 h-3.5 text-amber-400" />
-                Storage Quota &amp; Database Backup Retention Policy
-              </h3>
-              <p className="text-[11px] text-slate-400">
-                Prevents running out of space by automatically pruning older database snapshots while permanently preserving statutory invoices and bills.
-              </p>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <span className="text-[11px] font-mono text-slate-300">
-                {s3Config?.storage_usage?.total_mb ?? 0} MB / 10 GB Free Tier
-              </span>
-              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-sky-500/10 text-sky-400 border border-sky-500/20">
-                {s3Config?.storage_usage?.remaining_free_gb ?? 10.0} GB Free Remaining
-              </span>
-            </div>
-          </div>
-
-          {/* Quota Progress Bar */}
-          <div className="space-y-1.5">
-            <div className="w-full h-2 rounded-full bg-slate-800 overflow-hidden">
-              <div
-                className={`h-full transition-all duration-500 ${
-                  (s3Config?.storage_usage?.used_percentage ?? 0) > 80
-                    ? 'bg-rose-500'
-                    : (s3Config?.storage_usage?.used_percentage ?? 0) > 50
-                    ? 'bg-amber-500'
-                    : 'bg-emerald-500'
-                }`}
-                style={{ width: `${Math.max(1, Math.min(100, s3Config?.storage_usage?.used_percentage ?? 0.5))}%` }}
-              />
-            </div>
-            <div className="flex items-center justify-between text-[10px] text-slate-400 font-mono">
-              <span>Used: {s3Config?.storage_usage?.used_percentage ?? 0}%</span>
-              <span>{s3Config?.storage_usage?.file_count ?? 0} Total Objects in Bucket</span>
-              <span>10 GB Free Forever Limit</span>
-            </div>
-          </div>
-
-          {/* Retention Controls */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-1 items-end">
-            <div>
-              <label className="text-slate-300 text-xs font-medium block mb-1">
-                Keep Database Snapshots:
-              </label>
-              <select
-                value={retentionKeepCount}
-                onChange={(e) => setRetentionKeepCount(Number(e.target.value))}
-                className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-white font-mono text-xs focus:border-amber-500 focus:outline-none cursor-pointer"
-              >
-                <option value={5}>Keep 5 Most Recent Backups (~50 MB)</option>
-                <option value={7}>Keep 7 Daily Backups (~70 MB - Default)</option>
-                <option value={14}>Keep 14 Backups (~140 MB)</option>
-                <option value={30}>Keep 30 Backups (~300 MB)</option>
-              </select>
-            </div>
-
-            <div className="flex items-center gap-2 pb-2">
-              <input
-                type="checkbox"
-                id="auto-prune-toggle"
-                checked={retentionAutoPrune}
-                onChange={(e) => setRetentionAutoPrune(e.target.checked)}
-                className="rounded border-slate-700 bg-slate-900 text-amber-500 focus:ring-0 w-4 h-4 cursor-pointer"
-              />
-              <label htmlFor="auto-prune-toggle" className="text-xs text-slate-300 cursor-pointer select-none">
-                Auto-prune older snapshots during backups
-              </label>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={handleSaveRetention}
-                disabled={savingRetention || !s3Config?.configured}
-                className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 text-xs font-semibold rounded-lg transition"
-              >
-                {savingRetention ? 'Saving...' : 'Save Policy'}
-              </button>
-              <button
-                type="button"
-                onClick={handlePruneBackups}
-                disabled={pruningBackups || !s3Config?.configured}
-                className="px-3.5 py-2 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-amber-300 text-xs font-semibold rounded-lg transition"
-              >
-                {pruningBackups ? 'Pruning...' : 'Prune Now'}
-              </button>
-            </div>
-          </div>
-
-          {pruneResult && (
-            <div className="p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs flex items-center gap-2 font-mono">
-              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-              <span>Pruned {pruneResult.pruned_count} old snapshot(s). Reclaimed {pruneResult.reclaimed_mb} MB space.</span>
-            </div>
-          )}
-
-          <p className="text-[10px] text-slate-500 italic pt-1">
-            * Statutory Invariant: Sales invoices, vendor expense bills, and MCA legal filings are protected by Companies Act 2013 Section 128 (8-year audit mandate) and will never be deleted by the retention engine.
-          </p>
-        </div>
-
-        {/* S3 Action Buttons */}
-        <div className="flex flex-wrap items-center gap-3 pt-2">
-          <button
-            type="button"
-            onClick={handleTestS3}
-            disabled={testingS3 || !s3Endpoint || !s3Bucket || !s3AccessKey || (!s3SecretKey && !s3Config?.has_secret)}
-            className="flex items-center gap-1.5 px-4 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 text-xs font-semibold rounded-lg transition"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${testingS3 ? 'animate-spin' : ''}`} />
-            {testingS3 ? 'Testing S3 Bucket...' : 'Test Connection'}
-          </button>
-
-          <button
-            type="button"
-            onClick={handleSaveS3}
-            disabled={savingS3 || !s3Endpoint || !s3Bucket || !s3AccessKey || (!s3SecretKey && !s3Config?.has_secret)}
-            className="flex items-center gap-1.5 px-5 py-2 bg-sky-600 hover:bg-sky-500 disabled:bg-slate-800 disabled:text-slate-500 text-white text-xs font-semibold rounded-lg shadow-md shadow-sky-600/20 transition"
-          >
-            <Check className="w-3.5 h-3.5" />
-            {savingS3 ? 'Saving...' : 'Save & Connect Cloud Bucket'}
-          </button>
-
-          {s3Config?.configured && (
+          {/* Top-Level Tabs Navigation */}
+          <div className="flex border-b border-slate-800 gap-2">
             <button
-              type="button"
-              onClick={handleDisconnectS3}
-              className="px-3.5 py-2 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-400 text-xs font-semibold rounded-lg transition"
+              onClick={() => handleTabChange('cloud')}
+              className={`px-4 py-3 font-medium text-sm border-b-2 flex items-center gap-2 transition-colors ${
+                activeTab === 'cloud'
+                  ? 'border-sky-500 text-sky-400'
+                  : 'border-transparent text-slate-400 hover:text-slate-200'
+              }`}
             >
-              Disconnect S3
+              <Cloud className="w-4 h-4" />
+              Cloud Storage & Sync
+              <span className="px-1.5 py-0.5 text-[10px] rounded bg-slate-800 text-slate-400 border border-slate-700">
+                GDrive / R2 / S3
+              </span>
             </button>
-          )}
 
-          {s3Config?.last_synced_at && (
-            <span className="text-[11px] text-slate-400 font-mono ml-auto">
-              Last Synced: {new Date(s3Config.last_synced_at).toLocaleString('en-IN')}
-            </span>
-          )}
-        </div>
-      </div>
-
-      {/* MinIO S3 Immutable Checkpoints & Disaster Recovery Card */}
-      <div className="p-6 rounded-2xl bg-gradient-to-r from-slate-900/90 to-slate-950 border border-slate-800 space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div className="space-y-1">
-            <div className="flex items-center gap-2">
-              <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/30">
-                Sovereign S3 Storage / MinIO
-              </span>
-              <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
-                7-Point Staging Gate Verified
-              </span>
-            </div>
-            <h2 className="text-base font-semibold text-white flex items-center gap-2 mt-1">
-              <Server className="w-4 h-4 text-amber-400" />
-              MinIO S3 Immutable Database Checkpoints
-            </h2>
-            <p className="text-xs text-slate-400">
-              On-premise / private cloud disaster recovery fallback when Google Drive is unconfigured or unreachable.
-            </p>
-          </div>
-
-          <div className="flex items-center gap-3">
             <button
-              id="run-minio-checkpoint-btn"
-              onClick={handleCreateMinioCheckpoint}
-              disabled={creatingCheckpoint}
-              className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-500 font-semibold text-white text-xs shadow-lg shadow-amber-600/30 transition disabled:opacity-50"
+              onClick={() => handleTabChange('backups')}
+              className={`px-4 py-3 font-medium text-sm border-b-2 flex items-center gap-2 transition-colors ${
+                activeTab === 'backups'
+                  ? 'border-sky-500 text-sky-400'
+                  : 'border-transparent text-slate-400 hover:text-slate-200'
+              }`}
             >
-              {creatingCheckpoint ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Archive className="w-4 h-4" />}
-              Create MinIO S3 Checkpoint
+              <Database className="w-4 h-4" />
+              Database Backups & Snapshots
+              <span className="px-1.5 py-0.5 text-[10px] rounded bg-slate-800 text-slate-400 border border-slate-700">
+                {logs.length}
+              </span>
             </button>
-          </div>
-        </div>
 
-        {checkpointStatus && (
-          <div
-            id="checkpoint-status-badge"
-            className={`p-3.5 rounded-xl border flex items-center gap-3 text-xs font-medium transition-all ${
-              checkpointStatus.includes('Successfully')
-                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
-                : checkpointStatus === 'Failed'
-                ? 'bg-rose-500/10 border-rose-500/30 text-rose-400'
-                : 'bg-amber-500/10 border-amber-500/30 text-amber-300'
-            }`}
-          >
-            {checkpointStatus.includes('Successfully') ? (
-              <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
-            ) : checkpointStatus === 'Failed' ? (
-              <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
-            ) : (
-              <RefreshCw className="w-4 h-4 shrink-0 animate-spin text-amber-400" />
-            )}
-            <span>Status: {checkpointStatus}</span>
-          </div>
-        )}
-
-        {/* MinIO Checkpoints Table */}
-        <div className="pt-2">
-          <div className="flex items-center justify-between mb-2">
-            <h4 className="text-xs font-semibold text-slate-300">Available MinIO Snapshots ({minioSnapshots.length})</h4>
-            <button onClick={fetchMinioSnapshots} className="text-[11px] text-slate-400 hover:text-white flex items-center gap-1">
-              <RefreshCw className="w-3 h-3" /> Refresh Snapshots
+            <button
+              onClick={() => handleTabChange('restore')}
+              className={`px-4 py-3 font-medium text-sm border-b-2 flex items-center gap-2 transition-colors ${
+                activeTab === 'restore'
+                  ? 'border-sky-500 text-sky-400'
+                  : 'border-transparent text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <RotateCcw className="w-4 h-4" />
+              Restore & Checkpoints
+              <span className="px-1.5 py-0.5 text-[10px] rounded bg-slate-800 text-slate-400 border border-slate-700">
+                {minioSnapshots.length}
+              </span>
             </button>
           </div>
 
-          <div className="overflow-x-auto rounded-xl border border-slate-800">
-            <table id="minio-snapshots-table" className="w-full text-left text-xs text-slate-300">
-              <thead className="bg-slate-950 text-slate-400 font-mono uppercase text-[11px] border-b border-slate-800">
-                <tr>
-                  <th className="py-2.5 px-3">Snapshot File</th>
-                  <th className="py-2.5 px-3">Size (KB)</th>
-                  <th className="py-2.5 px-3">MinIO URI</th>
-                  <th className="py-2.5 px-3">Timestamp</th>
-                  <th className="py-2.5 px-3 text-right">Disaster Recovery</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-800/60 font-mono">
-                {minioSnapshots.length > 0 ? (
-                  minioSnapshots.map((snap) => (
-                    <tr key={snap.object_key} className="hover:bg-slate-800/30">
-                      <td className="py-2.5 px-3 font-medium text-white max-w-[200px] truncate" title={snap.filename}>
-                        {snap.filename}
-                      </td>
-                      <td className="py-2.5 px-3 text-slate-300">
-                        {(snap.size_bytes / 1024).toFixed(1)} KB
-                      </td>
-                      <td className="py-2.5 px-3 text-amber-300 font-mono text-[11px] max-w-[220px] truncate" title={snap.uri}>
-                        {snap.uri}
-                      </td>
-                      <td className="py-2.5 px-3 text-slate-400">
-                        {snap.last_modified ? new Date(snap.last_modified).toLocaleString('en-IN') : 'N/A'}
-                      </td>
-                      <td className="py-2.5 px-3 text-right">
+          {/* Global Status Banners */}
+          {backupStatus && (
+            <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 flex items-center gap-3">
+              <CheckCircle2 className="w-5 h-5 shrink-0" />
+              <span className="text-sm font-medium">{backupStatus}</span>
+            </div>
+          )}
+
+          {errorMsg && (
+            <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400 flex items-center gap-3">
+              <AlertCircle className="w-5 h-5 shrink-0" />
+              <span className="text-sm font-medium">{errorMsg}</span>
+            </div>
+          )}
+
+          {/* TAB 1: CLOUD STORAGE & SYNC */}
+          {activeTab === 'cloud' && (
+            <div className="space-y-6">
+              {/* Provider Sub-selector Switch */}
+              <div className="flex items-center justify-between p-3 rounded-xl bg-slate-900 border border-slate-800">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-semibold uppercase tracking-wider text-slate-400 px-2">
+                    Storage Provider:
+                  </span>
+                  <button
+                    onClick={() => handleProviderChange('gdrive')}
+                    className={`px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-2 transition-colors ${
+                      cloudProvider === 'gdrive'
+                        ? 'bg-sky-500/20 text-sky-300 border border-sky-500/30'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <Cloud className="w-4 h-4 text-sky-400" />
+                    Google Drive
+                    {gdriveConfigured && (
+                      <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+                    )}
+                  </button>
+
+                  <button
+                    onClick={() => handleProviderChange('s3')}
+                    className={`px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-2 transition-colors ${
+                      cloudProvider === 's3'
+                        ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <Server className="w-4 h-4 text-amber-400" />
+                    Cloudflare R2 / S3
+                    {s3Config?.configured && (
+                      <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+                    )}
+                  </button>
+                </div>
+
+                <div className="text-xs text-slate-500 font-mono">
+                  {cloudProvider === 'gdrive' ? 'Free 15 GB via Google Workspace' : 'Free 10 GB/mo via Cloudflare R2'}
+                </div>
+              </div>
+
+              {/* View 1: Google Drive */}
+              {cloudProvider === 'gdrive' && (
+                <div>
+                  <GoogleDriveSyncView />
+                </div>
+              )}
+
+              {/* View 2: Cloudflare R2 / AWS S3 */}
+              {cloudProvider === 's3' && (
+                <div className="space-y-6">
+                  {/* Quota & Capacity Usage Card */}
+                  {s3Config?.storage_usage && (
+                    <div className="p-6 rounded-2xl bg-gradient-to-br from-slate-900 via-slate-900 to-amber-950/20 border border-amber-500/20 space-y-4">
+                      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <Layers className="w-5 h-5 text-amber-400" />
+                            <h3 className="text-lg font-bold text-white">Cloudflare R2 Storage Quota</h3>
+                            <span className="px-2 py-0.5 text-xs font-mono font-medium rounded bg-amber-500/10 text-amber-300 border border-amber-500/20">
+                              Free Tier (10 GB/month)
+                            </span>
+                          </div>
+                          <p className="text-xs text-slate-400 mt-1">
+                            Zero egress fees on Cloudflare R2. Monitors remote bucket usage across all categories.
+                          </p>
+                        </div>
+
+                        <div className="flex items-center gap-4 text-right">
+                          <div>
+                            <div className="text-2xl font-mono font-bold text-amber-300">
+                              {s3Config.storage_usage.total_mb.toFixed(2)} <span className="text-sm font-normal text-slate-400">MB</span>
+                            </div>
+                            <div className="text-xs text-slate-500 font-mono">
+                              of {s3Config.storage_usage.free_tier_gb} GB used ({s3Config.storage_usage.used_percentage.toFixed(2)}%)
+                            </div>
+                          </div>
+                          <div className="h-10 w-[1px] bg-slate-800"></div>
+                          <div>
+                            <div className="text-2xl font-mono font-bold text-emerald-400">
+                              {s3Config.storage_usage.remaining_free_gb.toFixed(2)} <span className="text-sm font-normal text-slate-400">GB</span>
+                            </div>
+                            <div className="text-xs text-slate-500 font-mono">Remaining Free Allowance</div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Progress Bar */}
+                      <div className="space-y-1.5">
+                        <div className="w-full h-3 rounded-full bg-slate-800 overflow-hidden p-0.5">
+                          <div
+                            className={`h-full rounded-full transition-all duration-500 ${
+                              s3Config.storage_usage.used_percentage > 85 ? 'bg-rose-500' : s3Config.storage_usage.used_percentage > 60 ? 'bg-amber-500' : 'bg-emerald-500'
+                            }`}
+                            style={{ width: `${Math.max(s3Config.storage_usage.used_percentage, 0.5)}%` }}
+                          ></div>
+                        </div>
+                        <div className="flex justify-between text-[11px] text-slate-500 font-mono">
+                          <span>0 GB</span>
+                          <span>{s3Config.storage_usage.file_count} total remote objects</span>
+                          <span>{s3Config.storage_usage.free_tier_gb} GB</span>
+                        </div>
+                      </div>
+
+                      {/* Category Breakdown */}
+                      {s3Config.storage_usage.categories && (
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2">
+                          <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800">
+                            <div className="flex items-center gap-1.5 text-xs text-slate-400 mb-1">
+                              <Receipt className="w-3.5 h-3.5 text-sky-400" />
+                              <span>Tax Invoices</span>
+                            </div>
+                            <div className="text-sm font-bold font-mono text-white">
+                              {((s3Config.storage_usage.categories['invoices']?.bytes || 0) / (1024 * 1024)).toFixed(2)} MB
+                            </div>
+                            <div className="text-[10px] text-slate-500">
+                              {s3Config.storage_usage.categories['invoices']?.count || 0} files
+                            </div>
+                          </div>
+
+                          <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800">
+                            <div className="flex items-center gap-1.5 text-xs text-slate-400 mb-1">
+                              <FileText className="w-3.5 h-3.5 text-indigo-400" />
+                              <span>Vendor Bills</span>
+                            </div>
+                            <div className="text-sm font-bold font-mono text-white">
+                              {((s3Config.storage_usage.categories['bills']?.bytes || 0) / (1024 * 1024)).toFixed(2)} MB
+                            </div>
+                            <div className="text-[10px] text-slate-500">
+                              {s3Config.storage_usage.categories['bills']?.count || 0} files
+                            </div>
+                          </div>
+
+                          <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800">
+                            <div className="flex items-center gap-1.5 text-xs text-slate-400 mb-1">
+                              <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                              <span>Statutory Vault</span>
+                            </div>
+                            <div className="text-sm font-bold font-mono text-white">
+                              {((s3Config.storage_usage.categories['statutory']?.bytes || 0) / (1024 * 1024)).toFixed(2)} MB
+                            </div>
+                            <div className="text-[10px] text-slate-500">
+                              {s3Config.storage_usage.categories['statutory']?.count || 0} files
+                            </div>
+                          </div>
+
+                          <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800">
+                            <div className="flex items-center gap-1.5 text-xs text-slate-400 mb-1">
+                              <Database className="w-3.5 h-3.5 text-amber-400" />
+                              <span>DB Backups</span>
+                            </div>
+                            <div className="text-sm font-bold font-mono text-white">
+                              {((s3Config.storage_usage.categories['backups']?.bytes || 0) / (1024 * 1024)).toFixed(2)} MB
+                            </div>
+                            <div className="text-[10px] text-slate-500">
+                              {s3Config.storage_usage.categories['backups']?.count || 0} snapshots
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Retention Policy Configuration Card */}
+                  <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-4">
+                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <Sliders className="w-5 h-5 text-sky-400" />
+                          <h3 className="text-lg font-bold text-white">Backup Retention & Auto-Pruning Policy</h3>
+                        </div>
+                        <p className="text-xs text-slate-400 mt-1">
+                          Protect against quota exhaustion by automatically retaining only the newest N database snapshots. Documents and invoices are permanent.
+                        </p>
+                      </div>
+
+                      <div className="flex items-center gap-3">
                         <button
-                          onClick={() => {
-                            setTargetSnapshot(snap);
-                            setRestoreModalOpen(true);
-                            setRestoreResult(null);
-                          }}
-                          className="px-3 py-1 bg-rose-950/60 hover:bg-rose-900/60 text-rose-300 border border-rose-800/60 rounded text-[11px] font-semibold transition"
+                          onClick={handlePruneBackups}
+                          disabled={pruningBackups || !s3Config?.configured}
+                          className="px-3.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-300 font-medium text-xs flex items-center gap-2 transition-colors border border-slate-700"
                         >
-                          Restore Snapshot
+                          <Archive className={`w-3.5 h-3.5 ${pruningBackups ? 'animate-spin' : ''}`} />
+                          {pruningBackups ? 'Pruning...' : 'Prune Older Backups Now'}
                         </button>
-                      </td>
-                    </tr>
-                  ))
-                ) : (
-                  <tr>
-                    <td colSpan={5} className="py-6 text-center text-slate-500 text-xs">
-                      No MinIO checkpoints found. Click &quot;Create MinIO S3 Checkpoint&quot; above to take an instant snapshot.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
 
-      {/* Backup Audit Table */}
-      <div className="p-6 rounded-2xl bg-slate-900/60 border border-slate-800 space-y-4">
-        <div className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-white">Database Backup Audit Ledger</h3>
-          <button onClick={fetchLogs} className="text-xs text-slate-400 hover:text-white flex items-center gap-1">
-            <RefreshCw className="w-3 h-3" /> Refresh
-          </button>
-        </div>
+                        <button
+                          onClick={handleSaveRetention}
+                          disabled={savingRetention}
+                          className="px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white font-medium text-xs flex items-center gap-2 transition-colors shadow-sm"
+                        >
+                          {savingRetention ? 'Saving...' : 'Save Retention Policy'}
+                        </button>
+                      </div>
+                    </div>
 
-        <div className="overflow-x-auto">
-          <table id="backup-logs-table" className="w-full text-left text-xs text-slate-300">
-            <thead className="bg-slate-950 text-slate-400 font-mono uppercase text-[11px] border-b border-slate-800">
-              <tr>
-                <th className="py-3 px-3">Backup Filename</th>
-                <th className="py-3 px-3">Size (KB)</th>
-                <th className="py-3 px-3">SHA-256 Checksum</th>
-                <th className="py-3 px-3">Google Drive File ID</th>
-                <th className="py-3 px-3">Status</th>
-                <th className="py-3 px-3 text-right">Timestamp</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800/60 font-mono">
-              {logs.length > 0 ? (
-                logs.map((log) => (
-                  <tr key={log.id} className="hover:bg-slate-800/30">
-                    <td className="py-3 px-3 font-medium text-white max-w-[200px] truncate" title={log.filename}>
-                      {log.filename}
-                    </td>
-                    <td className="py-3 px-3 text-slate-300">
-                      {(log.file_size_bytes / 1024).toFixed(1)} KB
-                    </td>
-                    <td className="py-3 px-3 text-slate-400 max-w-[150px] truncate" title={log.sha256_checksum}>
-                      {log.sha256_checksum}
-                    </td>
-                    <td className="py-3 px-3 text-sky-400 font-bold max-w-[150px] truncate" title={log.gdrive_file_id}>
-                      {log.gdrive_file_id || 'Virtual Sync'}
-                    </td>
-                    <td className="py-3 px-3">
-                      <span className="px-2 py-0.5 rounded text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                        {log.status}
-                      </span>
-                    </td>
-                    <td className="py-3 px-3 text-right text-slate-400">
-                      {new Date(log.created_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                    </td>
-                  </tr>
-                ))
-              ) : (
-                <tr>
-                  <td colSpan={6} className="py-8 text-center text-slate-500">
-                    No backup records found. Click above to execute full backup.
-                  </td>
-                </tr>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
+                      <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
+                        <label className="text-xs font-medium text-slate-300 flex items-center justify-between">
+                          <span>Keep Most Recent Database Snapshots:</span>
+                          <span className="font-mono text-sky-400 font-bold">{retentionKeepCount} backups</span>
+                        </label>
+                        <input
+                          type="range"
+                          min="3"
+                          max="30"
+                          value={retentionKeepCount}
+                          onChange={(e) => setRetentionKeepCount(parseInt(e.target.value))}
+                          className="w-full accent-sky-500 cursor-pointer"
+                        />
+                        <p className="text-[11px] text-slate-500">
+                          Recommended: 7 snapshots (keeps 1 week of daily backups under 50 MB total).
+                        </p>
+                      </div>
+
+                      <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between">
+                        <div>
+                          <div className="text-sm font-medium text-white">Auto-Prune on Every Sync</div>
+                          <div className="text-xs text-slate-500 mt-0.5">
+                            Automatically removes snapshots beyond the retention threshold during scheduled backups.
+                          </div>
+                        </div>
+                        <label className="relative inline-flex items-center cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={retentionAutoPrune}
+                            onChange={(e) => setRetentionAutoPrune(e.target.checked)}
+                            className="sr-only peer"
+                          />
+                          <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-sky-600"></div>
+                        </label>
+                      </div>
+                    </div>
+
+                    {pruneResult && (
+                      <div className="p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs flex items-center gap-2">
+                        <Check className="w-4 h-4 shrink-0" />
+                        <span>Pruned {pruneResult.pruned_count} old backups, reclaimed {pruneResult.reclaimed_mb.toFixed(2)} MB on Cloudflare R2.</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Remote S3 Configuration Form */}
+                  <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-6">
+                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-800 pb-4">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <Server className="w-5 h-5 text-sky-400" />
+                          <h3 className="text-lg font-bold text-white">Cloudflare R2 / S3 Remote Configuration</h3>
+                          {s3Config?.configured ? (
+                            <span className="px-2 py-0.5 text-xs font-mono font-medium rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                              Active & Connected
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 text-xs font-mono font-medium rounded bg-slate-800 text-slate-400 border border-slate-700">
+                              Not Configured
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs text-slate-400 mt-1">
+                          Configure S3-compatible credentials to mirror documents, bills, invoices, and database snapshots offsite.
+                        </p>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={handleSyncS3}
+                          disabled={syncingS3 || !s3Config?.configured}
+                          className="px-3.5 py-2 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 disabled:opacity-50 text-xs font-medium flex items-center gap-2 transition-colors"
+                        >
+                          <RefreshCw className={`w-3.5 h-3.5 ${syncingS3 ? 'animate-spin' : ''}`} />
+                          {syncingS3 ? 'Syncing...' : 'Sync All Files Now'}
+                        </button>
+                      </div>
+                    </div>
+
+                    {s3TestStatus && (
+                      <div className={`p-4 rounded-xl border text-sm flex items-center justify-between gap-3 ${
+                        s3TestStatus.success
+                          ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
+                          : 'bg-rose-500/10 border-rose-500/20 text-rose-400'
+                      }`}>
+                        <div className="flex items-center gap-2">
+                          {s3TestStatus.success ? <CheckCircle2 className="w-4 h-4 shrink-0" /> : <AlertCircle className="w-4 h-4 shrink-0" />}
+                          <span>{s3TestStatus.message}</span>
+                        </div>
+                        {s3TestStatus.latency_ms && (
+                          <span className="text-xs font-mono opacity-80">
+                            Latency: {s3TestStatus.latency_ms} ms
+                          </span>
+                        )}
+                      </div>
+                    )}
+
+                    {s3SyncStatus && (
+                      <div className={`p-4 rounded-xl border text-sm flex items-center gap-3 ${
+                        s3SyncStatus.success
+                          ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
+                          : 'bg-rose-500/10 border-rose-500/20 text-rose-400'
+                      }`}>
+                        {s3SyncStatus.success ? <CheckCircle2 className="w-4 h-4 shrink-0" /> : <AlertCircle className="w-4 h-4 shrink-0" />}
+                        <span>{s3SyncStatus.message}</span>
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      <div className="space-y-2">
+                        <label className="text-xs font-medium text-slate-300">Provider Service</label>
+                        <select
+                          value={s3Provider}
+                          onChange={(e) => setS3Provider(e.target.value as any)}
+                          className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-sm text-white focus:outline-none focus:border-sky-500"
+                        >
+                          <option value="cloudflare_r2">Cloudflare R2 (10 GB Free Tier, Zero Egress)</option>
+                          <option value="aws_s3">Amazon Web Services (AWS S3)</option>
+                          <option value="custom_s3">Custom S3 / Wasabi / Backblaze B2</option>
+                        </select>
+                      </div>
+
+                      <div className="space-y-2">
+                        <label className="text-xs font-medium text-slate-300">
+                          S3 Endpoint URL
+                          {s3Provider === 'cloudflare_r2' && (
+                            <span className="text-[10px] text-slate-500 ml-2 font-mono">
+                              (e.g. https://&lt;account_id&gt;.r2.cloudflarestorage.com)
+                            </span>
+                          )}
+                        </label>
+                        <input
+                          type="text"
+                          value={s3Endpoint}
+                          onChange={(e) => setS3Endpoint(e.target.value)}
+                          placeholder="https://<account_id>.r2.cloudflarestorage.com"
+                          className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-sm text-white font-mono placeholder:text-slate-600 focus:outline-none focus:border-sky-500"
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <label className="text-xs font-medium text-slate-300">Bucket Name</label>
+                        <input
+                          type="text"
+                          value={s3Bucket}
+                          onChange={(e) => setS3Bucket(e.target.value)}
+                          placeholder="b00k5-offsite-vault"
+                          className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-sm text-white font-mono placeholder:text-slate-600 focus:outline-none focus:border-sky-500"
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <label className="text-xs font-medium text-slate-300">Region</label>
+                        <input
+                          type="text"
+                          value={s3Region}
+                          onChange={(e) => setS3Region(e.target.value)}
+                          placeholder="auto (for Cloudflare R2) or us-east-1"
+                          className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-sm text-white font-mono placeholder:text-slate-600 focus:outline-none focus:border-sky-500"
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <label className="text-xs font-medium text-slate-300">Access Key ID</label>
+                        <input
+                          type="text"
+                          value={s3AccessKey}
+                          onChange={(e) => setS3AccessKey(e.target.value)}
+                          placeholder="R2 API Token Access Key"
+                          className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-sm text-white font-mono placeholder:text-slate-600 focus:outline-none focus:border-sky-500"
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <label className="text-xs font-medium text-slate-300">Secret Access Key</label>
+                          {s3Config?.has_secret && (
+                            <span className="text-[10px] text-emerald-400 font-mono">
+                              Secret stored securely ({s3Config.secret_access_key_masked})
+                            </span>
+                          )}
+                        </div>
+                        <div className="relative">
+                          <input
+                            type={showSecret ? 'text' : 'password'}
+                            value={s3SecretKey}
+                            onChange={(e) => setS3SecretKey(e.target.value)}
+                            placeholder={s3Config?.has_secret ? 'Leave blank to preserve existing secret' : 'Paste Secret Access Key'}
+                            className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-sm text-white font-mono placeholder:text-slate-600 focus:outline-none focus:border-sky-500 pr-10"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowSecret(!showSecret)}
+                            className="absolute right-3 top-3 text-slate-500 hover:text-slate-300"
+                          >
+                            {showSecret ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col sm:flex-row items-center justify-end gap-3 pt-4 border-t border-slate-800">
+                      <button
+                        type="button"
+                        onClick={handleTestS3}
+                        disabled={testingS3 || !s3Endpoint || !s3Bucket || !s3AccessKey}
+                        className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 font-medium text-sm flex items-center justify-center gap-2 transition-colors border border-slate-700"
+                      >
+                        <Check className={`w-4 h-4 ${testingS3 ? 'animate-spin' : ''}`} />
+                        {testingS3 ? 'Testing Connection...' : 'Test S3 Connection'}
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={handleSaveS3}
+                        disabled={savingS3 || !s3Endpoint || !s3Bucket || !s3AccessKey}
+                        className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white font-medium text-sm flex items-center justify-center gap-2 transition-colors shadow-sm"
+                      >
+                        {savingS3 ? 'Saving...' : 'Save & Verify S3 Mirror'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
               )}
-            </tbody>
-          </table>
-        </div>
-      </div>
+            </div>
+          )}
 
-      {/* 7-Point Staging Gate Restore Confirmation Modal */}
-      {restoreModalOpen && targetSnapshot && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="bg-slate-900 border border-rose-500/40 w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden p-6 space-y-4">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-              <div className="flex items-center gap-2 text-rose-400 font-bold text-sm">
-                <ShieldAlert className="w-5 h-5" />
-                <span>Disaster Recovery: 7-Point Staging Gate Restore</span>
+          {/* TAB 2: DATABASE BACKUPS & SNAPSHOTS */}
+          {activeTab === 'backups' && (
+            <div className="space-y-6">
+              {/* Backups Summary Bar */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800">
+                  <div className="text-xs text-slate-400 font-medium">Total Backups Recorded</div>
+                  <div className="text-2xl font-bold font-mono text-white mt-1">{logs.length}</div>
+                  <div className="text-[11px] text-slate-500 mt-1">Logged across all operations</div>
+                </div>
+
+                <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800">
+                  <div className="text-xs text-slate-400 font-medium">Offsite Mirrors Active</div>
+                  <div className="text-lg font-bold text-white mt-1 flex items-center gap-2">
+                    {gdriveConfigured ? (
+                      <span className="text-xs px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                        Google Drive
+                      </span>
+                    ) : null}
+                    {s3Config?.configured ? (
+                      <span className="text-xs px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                        Cloudflare R2
+                      </span>
+                    ) : null}
+                    {!gdriveConfigured && !s3Config?.configured ? (
+                      <span className="text-xs text-slate-500">Local Only (MinIO)</span>
+                    ) : null}
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-1">Automated mirror on backup</div>
+                </div>
+
+                <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800">
+                  <div className="text-xs text-slate-400 font-medium">Latest Checkpoint</div>
+                  <div className="text-sm font-mono text-sky-400 font-semibold truncate mt-1">
+                    {logs[0]?.filename || 'No recent backup'}
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-1">
+                    {logs[0]?.created_at ? new Date(logs[0].created_at).toLocaleString() : 'N/A'}
+                  </div>
+                </div>
               </div>
-              <button
-                onClick={() => {
-                  setRestoreModalOpen(false);
-                  setTargetSnapshot(null);
-                }}
-                className="text-slate-400 hover:text-white"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
 
-            <p className="text-xs text-slate-300">
-              You are about to restore database snapshot: <strong className="text-white font-mono">{targetSnapshot.filename}</strong>
-            </p>
+              {/* Backup Audit Log Table */}
+              <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Database className="w-5 h-5 text-sky-400" />
+                    <h3 className="text-lg font-bold text-white">Database Backup & Sync History</h3>
+                  </div>
+                  <button
+                    onClick={fetchLogs}
+                    className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition-colors"
+                    title="Refresh logs"
+                  >
+                    <RefreshCw className="w-4 h-4" />
+                  </button>
+                </div>
 
-            <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 text-[11px] space-y-1.5 text-slate-300 font-sans">
-              <div className="font-semibold text-amber-300">Automated 7-Point Staging Verification:</div>
-              <ul className="list-disc list-inside space-y-1 text-slate-400">
-                <li>Gate 1: SHA-256 binary checksum validation</li>
-                <li>Gate 2: Authenticated AES-256-GCM decryption &amp; gzip integrity</li>
-                <li>Gate 3: RPO stale-snapshot protection (overwrites checked)</li>
-                <li>Gate 4: Document Vault archive completeness</li>
-                <li>Gate 5: Staged multi-point accounting check (zero-sum debits/credits)</li>
-                <li>Gate 6: Cross-tenant foreign key isolation</li>
-                <li>Gate 7: Atomic cutover with automated rollback on failure</li>
-              </ul>
-            </div>
-
-            <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">
-                Decryption Master Secret (Optional, defaults to system SECRET_KEY)
-              </label>
-              <input
-                type="password"
-                value={restoreSecret}
-                onChange={(e) => setRestoreSecret(e.target.value)}
-                placeholder="Leave blank to use system vault key"
-                className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white font-mono text-xs focus:outline-none focus:border-rose-500"
-              />
-            </div>
-
-            {restoreResult && (
-              <div className={`p-3 rounded-xl border text-xs ${
-                restoreResult.restore_approved ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300' : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
-              }`}>
-                <div className="font-semibold">{restoreResult.restore_approved ? 'Verification Passed!' : 'Restore Verification Failed'}</div>
-                <div className="text-[11px] text-slate-300 mt-0.5">{restoreResult.reason || restoreResult.stage_status}</div>
+                {logs.length === 0 ? (
+                  <div className="text-center py-12 text-slate-500 text-sm">
+                    No backup logs recorded yet. Click "Run Instant DB Backup" to create your first snapshot.
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm text-slate-300">
+                      <thead className="text-xs uppercase bg-slate-950/60 text-slate-500 border-b border-slate-800 font-mono">
+                        <tr>
+                          <th className="px-4 py-3">Snapshot Name</th>
+                          <th className="px-4 py-3">Size</th>
+                          <th className="px-4 py-3">SHA-256 Checksum</th>
+                          <th className="px-4 py-3">GDrive ID</th>
+                          <th className="px-4 py-3">Duration</th>
+                          <th className="px-4 py-3">Status</th>
+                          <th className="px-4 py-3 text-right">Created At</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800 font-mono text-xs">
+                        {logs.map((log) => (
+                          <tr key={log.id} className="hover:bg-slate-800/40 transition-colors">
+                            <td className="px-4 py-3 font-semibold text-white">
+                              {log.filename}
+                            </td>
+                            <td className="px-4 py-3 text-slate-300">
+                              {(log.file_size_bytes / 1024).toFixed(1)} KB
+                            </td>
+                            <td className="px-4 py-3 text-slate-400 truncate max-w-[120px]" title={log.sha256_checksum}>
+                              {log.sha256_checksum ? log.sha256_checksum.substring(0, 12) + '...' : 'N/A'}
+                            </td>
+                            <td className="px-4 py-3 text-slate-400 truncate max-w-[120px]">
+                              {log.gdrive_file_id || 'Local/S3'}
+                            </td>
+                            <td className="px-4 py-3 text-slate-400">
+                              {log.duration_seconds ? `${log.duration_seconds.toFixed(2)}s` : 'N/A'}
+                            </td>
+                            <td className="px-4 py-3">
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${
+                                log.status === 'success' || log.status === 'completed'
+                                  ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                                  : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                              }`}>
+                                {log.status}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3 text-right text-slate-400">
+                              {new Date(log.created_at).toLocaleString()}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
-            )}
-
-            <div className="flex justify-end gap-3 pt-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setRestoreModalOpen(false);
-                  setTargetSnapshot(null);
-                }}
-                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handleRestoreCheckpoint}
-                disabled={Boolean(restoringKey)}
-                className="px-5 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-semibold shadow-lg shadow-rose-600/30 transition disabled:opacity-50 flex items-center gap-2"
-              >
-                {restoringKey ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <RotateCcw className="w-3.5 h-3.5" />}
-                {restoringKey ? 'Executing 7-Point Staging Gate...' : 'Confirm Restore & Overwrite'}
-              </button>
             </div>
-          </div>
-        </div>
-      )}
+          )}
+
+          {/* TAB 3: RESTORE & CHECKPOINTS */}
+          {activeTab === 'restore' && (
+            <div className="space-y-6">
+              {/* Critical Safety Warning */}
+              <div className="p-5 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-200 space-y-2">
+                <div className="flex items-center gap-2 font-bold text-amber-400">
+                  <ShieldAlert className="w-5 h-5 shrink-0" />
+                  <span>Point-in-Time Database Restoration Protocol</span>
+                </div>
+                <p className="text-xs leading-relaxed text-amber-300/90">
+                  Restoring a snapshot replaces the current transactional PostgreSQL database with the exact state from the selected checkpoint.
+                  As a zero-risk safeguard, the system automatically creates an immediate safety snapshot before executing any restore operation.
+                </p>
+              </div>
+
+              {/* Checkpoints Actions */}
+              <div className="flex items-center justify-between p-4 rounded-xl bg-slate-900 border border-slate-800">
+                <div>
+                  <h4 className="text-sm font-semibold text-white">Local MinIO S3 Checkpoints</h4>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Immutable snapshots stored in the isolated <span className="font-mono text-sky-400">b00k5-backups</span> bucket.
+                  </p>
+                </div>
+
+                <button
+                  onClick={handleCreateCheckpoint}
+                  disabled={creatingCheckpoint}
+                  className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 font-medium text-xs flex items-center gap-2 transition-colors border border-slate-700"
+                >
+                  <Archive className={`w-3.5 h-3.5 ${creatingCheckpoint ? 'animate-spin' : ''}`} />
+                  {creatingCheckpoint ? 'Creating Checkpoint...' : 'Create Instant Safety Checkpoint'}
+                </button>
+              </div>
+
+              {checkpointStatus && (
+                <div className="p-3 rounded-xl bg-sky-500/10 border border-sky-500/20 text-sky-400 text-xs flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 shrink-0" />
+                  <span>{checkpointStatus}</span>
+                </div>
+              )}
+
+              {/* Snapshots Table */}
+              <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <RotateCcw className="w-5 h-5 text-amber-400" />
+                    <h3 className="text-lg font-bold text-white">Available Recovery Checkpoints</h3>
+                  </div>
+                  <button
+                    onClick={fetchMinioSnapshots}
+                    className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition-colors"
+                    title="Refresh snapshots"
+                  >
+                    <RefreshCw className="w-4 h-4" />
+                  </button>
+                </div>
+
+                {minioSnapshots.length === 0 ? (
+                  <div className="text-center py-12 text-slate-500 text-sm">
+                    No local MinIO checkpoints found. Click "Create Instant Safety Checkpoint" above.
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm text-slate-300">
+                      <thead className="text-xs uppercase bg-slate-950/60 text-slate-500 border-b border-slate-800 font-mono">
+                        <tr>
+                          <th className="px-4 py-3">Snapshot File</th>
+                          <th className="px-4 py-3">Size</th>
+                          <th className="px-4 py-3">Object Key</th>
+                          <th className="px-4 py-3">Modified</th>
+                          <th className="px-4 py-3 text-right">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800 font-mono text-xs">
+                        {minioSnapshots.map((snap) => (
+                          <tr key={snap.object_key} className="hover:bg-slate-800/40 transition-colors">
+                            <td className="px-4 py-3 font-semibold text-white">
+                              {snap.filename}
+                            </td>
+                            <td className="px-4 py-3 text-slate-300">
+                              {(snap.size_bytes / 1024).toFixed(1)} KB
+                            </td>
+                            <td className="px-4 py-3 text-slate-400 truncate max-w-[200px]" title={snap.object_key}>
+                              {snap.object_key}
+                            </td>
+                            <td className="px-4 py-3 text-slate-400">
+                              {snap.last_modified ? new Date(snap.last_modified).toLocaleString() : 'N/A'}
+                            </td>
+                            <td className="px-4 py-3 text-right">
+                              <button
+                                onClick={() => openRestoreModal(snap)}
+                                className="px-3 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 text-xs font-semibold transition-colors flex items-center gap-1.5 ml-auto"
+                              >
+                                <RotateCcw className="w-3.5 h-3.5" />
+                                Restore
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Restore Confirmation Modal */}
+          {restoreModalOpen && targetSnapshot && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in duration-150">
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-lg w-full p-6 space-y-6 shadow-2xl relative">
+                <button
+                  onClick={() => setRestoreModalOpen(false)}
+                  className="absolute right-4 top-4 text-slate-400 hover:text-slate-200"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+
+                <div className="flex items-center gap-3">
+                  <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400">
+                    <RotateCcw className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-bold text-white">Authorize Database Restore</h3>
+                    <p className="text-xs text-slate-400">Point-in-time state recovery authorization</p>
+                  </div>
+                </div>
+
+                <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-2 text-xs">
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Target Snapshot:</span>
+                    <span className="font-mono text-white font-semibold">{targetSnapshot.filename}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Snapshot Size:</span>
+                    <span className="font-mono text-slate-300">{(targetSnapshot.size_bytes / 1024).toFixed(1)} KB</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Timestamp:</span>
+                    <span className="font-mono text-slate-400">
+                      {targetSnapshot.last_modified ? new Date(targetSnapshot.last_modified).toLocaleString() : 'N/A'}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-300 text-xs space-y-1">
+                  <div className="font-bold flex items-center gap-1.5 text-rose-400">
+                    <AlertTriangle className="w-4 h-4" />
+                    <span>Irreversible State Mutation Warning</span>
+                  </div>
+                  <p>
+                    All database rows updated after this snapshot was created will be reverted to this point in time. An automated pre-restore safety checkpoint will be preserved.
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-xs font-medium text-slate-300">Administrator Password</label>
+                  <input
+                    type="password"
+                    value={restoreSecret}
+                    onChange={(e) => setRestoreSecret(e.target.value)}
+                    placeholder="Enter AdminPass2026! to authorize"
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-sm text-white font-mono placeholder:text-slate-600 focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+
+                {restoreResult && (
+                  <div className={`p-3.5 rounded-xl border text-xs ${
+                    restoreResult.success
+                      ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
+                      : 'bg-rose-500/10 border-rose-500/20 text-rose-400'
+                  }`}>
+                    {restoreResult.message}
+                  </div>
+                )}
+
+                <div className="flex items-center justify-end gap-3 pt-2">
+                  <button
+                    onClick={() => setRestoreModalOpen(false)}
+                    className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium text-xs transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleExecuteRestore}
+                    disabled={restoringKey !== null || !restoreSecret.trim()}
+                    className="px-5 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white font-semibold text-xs flex items-center gap-2 transition-colors shadow-sm"
+                  >
+                    <RotateCcw className={`w-3.5 h-3.5 ${restoringKey !== null ? 'animate-spin' : ''}`} />
+                    {restoringKey !== null ? 'Restoring Database...' : 'Confirm & Restore'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </main>
       </div>
     </div>
+  );
+}
+
+export default function IntegrationsSettingsPage() {
+  return (
+    <Suspense fallback={
+      <div className="flex h-screen bg-slate-950 items-center justify-center text-slate-400 text-sm">
+        Loading Cloud & Backup Settings...
+      </div>
+    }>
+      <IntegrationsContent />
+    </Suspense>
   );
 }

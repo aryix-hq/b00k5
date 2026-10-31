@@ -48,9 +48,10 @@ tests/e2e/screenshots/
 Thumbs.db
 
 # Storage, Dumps & Backups
-storage/
-dumps/
-backups/
+/storage/
+/dumps/
+/backups/
+!apps/web/src/components/storage/
 *.tar.gz
 *.sql.gz
 *.dump

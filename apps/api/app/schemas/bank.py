@@ -52,6 +52,10 @@ class ConfirmMatchRequest(BaseModel):
     matched_invoice_id: Optional[uuid.UUID] = None
     expense_id: Optional[uuid.UUID] = None
     matched_expense_id: Optional[uuid.UUID] = None
+    contractor_payment_id: Optional[uuid.UUID] = None
+    matched_contractor_payment_id: Optional[uuid.UUID] = None
+    payroll_run_id: Optional[uuid.UUID] = None
+    matched_payroll_run_id: Optional[uuid.UUID] = None
     notes: Optional[str] = None
 
 class AllocateSuspenseRequest(BaseModel):

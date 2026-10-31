@@ -26,12 +26,16 @@ import {
   FileCheck,
   RefreshCw,
   Ban,
-  Loader2
+  Loader2,
+  Users,
+  Zap,
+  CreditCard
 } from 'lucide-react';
 import { fetchApi } from '@/lib/api';
 import Link from 'next/link';
 import { ScheduleIIIViewer } from '@/components/yearbook/ScheduleIIIViewer';
 import { AdvanceTaxGauges } from '@/components/yearbook/AdvanceTaxGauges';
+import { QuickPayFreelancerModal } from '@/components/payroll/QuickPayFreelancerModal';
 
 interface ExpenseItem {
   id: string;
@@ -61,7 +65,9 @@ export default function YearBookPage() {
   };
 
   const [selectedFY, setSelectedFY] = useState(currentDefaultFY);
-  const [activeTab, setActiveTab] = useState<'statements' | 'bills' | 'invoices' | 'schedule_iii' | 'close'>('statements');
+  const [activeTab, setActiveTab] = useState<'statements' | 'bills' | 'invoices' | 'payroll_contractors' | 'schedule_iii' | 'close'>('statements');
+  const [compensationSummary, setCompensationSummary] = useState<any | null>(null);
+  const [showQuickPayModal, setShowQuickPayModal] = useState<boolean>(false);
 
   // Dynamic available periods (e.g. Current FY, past 5 years)
   const availableFYs: string[] = [];
@@ -169,15 +175,18 @@ export default function YearBookPage() {
       const stmtUrl = fyParam ? `/api/v1/reconciliation/statements?fy=${encodeURIComponent(fyParam)}` : '/api/v1/reconciliation/statements';
       const invUrl = fyParam ? `/api/v1/invoices/?fy=${encodeURIComponent(fyParam)}` : '/api/v1/invoices/';
       const expUrl = fyParam ? `/api/v1/expenses/?fy=${encodeURIComponent(fyParam)}` : '/api/v1/expenses/';
+      const compUrl = fyParam ? `/api/v1/payroll/yearbook-summary?fiscal_year=${encodeURIComponent(fyParam)}` : '/api/v1/payroll/yearbook-summary';
 
-      const [stmtRes, invRes, expRes] = await Promise.all([
+      const [stmtRes, invRes, expRes, compRes] = await Promise.all([
         fetchApi(stmtUrl).catch(() => []),
         fetchApi(invUrl).catch(() => []),
-        fetchApi(expUrl).catch(() => [])
+        fetchApi(expUrl).catch(() => []),
+        fetchApi(compUrl).catch(() => null)
       ]);
 
       if (Array.isArray(stmtRes)) setStatements(stmtRes);
       if (Array.isArray(invRes)) setInvoices(invRes);
+      if (compRes) setCompensationSummary(compRes);
 
       if (Array.isArray(expRes)) {
         const mapped: ExpenseItem[] = expRes
@@ -281,7 +290,7 @@ export default function YearBookPage() {
           loadAnnualStatutoryFilings(currentDefaultFY);
         }
       }
-      if (tab && ['statements', 'bills', 'invoices', 'schedule_iii', 'close'].includes(tab)) {
+      if (tab && ['statements', 'bills', 'invoices', 'payroll_contractors', 'schedule_iii', 'close'].includes(tab)) {
         setActiveTab(tab as any);
       }
 
@@ -644,9 +653,11 @@ export default function YearBookPage() {
             <div className="p-5 bg-slate-900 border border-slate-800 rounded-xl space-y-1">
               <span className="text-xs text-slate-400 font-medium">Bills & Operating Expenses</span>
               <div className="text-2xl font-bold text-rose-400 font-mono">
-                ₹{totalBillsAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                ₹{(totalBillsAmount + (compensationSummary?.summary?.grand_total_compensation_gross || 0)).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
               </div>
-              <p className="text-[11px] text-slate-500">{displayedExpenses.length} Schedule III Vouchers Posted</p>
+              <p className="text-[11px] text-slate-500">
+                Bills: ₹{totalBillsAmount.toLocaleString('en-IN', { maximumFractionDigits: 0 })} • Comp: ₹{(compensationSummary?.summary?.grand_total_compensation_gross || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+              </p>
             </div>
 
             <div className="p-5 bg-slate-900 border border-slate-800 rounded-xl space-y-1">
@@ -824,6 +835,21 @@ export default function YearBookPage() {
               }`}
             >
               <ArrowUpRight className="w-4 h-4 text-emerald-400" /> Income & Outward Invoices
+            </button>
+            <button
+              onClick={() => setActiveTab('payroll_contractors')}
+              className={`pb-3 px-3 font-semibold border-b-2 flex items-center gap-2 transition-all ${
+                activeTab === 'payroll_contractors'
+                  ? 'border-amber-400 text-amber-400'
+                  : 'border-transparent text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Users className="w-4 h-4 text-indigo-400" /> Salaries & Freelancers
+              {compensationSummary?.summary && (
+                <span className="px-1.5 py-0.5 text-[10px] rounded-full bg-slate-800 text-slate-300 border border-slate-700">
+                  {compensationSummary.summary.contractor_payments_count + compensationSummary.summary.payroll_runs_count}
+                </span>
+              )}
             </button>
             <button
               onClick={() => setActiveTab('schedule_iii')}
@@ -1195,6 +1221,272 @@ export default function YearBookPage() {
                   </table>
                 </div>
               )}
+            </div>
+          )}
+
+          {/* TAB: SALARIES & FREELANCERS (COMPENSATION) */}
+          {activeTab === 'payroll_contractors' && (
+            <div className="space-y-6">
+              {/* Header & Quick Action */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-5 rounded-2xl bg-slate-900 border border-slate-800">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <Users className="w-5 h-5 text-indigo-400" />
+                    <h3 className="text-base font-bold text-white">Salaries & Freelancer Payments (FY {selectedFY})</h3>
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+                      Schedule III Note 17 & Note 19
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Audited personnel compensation vouchers, statutory TDS deductions (Sec 192, 194J, 194C), and bank remittances.
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => setShowQuickPayModal(true)}
+                    className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-xl text-xs transition shadow-md shadow-amber-950/30 flex items-center gap-1.5"
+                  >
+                    <Zap className="w-3.5 h-3.5" />
+                    ⚡ Quick Pay Freelancer
+                  </button>
+                  <Link
+                    href="/payroll"
+                    className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-xl text-xs font-medium transition flex items-center gap-1"
+                  >
+                    <span>Full Payroll Roster</span>
+                    <ChevronRight className="w-3.5 h-3.5" />
+                  </Link>
+                </div>
+              </div>
+
+              {/* Compensation Summary KPI Cards */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
+                  <div className="text-xs text-slate-400 flex items-center justify-between">
+                    <span>Employee Benefits (Note 17)</span>
+                    <span className="text-[10px] font-mono text-emerald-400">Ind AS 19</span>
+                  </div>
+                  <div className="text-xl font-bold font-mono text-white">
+                    ₹{(compensationSummary?.summary?.total_employee_benefits_note17 || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                  </div>
+                  <div className="text-[11px] text-slate-500">
+                    Gross: ₹{(compensationSummary?.summary?.total_salaries_gross || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })} • {compensationSummary?.summary?.payroll_runs_count || 0} Runs
+                  </div>
+                </div>
+
+                <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
+                  <div className="text-xs text-slate-400 flex items-center justify-between">
+                    <span>Freelancers & Legal (Note 19)</span>
+                    <span className="text-[10px] font-mono text-indigo-400">Sec 194J / 194C</span>
+                  </div>
+                  <div className="text-xl font-bold font-mono text-white">
+                    ₹{(compensationSummary?.summary?.total_freelancer_gross_note19 || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                  </div>
+                  <div className="text-[11px] text-slate-500">
+                    {compensationSummary?.summary?.contractor_payments_count || 0} Contractor Vouchers Posted
+                  </div>
+                </div>
+
+                <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
+                  <div className="text-xs text-slate-400 flex items-center justify-between">
+                    <span>Total Net Cash Outflow</span>
+                    <span className="text-[10px] font-mono text-amber-400">Bank 1010</span>
+                  </div>
+                  <div className="text-xl font-bold font-mono text-amber-400">
+                    ₹{(compensationSummary?.summary?.grand_total_net_outflow || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                  </div>
+                  <div className="text-[11px] text-slate-500">
+                    Net cash disbursed via bank / IMPS
+                  </div>
+                </div>
+
+                <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
+                  <div className="text-xs text-slate-400 flex items-center justify-between">
+                    <span>Total TDS Withholding</span>
+                    <span className="text-[10px] font-mono text-rose-400">TDS 2060</span>
+                  </div>
+                  <div className="text-xl font-bold font-mono text-rose-400">
+                    ₹{(compensationSummary?.summary?.grand_total_tds || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                  </div>
+                  <div className="text-[11px] text-slate-500">
+                    Salaries: ₹{(compensationSummary?.summary?.total_salaries_tds || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })} • Freelancers: ₹{(compensationSummary?.summary?.total_freelancer_tds || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                  </div>
+                </div>
+              </div>
+
+              {/* Sub-section 1: Freelancer & Contractor Payments Register */}
+              <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h4 className="text-sm font-semibold text-white flex items-center gap-2">
+                      <CreditCard className="w-4 h-4 text-amber-400" />
+                      Freelancer & Contractor Payments Register
+                    </h4>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      Statutory TDS calculated, accrued to Account 4040 (Note 19), and disbursed via Bank 1010.
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setShowQuickPayModal(true)}
+                    className="px-3 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 text-xs font-semibold flex items-center gap-1.5 transition-colors"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    New Payout
+                  </button>
+                </div>
+
+                {(!compensationSummary?.contractor_payments || compensationSummary.contractor_payments.length === 0) ? (
+                  <div className="text-center py-10 text-slate-500 text-xs">
+                    No freelancer or contractor payments recorded for FY {selectedFY}. Use "⚡ Quick Pay Freelancer" to make your first payment.
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs text-slate-300">
+                      <thead className="uppercase bg-slate-950/60 text-slate-500 border-b border-slate-800 font-mono text-[10px]">
+                        <tr>
+                          <th className="px-3 py-2.5">Date</th>
+                          <th className="px-3 py-2.5">Payment #</th>
+                          <th className="px-3 py-2.5">Contractor / Freelancer</th>
+                          <th className="px-3 py-2.5">PAN</th>
+                          <th className="px-3 py-2.5">TDS Section</th>
+                          <th className="px-3 py-2.5 text-right">Gross Fee</th>
+                          <th className="px-3 py-2.5 text-right">TDS Ded.</th>
+                          <th className="px-3 py-2.5 text-right">Net Payout</th>
+                          <th className="px-3 py-2.5">Bank UTR</th>
+                          <th className="px-3 py-2.5 text-center">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800 font-mono text-[11px]">
+                        {compensationSummary.contractor_payments.map((p: any) => (
+                          <tr key={p.id} className="hover:bg-slate-800/40 transition-colors">
+                            <td className="px-3 py-2.5 text-slate-400">{p.payment_date}</td>
+                            <td className="px-3 py-2.5 text-sky-400 font-semibold">{p.payment_number}</td>
+                            <td className="px-3 py-2.5 font-sans font-medium text-white">{p.contractor_name}</td>
+                            <td className="px-3 py-2.5 text-slate-400">{p.contractor_pan}</td>
+                            <td className="px-3 py-2.5">
+                              <span className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700 text-[10px]">
+                                {p.tds_section} ({p.tds_rate}%)
+                              </span>
+                            </td>
+                            <td className="px-3 py-2.5 text-right font-semibold text-white">
+                              ₹{Number(p.gross_amount).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                            </td>
+                            <td className="px-3 py-2.5 text-right text-rose-400">
+                              -₹{Number(p.tds_amount).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                            </td>
+                            <td className="px-3 py-2.5 text-right font-bold text-emerald-400">
+                              ₹{Number(p.net_payable).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                            </td>
+                            <td className="px-3 py-2.5 text-slate-400 truncate max-w-[120px]" title={p.payout_utr}>
+                              {p.payout_utr || '—'}
+                            </td>
+                            <td className="px-3 py-2.5 text-center">
+                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                                p.status === 'disbursed'
+                                  ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                                  : p.status === 'approved'
+                                  ? 'bg-sky-500/10 text-sky-400 border border-sky-500/20'
+                                  : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                              }`}>
+                                {p.status}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              {/* Sub-section 2: Employee Payroll Runs Register */}
+              <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h4 className="text-sm font-semibold text-white flex items-center gap-2">
+                      <Users className="w-4 h-4 text-emerald-400" />
+                      Employee Payroll Runs Register (Ind AS 19 / Note 17)
+                    </h4>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      Monthly salary structures, EPF employer contribution, Professional Tax, and Section 192 TDS.
+                    </p>
+                  </div>
+                  <Link
+                    href="/payroll"
+                    className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-xs font-semibold flex items-center gap-1.5 transition-colors"
+                  >
+                    Manage Runs
+                    <ChevronRight className="w-3.5 h-3.5" />
+                  </Link>
+                </div>
+
+                {(!compensationSummary?.payroll_runs || compensationSummary.payroll_runs.length === 0) ? (
+                  <div className="text-center py-10 text-slate-500 text-xs">
+                    No payroll runs locked or processed for FY {selectedFY}.
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs text-slate-300">
+                      <thead className="uppercase bg-slate-950/60 text-slate-500 border-b border-slate-800 font-mono text-[10px]">
+                        <tr>
+                          <th className="px-3 py-2.5">Period</th>
+                          <th className="px-3 py-2.5">Run Number</th>
+                          <th className="px-3 py-2.5 text-center">Employees</th>
+                          <th className="px-3 py-2.5 text-right">Gross Pay</th>
+                          <th className="px-3 py-2.5 text-right">Employer PF & ESI</th>
+                          <th className="px-3 py-2.5 text-right">Total Benefits</th>
+                          <th className="px-3 py-2.5 text-right">TDS (Sec 192)</th>
+                          <th className="px-3 py-2.5 text-right">Net Salary</th>
+                          <th className="px-3 py-2.5 text-center">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800 font-mono text-[11px]">
+                        {compensationSummary.payroll_runs.map((r: any) => {
+                          const employerContrib = (r.total_employer_pf || 0) + (r.total_employer_esi || 0);
+                          const totalBenefits = (r.total_gross_pay || 0) + employerContrib;
+                          const monthNames = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+                          return (
+                            <tr key={r.id} className="hover:bg-slate-800/40 transition-colors">
+                              <td className="px-3 py-2.5 text-white font-semibold">
+                                {monthNames[r.month]} {r.year}
+                              </td>
+                              <td className="px-3 py-2.5 text-sky-400">{r.run_number}</td>
+                              <td className="px-3 py-2.5 text-center text-slate-300">{r.total_employees}</td>
+                              <td className="px-3 py-2.5 text-right text-slate-200">
+                                ₹{Number(r.total_gross_pay).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                              </td>
+                              <td className="px-3 py-2.5 text-right text-slate-400">
+                                ₹{Number(employerContrib).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                              </td>
+                              <td className="px-3 py-2.5 text-right font-semibold text-white">
+                                ₹{Number(totalBenefits).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                              </td>
+                              <td className="px-3 py-2.5 text-right text-rose-400">
+                                -₹{Number(r.total_tds_192).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                              </td>
+                              <td className="px-3 py-2.5 text-right font-bold text-emerald-400">
+                                ₹{Number(r.total_net_pay).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                              </td>
+                              <td className="px-3 py-2.5 text-center">
+                                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                                  r.status === 'disbursed'
+                                    ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                                    : r.status === 'locked'
+                                    ? 'bg-indigo-500/10 text-indigo-400 border border-indigo-500/20'
+                                    : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                                }`}>
+                                  {r.status}
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
@@ -1697,6 +1989,14 @@ export default function YearBookPage() {
           </form>
         </div>
       )}
+
+      <QuickPayFreelancerModal
+        isOpen={showQuickPayModal}
+        onClose={() => setShowQuickPayModal(false)}
+        onSuccess={() => {
+          loadData(selectedFY);
+        }}
+      />
     </div>
   );
 }

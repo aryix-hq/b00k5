@@ -638,6 +638,38 @@ async def confirm_line_match(
                 matched_exp_obj.settlement_status = "settled"
                 matched_exp_obj.status = "reimbursed"
 
+        # Mark matched contractor payment as disbursed if provided or inferred
+        cp_id = getattr(payload, "matched_contractor_payment_id", None) or getattr(payload, "contractor_payment_id", None)
+        if cp_id:
+            from app.models.payroll import ContractorPayment
+            from app.services.payroll_service import PayrollService
+            cp_obj = await db.get(ContractorPayment, cp_id)
+            if cp_obj and cp_obj.tenant_id == tenant.id:
+                if cp_obj.status != "disbursed":
+                    await PayrollService.disburse_contractor_payment(
+                        session=db,
+                        tenant_id=tenant.id,
+                        payment_id=cp_obj.id,
+                        user_id=current_user.id,
+                        utr=line.reference_number
+                    )
+
+        # Mark matched payroll run as disbursed if provided
+        pr_id = getattr(payload, "matched_payroll_run_id", None) or getattr(payload, "payroll_run_id", None)
+        if pr_id:
+            from app.models.payroll import PayrollRun
+            from app.services.payroll_service import PayrollService
+            pr_obj = await db.get(PayrollRun, pr_id)
+            if pr_obj and pr_obj.tenant_id == tenant.id:
+                if pr_obj.status == "locked":
+                    await PayrollService.post_disbursement_journal(
+                        session=db,
+                        run_id=pr_obj.id,
+                        bank_account_code="1010",
+                        payout_utr=line.reference_number,
+                        created_by_user_id=current_user.id
+                    )
+
     line.reconciliation_status = "reconciled"
     line.matched_journal_entry_id = entry.id
     line.confidence_score = Decimal("100.00")

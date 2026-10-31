@@ -159,9 +159,41 @@ cmd_test() {
     exit 1
   fi
 
-  # 7. Pytest Integration Suite inside staging container
-  log_info "Test 7: Running pytest regression suite in Staging container..."
-  ${COMPOSE_CMD} exec -T b00k5_staging_api pytest tests/test_gstr1_table13_and_uqc.py tests/test_compliance.py tests/test_s3_remote_mirror.py -q
+  # 7. Quick Pay Freelancer Test
+  log_info "Test 7: POST ${API_URL}/api/v1/payroll/contractor-payments/quick-pay"
+  QPAY_RESP=$(curl -s -X POST "${API_URL}/api/v1/payroll/contractor-payments/quick-pay" \
+    -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+    -H "X-Tenant-ID: 11111111-1111-1111-1111-111111111111" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "freelancer_name": "Staging Dev Lead",
+      "amount": 25000,
+      "amount_type": "gross",
+      "service_type": "194J_TECH",
+      "disburse_immediately": true
+    }')
+  if echo "${QPAY_RESP}" | grep -q '"status":"disbursed"' && echo "${QPAY_RESP}" | grep -q '24500'; then
+    log_success "Quick-Pay Freelancer verified (Disbursed ₹24,500 with ₹500 TDS u/s 194J)!"
+  else
+    log_error "Quick-Pay Freelancer validation failed: ${QPAY_RESP}"
+    exit 1
+  fi
+
+  # 8. Year Book Compensation Summary Test
+  log_info "Test 8: GET ${API_URL}/api/v1/payroll/yearbook-summary"
+  YB_RESP=$(curl -s "${API_URL}/api/v1/payroll/yearbook-summary?fiscal_year=2026-27" \
+    -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+    -H "X-Tenant-ID: 11111111-1111-1111-1111-111111111111")
+  if echo "${YB_RESP}" | grep -q '"total_freelancer_gross_note19"'; then
+    log_success "Year Book Compensation Summary verified!"
+  else
+    log_error "Year Book Compensation Summary validation failed: ${YB_RESP}"
+    exit 1
+  fi
+
+  # 9. Pytest Integration Suite inside staging container
+  log_info "Test 9: Running pytest regression suite in Staging container..."
+  ${COMPOSE_CMD} exec -T b00k5_staging_api pytest tests/test_quick_pay_and_reconciliation.py tests/test_gstr1_table13_and_uqc.py tests/test_compliance.py tests/test_s3_remote_mirror.py -q
   log_success "All test suites PASSED in isolated Staging environment!"
 }
 

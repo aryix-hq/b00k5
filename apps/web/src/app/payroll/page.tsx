@@ -26,9 +26,11 @@ import {
   TrendingUp,
   FileSpreadsheet,
   Briefcase,
-  X
+  X,
+  Zap
 } from 'lucide-react';
 import { fetchApi } from '@/lib/api';
+import { QuickPayFreelancerModal } from '@/components/payroll/QuickPayFreelancerModal';
 
 interface Employee {
   id: string;
@@ -184,6 +186,7 @@ export default function PayrollPage() {
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
   // Modals
+  const [showQuickPayModal, setShowQuickPayModal] = useState<boolean>(false);
   const [showOnboardModal, setShowOnboardModal] = useState<boolean>(false);
   const [showNewRunModal, setShowNewRunModal] = useState<boolean>(false);
   const [showDisburseModal, setShowDisburseModal] = useState<boolean>(false);
@@ -648,6 +651,13 @@ export default function PayrollPage() {
 
             {userRole !== 'employee' && (
               <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setShowQuickPayModal(true)}
+                  className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-lg text-sm transition shadow-lg shadow-amber-950/40 flex items-center gap-2"
+                >
+                  <Zap className="w-4 h-4" />
+                  ⚡ Quick Pay Freelancer
+                </button>
                 <button
                   onClick={() => setShowNewRunModal(true)}
                   className="px-4 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 rounded-lg text-sm font-medium transition flex items-center gap-2"
@@ -2609,6 +2619,15 @@ export default function PayrollPage() {
               </div>
             </div>
           )}
+
+          <QuickPayFreelancerModal
+            isOpen={showQuickPayModal}
+            onClose={() => setShowQuickPayModal(false)}
+            onSuccess={() => {
+              loadPayrollData();
+              setSuccessMsg('Freelancer payment processed and balanced journal entry posted!');
+            }}
+          />
         </main>
       </div>
     </div>

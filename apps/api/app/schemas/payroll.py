@@ -343,4 +343,24 @@ class Form16AResponse(BaseModel):
     payments_breakdown: List[dict] = []
 
 
+class QuickContractorPaymentRequest(BaseModel):
+    freelancer_name: str = Field(..., min_length=2, max_length=150)
+    pan_number: Optional[str] = Field(None, max_length=10)
+    email: Optional[EmailStr] = None
+    phone: Optional[str] = None
+    service_type: str = Field(default="194J_TECH")  # 194J_TECH (2%), 194J_PROF (10%), 194C (1%), NO_TDS (0%)
+    amount: Decimal = Field(..., gt=0)
+    amount_type: str = Field(default="gross")  # 'gross' or 'net'
+    description: str = Field(default="Freelance Professional / Technical Services")
+    invoice_number: Optional[str] = None
+    payment_date: Optional[date] = None
+    bank_reference_or_utr: Optional[str] = None
+    bank_name: Optional[str] = "HDFC Bank"
+    bank_account_number: Optional[str] = None
+    bank_ifsc_code: Optional[str] = None
+    disburse_immediately: bool = True
+    contra_bank_account_code: str = "1010"
+
+
+
 

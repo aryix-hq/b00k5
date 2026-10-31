@@ -386,7 +386,7 @@ class ScheduleIIIService:
             amt = Decimal(str(e.get("amount") or 0))
             if code.startswith("405"): finance_costs += amt
             elif code.startswith("402"): employee_benefits += amt
-            elif code.startswith("404"): depreciation_exp += amt
+            elif code.startswith("502") or code.startswith("403"): depreciation_exp += amt
             else: other_expenses += amt
 
         total_rev = revenue_operations + other_income

@@ -69,6 +69,8 @@ function getDynamicFYList(): string[] {
 export default function BankReconciliationPage() {
   const [bankLines, setBankLines] = useState<BankLine[]>([]);
   const [openInvoices, setOpenInvoices] = useState<OpenInvoice[]>([]);
+  const [contractorPayments, setContractorPayments] = useState<any[]>([]);
+  const [payrollRuns, setPayrollRuns] = useState<any[]>([]);
   const [selectedLine, setSelectedLine] = useState<BankLine | null>(null);
   const [filterTier, setFilterTier] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
@@ -158,7 +160,11 @@ export default function BankReconciliationPage() {
       try {
         const fyParam = selectedFY && selectedFY !== 'all' ? selectedFY.replace('FY', '').trim() : '';
         const url = fyParam ? `/api/v1/invoices/?fy=${encodeURIComponent(fyParam)}` : '/api/v1/invoices/';
-        const invs = await fetchApi(url);
+        const [invs, cpData, prData] = await Promise.all([
+          fetchApi(url).catch(() => []),
+          fetchApi('/api/v1/payroll/contractor-payments').catch(() => []),
+          fetchApi('/api/v1/payroll/runs').catch(() => [])
+        ]);
         if (Array.isArray(invs) && invs.length > 0) {
           const mapped: OpenInvoice[] = invs.map((inv: any) => ({
             id: inv.id,
@@ -170,8 +176,10 @@ export default function BankReconciliationPage() {
           }));
           setOpenInvoices(mapped);
         }
+        if (Array.isArray(cpData)) setContractorPayments(cpData);
+        if (Array.isArray(prData)) setPayrollRuns(prData);
       } catch (e) {
-        console.error('Failed to load invoices:', e);
+        console.error('Failed to load invoices & outflows:', e);
       }
     }
 
@@ -322,6 +330,50 @@ export default function BankReconciliationPage() {
     } catch (err: any) {
       console.error(err);
       setUploadMessage({ type: 'error', text: err.message || 'Failed to approve Tier 2 match.' });
+    } finally {
+      setProcessingLineId(null);
+    }
+  };
+
+  const handleConfirmContractorMatch = async (lineId: string, cpId: string) => {
+    setProcessingLineId(lineId);
+    try {
+      await fetchApi(`/api/v1/reconciliation/lines/${lineId}/confirm-match`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          matched_contractor_payment_id: cpId,
+          notes: 'Confirmed match with Contractor Payment'
+        })
+      });
+      setBankLines(lines => lines.map(l => l.id === lineId ? { ...l, status: 'reconciled', tier: 'tier1_exact' } : l));
+      setSelectedLine(prev => prev && prev.id === lineId ? { ...prev, status: 'reconciled', tier: 'tier1_exact' } : prev);
+      setUploadMessage({ type: 'success', text: 'Contractor payment confirmed and disbursed in General Ledger.' });
+    } catch (err: any) {
+      console.error(err);
+      setUploadMessage({ type: 'error', text: err.message || 'Failed to match contractor payment.' });
+    } finally {
+      setProcessingLineId(null);
+    }
+  };
+
+  const handleConfirmPayrollMatch = async (lineId: string, prId: string) => {
+    setProcessingLineId(lineId);
+    try {
+      await fetchApi(`/api/v1/reconciliation/lines/${lineId}/confirm-match`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          matched_payroll_run_id: prId,
+          notes: 'Confirmed match with Payroll Run'
+        })
+      });
+      setBankLines(lines => lines.map(l => l.id === lineId ? { ...l, status: 'reconciled', tier: 'tier1_exact' } : l));
+      setSelectedLine(prev => prev && prev.id === lineId ? { ...prev, status: 'reconciled', tier: 'tier1_exact' } : prev);
+      setUploadMessage({ type: 'success', text: 'Salary payout confirmed and disbursed in General Ledger.' });
+    } catch (err: any) {
+      console.error(err);
+      setUploadMessage({ type: 'error', text: err.message || 'Failed to match payroll run.' });
     } finally {
       setProcessingLineId(null);
     }
@@ -883,14 +935,105 @@ export default function BankReconciliationPage() {
                         )}
                       </div>
 
-                      {/* Matched Open Invoice Candidate */}
-                      {(() => {
-                        const matchedOpenInv = selectedLine.deposit > 0
-                          ? openInvoices.find(inv =>
-                              (selectedLine.notes && selectedLine.notes.includes(inv.invoice_number)) ||
-                              Math.abs(inv.amount - selectedLine.deposit) < 0.01
-                            )
-                          : undefined;
+                      {/* Outflow or Inflow Candidate Match Engine */}
+                      {selectedLine.withdrawal > 0 ? (() => {
+                        const matchedCp = contractorPayments.find(cp =>
+                          (selectedLine.notes && (selectedLine.notes.includes(cp.payment_number) || (cp.contractor_name && selectedLine.notes.includes(cp.contractor_name)))) ||
+                          (selectedLine.reference_number && cp.payout_utr && selectedLine.reference_number.includes(cp.payout_utr)) ||
+                          Math.abs(Number(cp.net_payable) - selectedLine.withdrawal) < 0.05
+                        );
+
+                        const matchedPr = payrollRuns.find(pr =>
+                          (selectedLine.notes && selectedLine.notes.includes(pr.run_number)) ||
+                          Math.abs(Number(pr.total_net_pay) - selectedLine.withdrawal) < 0.05
+                        );
+
+                        if (matchedCp) {
+                          return (
+                            <div className="p-3.5 rounded-lg bg-amber-950/20 border border-amber-800/50 space-y-2.5">
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs font-semibold text-amber-400 flex items-center gap-1.5">
+                                  <CheckCircle2 className="w-4 h-4" /> Candidate Freelancer Payout Match
+                                </span>
+                                <span className="text-xs font-mono px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                                  TDS Sec {matchedCp.tds_section}
+                                </span>
+                              </div>
+
+                              <div className="space-y-1 font-mono text-slate-300">
+                                <p className="text-white font-bold">{matchedCp.contractor_name || 'Contractor'}</p>
+                                <p className="text-slate-400">Payment: #{matchedCp.payment_number} • PAN: {matchedCp.contractor_pan || 'N/A'}</p>
+                                <p className="text-amber-300 font-bold">
+                                  Net Outflow: ₹{Number(matchedCp.net_payable).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                                  <span className="text-xs text-slate-400 font-normal ml-2">(Gross ₹{Number(matchedCp.gross_amount).toLocaleString('en-IN')} - TDS ₹{Number(matchedCp.tds_amount).toLocaleString('en-IN')})</span>
+                                </p>
+                              </div>
+
+                              {selectedLine.status !== 'reconciled' && (
+                                <div className="pt-2">
+                                  <button
+                                    onClick={() => handleConfirmContractorMatch(selectedLine.id, matchedCp.id)}
+                                    disabled={processingLineId === selectedLine.id}
+                                    className="w-full py-2 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-slate-950 font-bold rounded-lg shadow-sm transition-colors text-xs flex items-center justify-center gap-1.5"
+                                  >
+                                    {processingLineId === selectedLine.id ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-4 h-4" />}
+                                    <span>Confirm Freelancer Payment Match (1-Click)</span>
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        }
+
+                        if (matchedPr) {
+                          const monthNames = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+                          return (
+                            <div className="p-3.5 rounded-lg bg-emerald-950/20 border border-emerald-800/50 space-y-2.5">
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs font-semibold text-emerald-400 flex items-center gap-1.5">
+                                  <CheckCircle2 className="w-4 h-4" /> Candidate Salary Disbursement Match
+                                </span>
+                                <span className="text-xs font-mono px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                                  Ind AS 19 / Note 17
+                                </span>
+                              </div>
+
+                              <div className="space-y-1 font-mono text-slate-300">
+                                <p className="text-white font-bold">Payroll Run #{matchedPr.run_number}</p>
+                                <p className="text-slate-400">Period: {monthNames[matchedPr.month]} {matchedPr.year} • {matchedPr.total_employees} Employees</p>
+                                <p className="text-emerald-400 font-bold">Net Salary Payout: ₹{Number(matchedPr.total_net_pay).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</p>
+                              </div>
+
+                              {selectedLine.status !== 'reconciled' && (
+                                <div className="pt-2">
+                                  <button
+                                    onClick={() => handleConfirmPayrollMatch(selectedLine.id, matchedPr.id)}
+                                    disabled={processingLineId === selectedLine.id}
+                                    className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold rounded-lg shadow-sm transition-colors text-xs flex items-center justify-center gap-1.5"
+                                  >
+                                    {processingLineId === selectedLine.id ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-4 h-4" />}
+                                    <span>Confirm Salary Disbursement Match (1-Click)</span>
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        }
+
+                        return (
+                          <div className="p-3.5 rounded-lg bg-slate-800/40 border border-slate-700/60 space-y-2 text-center py-6">
+                            <HelpCircle className="w-8 h-8 text-amber-400 mx-auto opacity-70" />
+                            <p className="text-sm font-semibold text-slate-200">No Direct Outflow Match Found</p>
+                            <p className="text-xs text-slate-400 max-w-xs mx-auto">
+                              This bank withdrawal does not match an open contractor payout or salary run. You can route it to Suspense Account 2099 for manual allocation.
+                            </p>
+                          </div>
+                        );
+                      })() : (() => {
+                        const matchedOpenInv = openInvoices.find(inv =>
+                          (selectedLine.notes && selectedLine.notes.includes(inv.invoice_number)) ||
+                          Math.abs(inv.amount - selectedLine.deposit) < 0.01
+                        );
                         const hasCandidate = Boolean(
                           selectedLine.matched_invoice_id ||
                           (selectedLine.confidence_score && selectedLine.confidence_score >= 60) ||

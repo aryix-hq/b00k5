@@ -6,10 +6,13 @@ import difflib
 try:
     from sqlalchemy.ext.asyncio import AsyncSession
     from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
     from app.models.bank import BankStatement, BankStatementLine
     from app.models.invoice import Invoice, Contact
     from app.models.ledger import ChartOfAccounts, JournalEntry, JournalLine
+    from app.models.payroll import ContractorPayment, PayrollRun
     from app.services.ledger_service import LedgerService
+    from app.services.payroll_service import PayrollService
     HAVE_SQLALCHEMY = True
 except ImportError:
     AsyncSession = Any
@@ -230,6 +233,22 @@ class ReconciliationEngine:
                 "notes": inv.invoice_number
             })
 
+        # Fetch open / payable contractor payments
+        cp_stmt = select(ContractorPayment).options(
+            selectinload(ContractorPayment.contractor)
+        ).where(
+            ContractorPayment.tenant_id == tenant_id,
+            ContractorPayment.status.in_(["approved", "disbursed", "pending"])
+        )
+        open_contractor_payments = list((await session.execute(cp_stmt)).scalars().all())
+
+        # Fetch payroll runs
+        pr_stmt = select(PayrollRun).where(
+            PayrollRun.tenant_id == tenant_id,
+            PayrollRun.status.in_(["locked", "disbursed"])
+        )
+        open_payroll_runs = list((await session.execute(pr_stmt)).scalars().all())
+
         tier1_count = 0
         tier2_count = 0
         tier3_count = 0
@@ -316,7 +335,89 @@ class ReconciliationEngine:
                     tier1_count += 1
                     continue
 
-                # 2. Pattern Match: Bank Charges / Debit Card Fee / Maintenance
+                # 2. Match against Contractor / Freelancer Payments
+                matched_cp = None
+                matched_cp_score = 0.0
+                for cp in open_contractor_payments:
+                    if cp.net_payable == line.withdrawal_amount:
+                        c_name = cp.contractor.name if cp.contractor else ""
+                        c_pan = cp.contractor.pan_number if cp.contractor else ""
+                        c_code = cp.contractor.contractor_code if cp.contractor else ""
+                        # Exact UTR or payment number match
+                        if (cp.payment_number.upper() in ref_upper or cp.payment_number.upper() in desc_upper) or \
+                           (cp.payout_utr and (cp.payout_utr.upper() in ref_upper or cp.payout_utr.upper() in desc_upper)):
+                            matched_cp = cp
+                            matched_cp_score = 100.0
+                            break
+                        # Name or PAN match in counterparty / description
+                        sim = calculate_name_similarity(line.counterparty_name or line.description, c_name)
+                        if (c_pan and c_pan in desc_upper) or (c_code and c_code in desc_upper) or sim >= 70.0:
+                            matched_cp = cp
+                            matched_cp_score = 100.0
+                            break
+                        elif sim >= 50.0:
+                            matched_cp = cp
+                            matched_cp_score = 85.0
+
+                if matched_cp:
+                    c_label = matched_cp.contractor.name if matched_cp.contractor else "Contractor"
+                    cp_id = matched_cp.id
+                    cp_pnum = matched_cp.payment_number
+                    if matched_cp_score >= 100.0:
+                        if matched_cp.status != "disbursed":
+                            matched_cp = await PayrollService.disburse_contractor_payment(
+                                session, tenant_id, cp_id, user_id, utr=line.reference_number
+                            )
+                        line.matched_journal_entry_id = matched_cp.disbursement_journal_id
+                        line.reconciliation_tier = "tier1_exact"
+                        line.reconciliation_status = "reconciled"
+                        line.confidence_score = Decimal("100.00")
+                        line.notes = f"Tier 1 Exact Match: Contractor Payout to {c_label} (#{cp_pnum})"
+                        open_contractor_payments = [p for p in open_contractor_payments if p.id != cp_id]
+                        tier1_count += 1
+                        continue
+                    else:
+                        line.reconciliation_tier = "tier2_heuristic"
+                        line.reconciliation_status = "probable_match"
+                        line.confidence_score = Decimal(str(matched_cp_score))
+                        line.notes = f"Tier 2 Probable Match: Contractor Payout to {c_label} (#{cp_pnum})"
+                        open_contractor_payments = [p for p in open_contractor_payments if p.id != cp_id]
+                        tier2_count += 1
+                        continue
+
+                # 3. Match against Payroll Runs (Employee Salaries)
+                matched_pr = None
+                for pr in open_payroll_runs:
+                    if pr.total_net_pay == line.withdrawal_amount:
+                        if ("SALARY" in desc_upper or "PAYROLL" in desc_upper or "SAL" in desc_upper or "NEFT" in desc_upper or pr.run_number.upper() in desc_upper or pr.run_number.upper() in ref_upper):
+                            matched_pr = pr
+                            break
+
+                if matched_pr:
+                    pr_id = matched_pr.id
+                    pr_month = matched_pr.month
+                    pr_year = matched_pr.year
+                    pr_run_num = matched_pr.run_number
+                    if matched_pr.status == "locked":
+                        disb_entry = await PayrollService.post_disbursement_journal(
+                            session=session,
+                            run_id=pr_id,
+                            bank_account_code="1010",
+                            payout_utr=line.reference_number,
+                            created_by_user_id=user_id
+                        )
+                        line.matched_journal_entry_id = disb_entry.id
+                    else:
+                        line.matched_journal_entry_id = matched_pr.disbursement_journal_id
+                    line.reconciliation_tier = "tier1_exact"
+                    line.reconciliation_status = "reconciled"
+                    line.confidence_score = Decimal("100.00")
+                    line.notes = f"Tier 1 Exact Match: Salary Payout for {pr_month}/{pr_year} (#{pr_run_num})"
+                    open_payroll_runs = [r for r in open_payroll_runs if r.id != pr_id]
+                    tier1_count += 1
+                    continue
+
+                # 4. Pattern Match: Bank Charges / Debit Card Fee / Maintenance
                 if ("DEBIT CARD" in desc_upper or "CHARGES" in desc_upper or "FEE" in desc_upper or "ISSUANCE" in desc_upper) and bank_charges_acc and bank_acc:
                     credit_acc_id = suspense_acc.id if (existing_suspense_je and suspense_acc) else bank_acc.id
                     entry = JournalEntry(

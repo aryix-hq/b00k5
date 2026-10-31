@@ -1,0 +1,38 @@
+# ==============================================================================
+# b00k5 Production Docker Compose Override
+# ==============================================================================
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+# ==============================================================================
+
+services:
+  b00k5_api:
+    environment:
+      - APP_ENV=${APP_ENV:-development}
+    restart: always
+
+  b00k5_web:
+    environment:
+      - NODE_ENV=production
+    restart: always
+
+  b00k5_worker_ocr:
+    restart: always
+
+  b00k5_worker_reconcile:
+    restart: always
+
+  b00k5_worker_sync:
+    restart: always
+
+  b00k5_postgres:
+    restart: always
+
+  b00k5_redis:
+    restart: always
+
+  b00k5_minio:
+    restart: always
+
+  b00k5_bridge_mock:
+    restart: always

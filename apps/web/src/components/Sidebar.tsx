@@ -17,6 +17,7 @@ import {
   Users,
   Calculator,
   Database,
+  HardDrive,
   Wallet,
   Building2,
   FileText,

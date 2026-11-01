@@ -31,7 +31,7 @@ import {
   Ban,
   AlertTriangle
 } from 'lucide-react';
-import { fetchApi } from '@/lib/api';
+import { fetchApi, fetchRawApi } from '@/lib/api';
 import { QuickPayFreelancerModal } from '@/components/payroll/QuickPayFreelancerModal';
 
 interface Employee {
@@ -616,23 +616,20 @@ export default function PayrollPage() {
   const handleDownloadFile = async (endpoint: string, defaultFilename: string) => {
     try {
       setDownloadingFile(defaultFilename);
-      const token = typeof window !== 'undefined' ? (localStorage.getItem('token') || sessionStorage.getItem('token') || '') : '';
-      const tenantId = typeof window !== 'undefined' ? (localStorage.getItem('active_tenant_id') || '') : '';
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}${endpoint}`, {
-        headers: {
-          Authorization: token ? `Bearer ${token}` : '',
-          'X-Tenant-ID': tenantId
+      const res = await fetchRawApi(endpoint);
+      const contentDisposition = res.headers.get('content-disposition');
+      let filename = defaultFilename;
+      if (contentDisposition) {
+        const match = contentDisposition.match(/filename=["']?([^"';]+)["']?/);
+        if (match && match[1]) {
+          filename = match[1];
         }
-      });
-      if (!res.ok) {
-        const errJson = await res.json().catch(() => ({}));
-        throw new Error(errJson.detail || 'Failed to download statutory export');
       }
       const blob = await res.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = defaultFilename;
+      a.download = filename;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);

@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased] - 2026-11-01
 
 ### Fixed
+- **FIX-PAYROLL-08 Statutory & Bank CMS Export Authorization Credentials (`apps/web/src/app/payroll/page.tsx`)**:
+  - Replaced ad-hoc `localStorage.getItem('token')` fetch logic in `handleDownloadFile` with standardized `fetchRawApi` from `@/lib/api`.
+  - Resolves HTTP 401 Unauthorized (`Authentication credentials not provided`) error when downloading HDFC ENet, ICICI CMS, SBI CMP, EPFO ECR, ESIC, PT returns, and Form 16A PDF certificates.
+  - Automatically extracts dynamic server-provided attachment filename from `Content-Disposition` header with robust fallback to default statutory filename.
 - **FIX-UI-01 App Router Shallow Navigation Crash (React Invariant #310 & `t.parallelRoutes is null`)**:
   - Replaced Next.js `router.replace` with native `window.history.replaceState` in `apps/web/src/app/settings/integrations/page.tsx` for shallow tab and provider switching (`cloud`, `backups`, `restore`, `gdrive`, `s3`/Cloudflare), eliminating Next.js 14 App Router Flight reducer crash (`parallelRoutes.get()` on null segment cache).
   - Hardened `apps/web/src/app/global-error.tsx` root layout error boundary with clean `window.location.reload()` and `/dashboard` fallback, preventing infinite crash loops on client router cache corruption.

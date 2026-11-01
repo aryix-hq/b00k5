@@ -10,7 +10,7 @@ import zipfile
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, or_
 from app.api.deps import get_db
 HAVE_FASTAPI = True
 
@@ -469,7 +469,9 @@ Compliant with MCA Section 128 & Income Tax Act Rule 6F.
 
     # 5. Sync Database Backups if present
     from app.models.backup import DatabaseBackupLog
-    backup_stmt = select(DatabaseBackupLog).where(DatabaseBackupLog.tenant_id == tenant.id).order_by(DatabaseBackupLog.created_at.desc())
+    backup_stmt = select(DatabaseBackupLog).where(
+        or_(DatabaseBackupLog.tenant_id == tenant.id, DatabaseBackupLog.tenant_id.is_(None))
+    ).order_by(DatabaseBackupLog.created_at.desc())
     backups = (await db.execute(backup_stmt)).scalars().all()
     if backups:
         try:
@@ -1361,7 +1363,9 @@ Audit Status: Approved & Posted to General Ledger
             logger.warning(f"Failed to mirror expense voucher '{fname}' to S3: {e}")
 
     # 6. Sync Database Backups (from local MinIO checkpoints)
-    backup_stmt = select(DatabaseBackupLog).where(DatabaseBackupLog.tenant_id == tenant.id).order_by(DatabaseBackupLog.created_at.desc())
+    backup_stmt = select(DatabaseBackupLog).where(
+        or_(DatabaseBackupLog.tenant_id == tenant.id, DatabaseBackupLog.tenant_id.is_(None))
+    ).order_by(DatabaseBackupLog.created_at.desc())
     backups = (await db.execute(backup_stmt)).scalars().all()
     backups_count = 0
     for bk in backups[:10]:

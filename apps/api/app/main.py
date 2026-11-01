@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings, validate_production_security
 from app.core.s3 import ensure_buckets_exist
-from app.api.v1 import auth, setup, invoices, ledger, vault, compliance, dsc, reconciliation, storage, iam, expenses, pricing, system, batch_ingest, reports, tenant_iam, tds, assets, registers, payroll
+from app.api.v1 import auth, setup, invoices, ledger, vault, compliance, dsc, reconciliation, storage, iam, expenses, pricing, system, batch_ingest, reports, tenant_iam, tds, assets, registers, payroll, backup
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("b00k5_api")
@@ -80,6 +80,7 @@ app.include_router(iam.router, prefix=f"{settings.API_V1_STR}/iam", tags=["Ident
 app.include_router(expenses.router, prefix=f"{settings.API_V1_STR}/expenses", tags=["Expenses & Personal Reimbursements"])
 app.include_router(pricing.router, prefix=f"{settings.API_V1_STR}/pricing", tags=["Pricing & GST Calculator"])
 app.include_router(system.router, prefix=f"{settings.API_V1_STR}/system", tags=["System & Administration"])
+app.include_router(backup.router, prefix=f"{settings.API_V1_STR}/backup", tags=["Database Backup & Snapshots (Alias)"])
 app.include_router(batch_ingest.router, prefix=f"{settings.API_V1_STR}/batch", tags=["Batch Ingestion"])
 app.include_router(reports.router, prefix=f"{settings.API_V1_STR}/reports", tags=["Financial Statements & Schedule III Reports"])
 app.include_router(reconciliation.router, prefix=f"{settings.API_V1_STR}/banking", tags=["Banking & Reconciliation (Alias)"])

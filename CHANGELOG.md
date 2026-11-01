@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased] - 2026-11-01
 
 ### Fixed
+- **FIX-BACKUP-10 Unified Backup & Checkpoint API Routing and R2 Mirroring (`apps/web/src/app/settings/integrations/page.tsx`, `apps/api/app/api/v1/system.py`, `apps/api/app/api/v1/backup.py`, `apps/api/app/main.py`)**:
+  - Re-routed frontend backup trigger, audit logs, MinIO snapshots, checkpoint creation, and restore execution from mismatched `/api/v1/backup/...` paths to canonical `/api/v1/system/backup-...` endpoints, eliminating HTTP 404 "Not Found" failures across `/settings/integrations`.
+  - Added dedicated FastAPI compatibility alias router `apps/api/app/api/v1/backup.py` mounted at `/api/v1/backup` (`/trigger`, `/logs`, `/minio-snapshots`, `/minio-checkpoint`, `/restore`), providing dual-route resilience for all backup and restore operations.
+  - Relaxed `trigger_database_backup` authorization from strict `require_super_admin` to `require_super_admin_or_owner`, enabling authorized company owners and directors to run on-demand database backups and automatic Cloudflare R2 / S3 mirrors.
+  - Normalized `RestoreCheckpointRequest` to accept polymorphic key mappings (`object_key` or `snapshot_key`, `decryption_secret` or `admin_secret`).
+  - Broadened S3 backup mirror query in `storage.py` to include tenant-scoped and system-level backups (`or_(DatabaseBackupLog.tenant_id == tenant.id, DatabaseBackupLog.tenant_id.is_(None))`).
 - **FIX-STORAGE-09 Cloudflare R2 / S3 Storage Quota Null-Safe Rendering (`apps/web/src/app/settings/integrations/page.tsx`, `apps/api/app/api/v1/storage.py`)**:
   - Guarded Cloudflare R2 / S3 Quota & Capacity Usage card rendering with strict `configured` and numeric `typeof total_mb === 'number'` assertions, eliminating `TypeError: can't access property "toFixed", eb.storage_usage.total_mb is undefined` when viewing unconfigured or uninitialized remote buckets.
   - Implemented nullish coalescing defaults across all metric calculations (`total_mb`, `used_percentage`, `remaining_free_gb`, `free_tier_gb`, `file_count`, `reclaimed_mb`) and dual-key category lookups (`sales_invoices`/`invoices`, `vendor_bills`/`bills`, `statutory_vault`/`statutory`, `database_backups`/`backups`).

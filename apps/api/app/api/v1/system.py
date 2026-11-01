@@ -125,7 +125,7 @@ from app.models.tenant import User
 
 @router.post("/backup-database", response_model=BackupLogResponse)
 async def trigger_database_backup(
-    current_admin: User = Depends(require_super_admin),
+    current_admin: User = Depends(require_super_admin_or_owner),
     tenant: Optional[Tenant] = Depends(get_optional_tenant),
     db: AsyncSession = Depends(get_db)
 ):
@@ -198,8 +198,18 @@ async def list_database_backup_logs(
 
 
 class RestoreCheckpointRequest(BaseModel):
-    object_key: str
+    object_key: Optional[str] = None
+    snapshot_key: Optional[str] = None
     decryption_secret: Optional[str] = None
+    admin_secret: Optional[str] = None
+
+    @property
+    def target_key(self) -> str:
+        return self.object_key or self.snapshot_key or ""
+
+    @property
+    def secret(self) -> Optional[str]:
+        return self.decryption_secret or self.admin_secret
 
 
 @router.get("/backup/snapshots")
@@ -241,11 +251,19 @@ async def restore_minio_checkpoint(
     Restores database from an encrypted MinIO checkpoint after passing the 7-Point Staging Gate.
     """
     try:
+        target = payload.target_key
+        if not target:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Snapshot object key is required."
+            )
         result = DatabaseBackupManager.restore_from_minio_checkpoint(
-            object_key=payload.object_key,
-            decryption_secret=payload.decryption_secret
+            object_key=target,
+            decryption_secret=payload.secret
         )
         return result
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

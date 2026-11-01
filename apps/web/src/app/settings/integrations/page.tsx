@@ -316,8 +316,8 @@ function IntegrationsContent() {
 
   const fetchLogs = async () => {
     try {
-      const data = await fetchApi('/api/v1/backup/logs');
-      setLogs(data);
+      const data = await fetchApi('/api/v1/system/backup-logs');
+      setLogs(Array.isArray(data) ? data : []);
     } catch (e) {
       console.warn('Failed to fetch backup logs:', e);
     }
@@ -336,9 +336,10 @@ function IntegrationsContent() {
 
   const fetchMinioSnapshots = async () => {
     try {
-      const res = await fetchApi('/api/v1/backup/minio-snapshots');
-      if (res && res.snapshots) {
-        setMinioSnapshots(res.snapshots);
+      const res = await fetchApi('/api/v1/system/backup/snapshots');
+      if (res) {
+        const list = Array.isArray(res) ? res : (res.snapshots || []);
+        setMinioSnapshots(list);
       }
     } catch (e) {
       console.warn('Failed to fetch minio snapshots:', e);
@@ -349,10 +350,10 @@ function IntegrationsContent() {
     setCreatingCheckpoint(true);
     setCheckpointStatus(null);
     try {
-      const res = await fetchApi('/api/v1/backup/minio-checkpoint', {
+      const res = await fetchApi('/api/v1/system/backup/checkpoint', {
         method: 'POST'
       });
-      setCheckpointStatus(res.message || 'Local MinIO Checkpoint snapshot created successfully.');
+      setCheckpointStatus(res.filename ? `Local MinIO Checkpoint snapshot created: ${res.filename}` : (res.message || 'Local MinIO Checkpoint snapshot created successfully.'));
       await fetchMinioSnapshots();
     } catch (err: any) {
       setCheckpointStatus(`Failed: ${err.message || 'Error creating checkpoint.'}`);
@@ -366,7 +367,7 @@ function IntegrationsContent() {
     setBackupStatus(null);
     setErrorMsg(null);
     try {
-      const res = await fetchApi('/api/v1/backup/trigger', {
+      const res = await fetchApi('/api/v1/system/backup-database', {
         method: 'POST'
       });
       setBackupStatus(`Database backup snapshot successfully created: ${res.filename} (${(res.file_size_bytes / 1024).toFixed(1)} KB)`);
@@ -396,13 +397,12 @@ function IntegrationsContent() {
 
     setRestoringKey(targetSnapshot.object_key);
     try {
-      const res = await fetchApi('/api/v1/backup/restore', {
+      const res = await fetchApi('/api/v1/system/backup/restore', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          snapshot_key: targetSnapshot.object_key,
-          admin_secret: restoreSecret.trim(),
-          create_safety_checkpoint: true
+          object_key: targetSnapshot.object_key,
+          decryption_secret: restoreSecret.trim()
         })
       });
 
@@ -527,9 +527,18 @@ function IntegrationsContent() {
           )}
 
           {errorMsg && (
-            <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400 flex items-center gap-3">
-              <AlertCircle className="w-5 h-5 shrink-0" />
-              <span className="text-sm font-medium">{errorMsg}</span>
+            <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <AlertCircle className="w-5 h-5 shrink-0" />
+                <span className="text-sm font-medium">{errorMsg}</span>
+              </div>
+              <button
+                onClick={() => setErrorMsg(null)}
+                className="text-rose-400 hover:text-rose-200 transition-colors p-1"
+                title="Dismiss"
+              >
+                <X className="w-4 h-4" />
+              </button>
             </div>
           )}
 

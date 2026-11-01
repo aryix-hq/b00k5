@@ -960,6 +960,32 @@ async def get_s3_mirror_config(
         "max_backup_age_days": 30
     })
 
+    raw_usage = cfg.get("storage_usage")
+    storage_usage = None
+    if configured:
+        if raw_usage and isinstance(raw_usage, dict) and raw_usage.get("total_mb") is not None:
+            storage_usage = raw_usage
+        else:
+            storage_usage = {
+                "total_bytes": 0,
+                "total_mb": 0.0,
+                "total_gb": 0.0,
+                "free_tier_bytes": 10 * 1024 * 1024 * 1024,
+                "free_tier_gb": 10.0,
+                "used_percentage": 0.0,
+                "remaining_free_bytes": 10 * 1024 * 1024 * 1024,
+                "remaining_free_gb": 10.0,
+                "categories": {
+                    "database_backups": {"bytes": 0, "count": 0},
+                    "sales_invoices": {"bytes": 0, "count": 0},
+                    "vendor_bills": {"bytes": 0, "count": 0},
+                    "bank_statements": {"bytes": 0, "count": 0},
+                    "statutory_vault": {"bytes": 0, "count": 0},
+                    "other": {"bytes": 0, "count": 0}
+                },
+                "file_count": 0
+            }
+
     return {
         "configured": configured,
         "provider": cfg.get("provider", "cloudflare_r2"),
@@ -972,7 +998,7 @@ async def get_s3_mirror_config(
         "secret_access_key_masked": "••••••••••••••••" if cfg.get("secret_access_key") else "",
         "status": cfg.get("status", "connected" if configured else "unconfigured"),
         "retention_policy": retention_policy,
-        "storage_usage": cfg.get("storage_usage", {}),
+        "storage_usage": storage_usage,
         "last_tested_at": cfg.get("last_tested_at"),
         "last_synced_at": cfg.get("last_synced_at")
     }

@@ -11,6 +11,7 @@ from sqlalchemy.orm import selectinload
 from app.models.payroll import Employee, SalaryStructure, PayrollRun, Payslip, EmployeeTaxDeclaration, Contractor, ContractorPayment
 from app.models.tenant import Tenant
 from app.models.ledger import ChartOfAccounts, JournalEntry, JournalLine
+from app.models.tds import TDSDeduction
 from app.services.ledger_service import LedgerService
 from app.services.pdf_service import PDFService
 from app.schemas.payroll import QuickContractorPaymentRequest
@@ -1489,6 +1490,152 @@ class PayrollService:
         return reloaded or payment
 
     @staticmethod
+    async def strike_off_contractor_payment(
+        session: AsyncSession,
+        tenant_id: uuid.UUID,
+        payment_id: uuid.UUID,
+        reason: str,
+        user_id: Optional[uuid.UUID] = None
+    ) -> Dict[str, Any]:
+        """
+        Statutory Strike-Off / Void Action for Freelancer / Contractor Payments:
+        1. Marks payment status as 'struck_off' with statutory audit note.
+        2. Posts offsetting Contra Reversal JV for disbursement if disbursed.
+        3. Posts offsetting Contra Reversal JV for accrual if accrued.
+        4. Cancels any associated TDS deduction records.
+        5. Preserves zero ledger balance drift (Dr == Cr).
+        """
+        payment = await PayrollService.get_contractor_payment(session, tenant_id, payment_id)
+        if not payment:
+            raise ValueError("Contractor payment record not found.")
+        if payment.status in ["struck_off", "cancelled"]:
+            raise ValueError("Contractor payment has already been struck off.")
+
+        contractor = await PayrollService.get_contractor(session, tenant_id, payment.contractor_id)
+        c_name = contractor.name if contractor else "Contractor"
+
+        reversal_accrual_num = None
+        reversal_disb_num = None
+
+        # 1. Reverse disbursement JV if payment was disbursed
+        if payment.disbursement_journal_id:
+            orig_disb_je = (
+                await session.execute(
+                    select(JournalEntry).where(
+                        JournalEntry.tenant_id == tenant_id,
+                        JournalEntry.id == payment.disbursement_journal_id
+                    )
+                )
+            ).scalars().first()
+            if orig_disb_je:
+                disb_lines = (
+                    await session.execute(
+                        select(JournalLine).where(JournalLine.journal_entry_id == orig_disb_je.id)
+                    )
+                ).scalars().all()
+                if disb_lines:
+                    reversal_disb_num = f"JV-REV-DISB-{payment.payment_number}-{uuid.uuid4().hex[:4].upper()}"
+                    rev_disb = JournalEntry(
+                        id=uuid.uuid4(),
+                        tenant_id=tenant_id,
+                        entry_number=reversal_disb_num,
+                        entry_date=date.today(),
+                        reference_type="contractor_payment_reversal",
+                        reference_id=payment.id,
+                        narration=f"Strike-Off Reversal of Disbursement for #{payment.payment_number} to {c_name} (Reason: {reason})",
+                        status="posted",
+                        is_posted=True,
+                        created_by=user_id
+                    )
+                    session.add(rev_disb)
+                    for dl in disb_lines:
+                        session.add(JournalLine(
+                            id=uuid.uuid4(),
+                            journal_entry_id=rev_disb.id,
+                            tenant_id=tenant_id,
+                            account_id=dl.account_id,
+                            debit_amount=dl.credit_amount,
+                            credit_amount=dl.debit_amount,
+                            description=f"Reversal: {dl.description or payment.payment_number}"
+                        ))
+
+        # 2. Reverse accrual JV if payment was accrued/approved/disbursed
+        if payment.accrual_journal_id:
+            orig_acc_je = (
+                await session.execute(
+                    select(JournalEntry).where(
+                        JournalEntry.tenant_id == tenant_id,
+                        JournalEntry.id == payment.accrual_journal_id
+                    )
+                )
+            ).scalars().first()
+            if orig_acc_je:
+                acc_lines = (
+                    await session.execute(
+                        select(JournalLine).where(JournalLine.journal_entry_id == orig_acc_je.id)
+                    )
+                ).scalars().all()
+                if acc_lines:
+                    reversal_accrual_num = f"JV-REV-CPAY-{payment.payment_number}-{uuid.uuid4().hex[:4].upper()}"
+                    rev_acc = JournalEntry(
+                        id=uuid.uuid4(),
+                        tenant_id=tenant_id,
+                        entry_number=reversal_accrual_num,
+                        entry_date=date.today(),
+                        reference_type="contractor_payment_reversal",
+                        reference_id=payment.id,
+                        narration=f"Strike-Off Reversal of Accrual for #{payment.payment_number} ({c_name}) - Reason: {reason}",
+                        status="posted",
+                        is_posted=True,
+                        created_by=user_id
+                    )
+                    session.add(rev_acc)
+                    for al in acc_lines:
+                        session.add(JournalLine(
+                            id=uuid.uuid4(),
+                            journal_entry_id=rev_acc.id,
+                            tenant_id=tenant_id,
+                            account_id=al.account_id,
+                            debit_amount=al.credit_amount,
+                            credit_amount=al.debit_amount,
+                            description=f"Reversal: {al.description or payment.payment_number}"
+                        ))
+
+        # 3. Mark TDS deduction status as CANCELLED if any
+        if payment.accrual_journal_id:
+            tds_recs = (
+                await session.execute(
+                    select(TDSDeduction).where(
+                        TDSDeduction.tenant_id == tenant_id,
+                        TDSDeduction.journal_entry_id == payment.accrual_journal_id
+                    )
+                )
+            ).scalars().all()
+            for td in tds_recs:
+                td.status = "CANCELLED"
+
+        # 4. Update contractor payment record
+        payment.status = "struck_off"
+        payment.cancellation_reason = reason
+        payment.cancelled_at = datetime.utcnow()
+        clean_desc = (payment.description or "").split(" [STRUCK OFF:")[0]
+        payment.description = f"{clean_desc} [STRUCK OFF: {reason}]"
+
+        await session.commit()
+        await session.refresh(payment)
+
+        return {
+            "success": True,
+            "message": f"Contractor payment {payment.payment_number} struck off successfully with audit reversal entries.",
+            "payment_id": str(payment.id),
+            "payment_number": payment.payment_number,
+            "status": payment.status,
+            "cancellation_reason": payment.cancellation_reason,
+            "reversal_accrual_entry": reversal_accrual_num,
+            "reversal_disbursement_entry": reversal_disb_num
+        }
+
+    @staticmethod
     async def get_yearbook_compensation_summary(
         session: AsyncSession,
         tenant_id: uuid.UUID,
@@ -1516,14 +1663,16 @@ class PayrollService:
         total_employer_esi = sum((r.total_employer_esi for r in payroll_runs), Decimal("0.00"))
         total_employee_benefits = total_salaries_gross + total_employer_pf + total_employer_esi
 
-        # 2. Contractor & Freelancer Payments
+        # 2. Contractor & Freelancer Payments (excluding struck off / cancelled)
         stmt_cp = select(ContractorPayment).options(
             selectinload(ContractorPayment.contractor)
         ).where(
             and_(
                 ContractorPayment.tenant_id == tenant_id,
                 ContractorPayment.payment_date >= start_date,
-                ContractorPayment.payment_date <= end_date
+                ContractorPayment.payment_date <= end_date,
+                ContractorPayment.status != "struck_off",
+                ContractorPayment.status != "cancelled"
             )
         ).order_by(ContractorPayment.payment_date.desc())
         contractor_payments = list((await session.execute(stmt_cp)).scalars().all())
@@ -1615,7 +1764,11 @@ class PayrollService:
         stmt_t = select(Tenant).where(Tenant.id == contractor.tenant_id)
         tenant = (await session.execute(stmt_t)).scalars().first()
 
-        stmt_p = select(ContractorPayment).where(ContractorPayment.contractor_id == contractor_id)
+        stmt_p = select(ContractorPayment).where(
+            ContractorPayment.contractor_id == contractor_id,
+            ContractorPayment.status != "struck_off",
+            ContractorPayment.status != "cancelled"
+        )
         payments = list((await session.execute(stmt_p)).scalars().all())
 
         fy = fiscal_year or "2026-27"

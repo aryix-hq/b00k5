@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, Suspense } from 'react';
-import { useSearchParams, useRouter } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
 import {
   Cloud,
   Shield,
@@ -88,7 +88,6 @@ interface S3MirrorConfig {
 }
 
 function IntegrationsContent() {
-  const router = useRouter();
   const searchParams = useSearchParams();
 
   // URL state sync
@@ -138,19 +137,23 @@ function IntegrationsContent() {
   const [pruningBackups, setPruningBackups] = useState<boolean>(false);
   const [pruneResult, setPruneResult] = useState<{ pruned_count: number; reclaimed_mb: number } | null>(null);
 
-  // Update URL on tab/provider switch
+  // Update URL on tab/provider switch using standard browser history to avoid Next.js App Router flight reducer null pointer crashes
   const handleTabChange = (tab: 'cloud' | 'backups' | 'restore') => {
     setActiveTab(tab);
-    const params = new URLSearchParams(window.location.search);
-    params.set('tab', tab);
-    router.replace(`/settings/integrations?${params.toString()}`);
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      params.set('tab', tab);
+      window.history.replaceState({}, '', `/settings/integrations?${params.toString()}`);
+    }
   };
 
   const handleProviderChange = (provider: 'gdrive' | 's3') => {
     setCloudProvider(provider);
-    const params = new URLSearchParams(window.location.search);
-    params.set('provider', provider);
-    router.replace(`/settings/integrations?${params.toString()}`);
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      params.set('provider', provider);
+      window.history.replaceState({}, '', `/settings/integrations?${params.toString()}`);
+    }
   };
 
   const fetchS3Config = async () => {

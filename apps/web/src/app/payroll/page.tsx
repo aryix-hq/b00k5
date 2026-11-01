@@ -27,7 +27,9 @@ import {
   FileSpreadsheet,
   Briefcase,
   X,
-  Zap
+  Zap,
+  Ban,
+  AlertTriangle
 } from 'lucide-react';
 import { fetchApi } from '@/lib/api';
 import { QuickPayFreelancerModal } from '@/components/payroll/QuickPayFreelancerModal';
@@ -157,11 +159,13 @@ interface ContractorPayment {
   tds_rate: number;
   tds_amount: number;
   net_payable: number;
-  status: 'pending' | 'approved' | 'disbursed';
+  status: 'pending' | 'approved' | 'disbursed' | 'struck_off' | 'cancelled';
   accrual_journal_id?: string;
   disbursement_journal_id?: string;
   payout_utr?: string;
   payout_date?: string;
+  cancellation_reason?: string;
+  cancelled_at?: string;
   contractor_name?: string;
   contractor_pan?: string;
   contractor_code?: string;
@@ -257,6 +261,12 @@ export default function PayrollPage() {
   const [cpayGstRate, setCpayGstRate] = useState('18');
   const [cpayTdsSection, setCpayTdsSection] = useState('194J_TECH');
   const [cpayTdsRate, setCpayTdsRate] = useState('2');
+
+  // Strike Off Contractor Payment State
+  const [strikeOffModalOpen, setStrikeOffModalOpen] = useState<boolean>(false);
+  const [targetPayment, setTargetPayment] = useState<ContractorPayment | null>(null);
+  const [strikeOffReason, setStrikeOffReason] = useState<string>('Test transaction or clerical error voided');
+  const [submittingStrikeOff, setSubmittingStrikeOff] = useState<boolean>(false);
 
   // Search filter
   const [employeeSearch, setEmployeeSearch] = useState('');
@@ -411,6 +421,42 @@ export default function PayrollPage() {
       loadPayrollData();
     } catch (err: any) {
       setErrorMsg(err.message || 'Failed to disburse contractor payment.');
+    }
+  };
+
+  const openStrikeOffModal = (payment: ContractorPayment) => {
+    setTargetPayment(payment);
+    setStrikeOffReason('Test transaction or clerical error voided');
+    setErrorMsg(null);
+    setSuccessMsg(null);
+    setStrikeOffModalOpen(true);
+  };
+
+  const handleExecuteStrikeOff = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!targetPayment) return;
+    if (!strikeOffReason.trim()) {
+      setErrorMsg('A statutory audit reason / note is required to strike off this payment.');
+      return;
+    }
+
+    setSubmittingStrikeOff(true);
+    setErrorMsg(null);
+    setSuccessMsg(null);
+
+    try {
+      const res = await fetchApi(`/api/v1/payroll/contractor-payments/${targetPayment.id}/strike-off`, {
+        method: 'POST',
+        body: JSON.stringify({ reason: strikeOffReason.trim() })
+      });
+      setSuccessMsg(res.message || `Payment ${targetPayment.payment_number} struck off and offsetting reversal entries posted!`);
+      setStrikeOffModalOpen(false);
+      setTargetPayment(null);
+      loadPayrollData();
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Failed to strike off contractor payment.');
+    } finally {
+      setSubmittingStrikeOff(false);
     }
   };
 
@@ -1657,13 +1703,19 @@ export default function PayrollPage() {
                           </td>
                         </tr>
                       ) : (
-                        contractorPayments.map(p => (
-                          <tr key={p.id} className="hover:bg-slate-800/30 transition">
-                            <td className="py-3 px-4 font-mono font-medium text-sky-400">
-                              {p.payment_number}
+                        contractorPayments.map(p => {
+                          const isStruckOff = p.status === 'struck_off' || p.status === 'cancelled';
+                          return (
+                          <tr key={p.id} className={`hover:bg-slate-800/30 transition ${isStruckOff ? 'opacity-60 bg-rose-950/10' : ''}`}>
+                            <td className="py-3 px-4 font-mono font-medium">
+                              <span className={isStruckOff ? 'line-through text-slate-500' : 'text-sky-400'}>
+                                {p.payment_number}
+                              </span>
                             </td>
                             <td className="py-3 px-4">
-                              <div className="font-semibold text-white">{p.contractor_name || 'Contractor'}</div>
+                              <div className={`font-semibold ${isStruckOff ? 'line-through text-slate-400' : 'text-white'}`}>
+                                {p.contractor_name || 'Contractor'}
+                              </div>
                               <div className="text-[11px] font-mono text-slate-500">{p.contractor_code}</div>
                             </td>
                             <td className="py-3 px-4">
@@ -1671,60 +1723,92 @@ export default function PayrollPage() {
                               <div className="text-[11px] text-slate-500">{p.invoice_date}</div>
                             </td>
                             <td className="py-3 px-4 text-slate-300 max-w-xs truncate">
-                              {p.description}
+                              <span className={isStruckOff ? 'line-through text-slate-500' : ''}>
+                                {p.description}
+                              </span>
+                              {isStruckOff && p.cancellation_reason && (
+                                <div className="text-[10px] text-rose-400 font-mono italic mt-0.5">
+                                  Note: {p.cancellation_reason}
+                                </div>
+                              )}
                             </td>
                             <td className="py-3 px-4 text-right font-mono text-slate-200">
-                              ₹{Number(p.gross_amount).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                              <span className={isStruckOff ? 'line-through text-slate-500' : ''}>
+                                ₹{Number(p.gross_amount).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                              </span>
                             </td>
                             <td className="py-3 px-4 text-right font-mono text-rose-400">
-                              -₹{Number(p.tds_amount).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                              <span className={isStruckOff ? 'line-through text-rose-400/50' : ''}>
+                                -₹{Number(p.tds_amount).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                              </span>
                               <div className="text-[10px] text-slate-500">{p.tds_section} @ {Number(p.tds_rate).toFixed(1)}%</div>
                             </td>
-                            <td className="py-3 px-4 text-right font-mono font-semibold text-emerald-400">
-                              ₹{Number(p.net_payable).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                            <td className="py-3 px-4 text-right font-mono font-semibold">
+                              <span className={isStruckOff ? 'line-through text-slate-500' : 'text-emerald-400'}>
+                                ₹{Number(p.net_payable).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                              </span>
                             </td>
                             <td className="py-3 px-4">
                               <span className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
+                                isStruckOff ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30' :
                                 p.status === 'disbursed' ? 'bg-emerald-500/20 text-emerald-300' :
                                 p.status === 'approved' ? 'bg-blue-500/20 text-blue-300' :
                                 'bg-amber-500/20 text-amber-300'
                               }`}>
-                                {p.status.toUpperCase()}
+                                {isStruckOff ? 'STRUCK OFF' : p.status.toUpperCase()}
                               </span>
-                              {p.payout_utr && (
+                              {p.payout_utr && !isStruckOff && (
                                 <div className="text-[10px] font-mono text-slate-400 mt-0.5">{p.payout_utr}</div>
+                              )}
+                              {isStruckOff && (
+                                <div className="text-[10px] text-slate-500 font-mono mt-0.5">Reversed</div>
                               )}
                             </td>
                             <td className="py-3 px-4 text-right">
-                              {p.status === 'pending' && (
-                                <button
-                                  onClick={() => handleAccrueContractorPayment(p.id)}
-                                  className="px-2.5 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white font-medium text-xs transition"
-                                >
-                                  Accrue (Leg 1)
-                                </button>
-                              )}
-                              {p.status === 'approved' && (
-                                <button
-                                  onClick={() => handleDisburseContractorPayment(p.id)}
-                                  className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-xs transition flex items-center gap-1 ml-auto"
-                                >
-                                  <Send className="w-3 h-3" />
-                                  Disburse (Leg 2)
-                                </button>
-                              )}
-                              {p.status === 'disbursed' && (
-                                <button
-                                  onClick={() => handleDownloadFile(`/api/v1/payroll/contractors/${p.contractor_id}/form-16a/pdf`, `Form16A_${p.contractor_code || 'CON'}_2026-27.pdf`)}
-                                  className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs transition inline-flex items-center gap-1"
-                                >
-                                  <Download className="w-3 h-3 text-sky-400" />
-                                  Form 16A
-                                </button>
-                              )}
+                              <div className="flex items-center justify-end gap-1.5">
+                                {p.status === 'pending' && (
+                                  <button
+                                    onClick={() => handleAccrueContractorPayment(p.id)}
+                                    className="px-2.5 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white font-medium text-xs transition"
+                                  >
+                                    Accrue (Leg 1)
+                                  </button>
+                                )}
+                                {p.status === 'approved' && (
+                                  <button
+                                    onClick={() => handleDisburseContractorPayment(p.id)}
+                                    className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-xs transition flex items-center gap-1"
+                                  >
+                                    <Send className="w-3 h-3" />
+                                    Disburse (Leg 2)
+                                  </button>
+                                )}
+                                {p.status === 'disbursed' && (
+                                  <button
+                                    onClick={() => handleDownloadFile(`/api/v1/payroll/contractors/${p.contractor_id}/form-16a/pdf`, `Form16A_${p.contractor_code || 'CON'}_2026-27.pdf`)}
+                                    className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs transition inline-flex items-center gap-1"
+                                  >
+                                    <Download className="w-3 h-3 text-sky-400" />
+                                    Form 16A
+                                  </button>
+                                )}
+                                {!isStruckOff && (
+                                  <button
+                                    onClick={() => openStrikeOffModal(p)}
+                                    className="px-2 py-1 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 text-xs transition inline-flex items-center gap-1"
+                                    title="Strike off payment with statutory audit note"
+                                  >
+                                    <Ban className="w-3 h-3" />
+                                    Strike Off
+                                  </button>
+                                )}
+                                {isStruckOff && (
+                                  <span className="text-[11px] text-slate-500 italic">GL Balanced</span>
+                                )}
+                              </div>
                             </td>
                           </tr>
-                        ))
+                        );})
                       )}
                     </tbody>
                   </table>
@@ -2613,6 +2697,95 @@ export default function PayrollPage() {
                       className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium shadow-lg shadow-indigo-950/40 disabled:opacity-40"
                     >
                       Create Payout Claim
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+
+          {/* MODAL: STRIKE OFF CONTRACTOR PAYMENT */}
+          {strikeOffModalOpen && targetPayment && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 overflow-y-auto">
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-lg overflow-hidden shadow-2xl my-8">
+                <div className="flex items-center justify-between p-5 border-b border-slate-800">
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 rounded-lg bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400">
+                      <Ban className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h2 className="text-base font-bold text-white">Strike Off Contractor Payment</h2>
+                      <p className="text-xs font-mono text-slate-400">{targetPayment.payment_number}</p>
+                    </div>
+                  </div>
+                  <button onClick={() => setStrikeOffModalOpen(false)} className="text-slate-400 hover:text-white">
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+
+                <form onSubmit={handleExecuteStrikeOff} className="p-6 space-y-5">
+                  <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
+                    <div className="flex justify-between text-xs">
+                      <span className="text-slate-400">Contractor / Freelancer:</span>
+                      <span className="font-semibold text-white">{targetPayment.contractor_name || 'Contractor'}</span>
+                    </div>
+                    <div className="flex justify-between text-xs">
+                      <span className="text-slate-400">Invoice Ref:</span>
+                      <span className="font-mono text-slate-300">#{targetPayment.invoice_number} ({targetPayment.invoice_date})</span>
+                    </div>
+                    <div className="flex justify-between text-xs">
+                      <span className="text-slate-400">Gross Amount:</span>
+                      <span className="font-mono text-slate-200">₹{Number(targetPayment.gross_amount).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                    </div>
+                    <div className="flex justify-between text-xs">
+                      <span className="text-slate-400">TDS Withheld:</span>
+                      <span className="font-mono text-rose-400">-₹{Number(targetPayment.tds_amount).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                    </div>
+                    <div className="flex justify-between text-xs border-t border-slate-800/80 pt-2 font-bold">
+                      <span className="text-slate-300">Net Outflow:</span>
+                      <span className="font-mono text-emerald-400">₹{Number(targetPayment.net_payable).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                    </div>
+                  </div>
+
+                  <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs space-y-1">
+                    <div className="font-bold flex items-center gap-1.5 text-amber-400">
+                      <AlertTriangle className="w-4 h-4 shrink-0" />
+                      <span>Statutory Audit Trail Compliance</span>
+                    </div>
+                    <p className="text-[11px] leading-relaxed text-amber-200/90">
+                      Under Indian MCA audit trail rules, striking off a posted payment generates offsetting <strong>Contra Reversal Journal Entries</strong> in the General Ledger. Your accounts remain 100% balanced with zero drift.
+                    </p>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium text-slate-300">
+                      Cancellation Note / Audit Reason <span className="text-rose-400">*</span>
+                    </label>
+                    <textarea
+                      rows={3}
+                      required
+                      value={strikeOffReason}
+                      onChange={(e) => setStrikeOffReason(e.target.value)}
+                      placeholder="e.g. Test transaction cleanup, duplicate invoice, or contract canceled by mutual consent"
+                      className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-rose-500"
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-end gap-3 pt-2">
+                    <button
+                      type="button"
+                      onClick={() => setStrikeOffModalOpen(false)}
+                      className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium text-xs transition"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={submittingStrikeOff || !strikeOffReason.trim()}
+                      className="px-5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white font-semibold text-xs flex items-center gap-2 transition shadow-sm"
+                    >
+                      <Ban className={`w-3.5 h-3.5 ${submittingStrikeOff ? 'animate-spin' : ''}`} />
+                      {submittingStrikeOff ? 'Striking Off...' : 'Confirm Strike-Off'}
                     </button>
                   </div>
                 </form>

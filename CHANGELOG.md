@@ -5,6 +5,21 @@ All notable changes to `b00k5` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-11-01
+
+### Fixed
+- **FIX-UI-01 App Router Shallow Navigation Crash (React Invariant #310 & `t.parallelRoutes is null`)**:
+  - Replaced Next.js `router.replace` with native `window.history.replaceState` in `apps/web/src/app/settings/integrations/page.tsx` for shallow tab and provider switching (`cloud`, `backups`, `restore`, `gdrive`, `s3`/Cloudflare), eliminating Next.js 14 App Router Flight reducer crash (`parallelRoutes.get()` on null segment cache).
+  - Hardened `apps/web/src/app/global-error.tsx` root layout error boundary with clean `window.location.reload()` and `/dashboard` fallback, preventing infinite crash loops on client router cache corruption.
+
+### Added
+- **FEAT-PAYROLL-07 Contractor & Freelancer Payment Statutory Strike-Off Engine with Audit Notes**:
+  - Implemented `POST /api/v1/payroll/contractor-payments/{payment_id}/strike-off` with `ContractorPaymentStrikeOffRequest` (`reason: str`).
+  - Added statutory contra reversal engine in `PayrollService.strike_off_contractor_payment`: automatically posts offsetting contra journal entries for posted accrual JVs (`JV-REV-CPAY-...`) and disbursement JVs (`JV-REV-DISB-...`), cancels related TDS deductions, and preserves strict ledger balance equilibrium ($\sum \text{Dr} = \sum \text{Cr} \equiv 0.00$).
+  - Added `cancellation_reason` and `cancelled_at` fields to `contractor_payments` and updated `get_yearbook_compensation_summary` and `calculate_form_16a` to exclude struck-off records from Year Book burn and Form 16A TDS certificates.
+  - Added "Strike Off" action modal to `/payroll` with payment breakdown, statutory audit explanation, and live table updates (red `STRUCK OFF` badge, strike-through styling, and inline reason tooltip).
+  - Added comprehensive automated test suite in `apps/api/tests/test_payroll_contractors.py` validating 100% test pass rate with zero ledger drift.
+
 ## [Unreleased] - 2026-10-31
 
 ### Fixed

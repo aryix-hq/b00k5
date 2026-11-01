@@ -6,7 +6,7 @@ from decimal import Decimal
 from datetime import date
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.pool import NullPool
-from sqlalchemy import select, and_, text
+from sqlalchemy import select, and_, text, func
 
 from httpx import AsyncClient, ASGITransport
 from app.main import app
@@ -381,4 +381,34 @@ async def test_contractor_rest_api_e2e(contractor_test_tenant: Tenant, db_sessio
         assert res8.headers["content-type"] == "application/pdf"
         assert "attachment; filename=\"Form16A_CON-API-01_2026-27.pdf\"" in res8.headers["content-disposition"]
         assert res8.content.startswith(b"%PDF")
+
+        # 9. Strike Off Payment with Statutory Note & Offset Contra JVs
+        res9 = await client.post(
+            f"/api/v1/payroll/contractor-payments/{payment_id}/strike-off",
+            json={"reason": "Statutory audit test reversal - duplicate invoice voided"},
+            headers=headers
+        )
+        assert res9.status_code == 200, res9.text
+        strike_data = res9.json()
+        assert strike_data["success"] is True
+        assert strike_data["status"] == "struck_off"
+        assert strike_data["cancellation_reason"] == "Statutory audit test reversal - duplicate invoice voided"
+        assert strike_data["reversal_accrual_entry"] is not None
+        assert strike_data["reversal_disbursement_entry"] is not None
+
+        # Verify ledger drift across tenant is exactly 0.00
+        drift_stmt = select(
+            func.coalesce(func.sum(JournalLine.debit_amount), Decimal("0.00")).label("total_debit"),
+            func.coalesce(func.sum(JournalLine.credit_amount), Decimal("0.00")).label("total_credit")
+        ).where(JournalLine.tenant_id == tenant.id)
+        drift_res = (await db_session.execute(drift_stmt)).one()
+        assert drift_res.total_debit == drift_res.total_credit
+
+        # Verify Form 16A now excludes the struck off payment
+        res10 = await client.get(f"/api/v1/payroll/contractors/{contractor_id}/form-16a", headers=headers)
+        assert res10.status_code == 200
+        f16a_after = res10.json()
+        assert float(f16a_after["total_gross_amount"]) == 0.00
+        assert float(f16a_after["total_tds_deducted"]) == 0.00
+
 

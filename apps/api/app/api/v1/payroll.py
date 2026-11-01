@@ -20,6 +20,7 @@ from app.schemas.payroll import (
     Form16Response,
     ContractorCreate, ContractorUpdate, ContractorResponse,
     ContractorPaymentCreate, ContractorPaymentResponse,
+    ContractorPaymentStrikeOffRequest, ContractorPaymentStrikeOffResponse,
     Form16AResponse, QuickContractorPaymentRequest
 )
 from app.services.payroll_service import PayrollService
@@ -908,6 +909,29 @@ async def disburse_contractor_payment(
             res.contractor_pan = contractor.pan_number
             res.contractor_code = contractor.contractor_code
         return res
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.post("/contractor-payments/{payment_id}/strike-off", response_model=ContractorPaymentStrikeOffResponse)
+async def strike_off_contractor_payment(
+    payment_id: uuid.UUID,
+    payload: ContractorPaymentStrikeOffRequest,
+    ctx: IAMContext = Depends(require_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Statutory Strike-Off / Cancellation of Contractor / Freelancer Payment:
+    1. Voids payment status as 'struck_off' with statutory audit note.
+    2. Posts offsetting Contra Reversal JV for disbursement if disbursed.
+    3. Posts offsetting Contra Reversal JV for accrual if accrued.
+    4. Cancels associated TDS deduction records.
+    5. Preserves zero ledger balance drift (Dr == Cr).
+    """
+    try:
+        return await PayrollService.strike_off_contractor_payment(
+            db, ctx.tenant.id, payment_id, payload.reason, ctx.user.id
+        )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 

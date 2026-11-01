@@ -589,7 +589,7 @@ function IntegrationsContent() {
               {cloudProvider === 's3' && (
                 <div className="space-y-6">
                   {/* Quota & Capacity Usage Card */}
-                  {s3Config?.storage_usage && (
+                  {s3Config?.configured && s3Config?.storage_usage && typeof s3Config.storage_usage.total_mb === 'number' && (
                     <div className="p-6 rounded-2xl bg-gradient-to-br from-slate-900 via-slate-900 to-amber-950/20 border border-amber-500/20 space-y-4">
                       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                         <div>
@@ -597,7 +597,7 @@ function IntegrationsContent() {
                             <Layers className="w-5 h-5 text-amber-400" />
                             <h3 className="text-lg font-bold text-white">Cloudflare R2 Storage Quota</h3>
                             <span className="px-2 py-0.5 text-xs font-mono font-medium rounded bg-amber-500/10 text-amber-300 border border-amber-500/20">
-                              Free Tier (10 GB/month)
+                              Free Tier ({s3Config.storage_usage.free_tier_gb ?? 10} GB/month)
                             </span>
                           </div>
                           <p className="text-xs text-slate-400 mt-1">
@@ -608,16 +608,16 @@ function IntegrationsContent() {
                         <div className="flex items-center gap-4 text-right">
                           <div>
                             <div className="text-2xl font-mono font-bold text-amber-300">
-                              {s3Config.storage_usage.total_mb.toFixed(2)} <span className="text-sm font-normal text-slate-400">MB</span>
+                              {(s3Config.storage_usage.total_mb ?? 0).toFixed(2)} <span className="text-sm font-normal text-slate-400">MB</span>
                             </div>
                             <div className="text-xs text-slate-500 font-mono">
-                              of {s3Config.storage_usage.free_tier_gb} GB used ({s3Config.storage_usage.used_percentage.toFixed(2)}%)
+                              of {s3Config.storage_usage.free_tier_gb ?? 10} GB used ({((s3Config.storage_usage.used_percentage ?? 0)).toFixed(2)}%)
                             </div>
                           </div>
                           <div className="h-10 w-[1px] bg-slate-800"></div>
                           <div>
                             <div className="text-2xl font-mono font-bold text-emerald-400">
-                              {s3Config.storage_usage.remaining_free_gb.toFixed(2)} <span className="text-sm font-normal text-slate-400">GB</span>
+                              {(s3Config.storage_usage.remaining_free_gb ?? 10).toFixed(2)} <span className="text-sm font-normal text-slate-400">GB</span>
                             </div>
                             <div className="text-xs text-slate-500 font-mono">Remaining Free Allowance</div>
                           </div>
@@ -629,15 +629,15 @@ function IntegrationsContent() {
                         <div className="w-full h-3 rounded-full bg-slate-800 overflow-hidden p-0.5">
                           <div
                             className={`h-full rounded-full transition-all duration-500 ${
-                              s3Config.storage_usage.used_percentage > 85 ? 'bg-rose-500' : s3Config.storage_usage.used_percentage > 60 ? 'bg-amber-500' : 'bg-emerald-500'
+                              (s3Config.storage_usage.used_percentage ?? 0) > 85 ? 'bg-rose-500' : (s3Config.storage_usage.used_percentage ?? 0) > 60 ? 'bg-amber-500' : 'bg-emerald-500'
                             }`}
-                            style={{ width: `${Math.max(s3Config.storage_usage.used_percentage, 0.5)}%` }}
+                            style={{ width: `${Math.max(s3Config.storage_usage.used_percentage ?? 0, 0.5)}%` }}
                           ></div>
                         </div>
                         <div className="flex justify-between text-[11px] text-slate-500 font-mono">
                           <span>0 GB</span>
-                          <span>{s3Config.storage_usage.file_count} total remote objects</span>
-                          <span>{s3Config.storage_usage.free_tier_gb} GB</span>
+                          <span>{s3Config.storage_usage.file_count ?? 0} total remote objects</span>
+                          <span>{s3Config.storage_usage.free_tier_gb ?? 10} GB</span>
                         </div>
                       </div>
 
@@ -650,10 +650,10 @@ function IntegrationsContent() {
                               <span>Tax Invoices</span>
                             </div>
                             <div className="text-sm font-bold font-mono text-white">
-                              {((s3Config.storage_usage.categories['invoices']?.bytes || 0) / (1024 * 1024)).toFixed(2)} MB
+                              {(((s3Config.storage_usage.categories['sales_invoices']?.bytes ?? s3Config.storage_usage.categories['invoices']?.bytes ?? 0)) / (1024 * 1024)).toFixed(2)} MB
                             </div>
                             <div className="text-[10px] text-slate-500">
-                              {s3Config.storage_usage.categories['invoices']?.count || 0} files
+                              {(s3Config.storage_usage.categories['sales_invoices']?.count ?? s3Config.storage_usage.categories['invoices']?.count ?? 0)} files
                             </div>
                           </div>
 
@@ -663,10 +663,10 @@ function IntegrationsContent() {
                               <span>Vendor Bills</span>
                             </div>
                             <div className="text-sm font-bold font-mono text-white">
-                              {((s3Config.storage_usage.categories['bills']?.bytes || 0) / (1024 * 1024)).toFixed(2)} MB
+                              {(((s3Config.storage_usage.categories['vendor_bills']?.bytes ?? s3Config.storage_usage.categories['bills']?.bytes ?? 0)) / (1024 * 1024)).toFixed(2)} MB
                             </div>
                             <div className="text-[10px] text-slate-500">
-                              {s3Config.storage_usage.categories['bills']?.count || 0} files
+                              {(s3Config.storage_usage.categories['vendor_bills']?.count ?? s3Config.storage_usage.categories['bills']?.count ?? 0)} files
                             </div>
                           </div>
 
@@ -676,10 +676,10 @@ function IntegrationsContent() {
                               <span>Statutory Vault</span>
                             </div>
                             <div className="text-sm font-bold font-mono text-white">
-                              {((s3Config.storage_usage.categories['statutory']?.bytes || 0) / (1024 * 1024)).toFixed(2)} MB
+                              {(((s3Config.storage_usage.categories['statutory_vault']?.bytes ?? s3Config.storage_usage.categories['statutory']?.bytes ?? 0)) / (1024 * 1024)).toFixed(2)} MB
                             </div>
                             <div className="text-[10px] text-slate-500">
-                              {s3Config.storage_usage.categories['statutory']?.count || 0} files
+                              {(s3Config.storage_usage.categories['statutory_vault']?.count ?? s3Config.storage_usage.categories['statutory']?.count ?? 0)} files
                             </div>
                           </div>
 
@@ -689,10 +689,10 @@ function IntegrationsContent() {
                               <span>DB Backups</span>
                             </div>
                             <div className="text-sm font-bold font-mono text-white">
-                              {((s3Config.storage_usage.categories['backups']?.bytes || 0) / (1024 * 1024)).toFixed(2)} MB
+                              {(((s3Config.storage_usage.categories['database_backups']?.bytes ?? s3Config.storage_usage.categories['backups']?.bytes ?? 0)) / (1024 * 1024)).toFixed(2)} MB
                             </div>
                             <div className="text-[10px] text-slate-500">
-                              {s3Config.storage_usage.categories['backups']?.count || 0} snapshots
+                              {(s3Config.storage_usage.categories['database_backups']?.count ?? s3Config.storage_usage.categories['backups']?.count ?? 0)} snapshots
                             </div>
                           </div>
                         </div>
@@ -774,7 +774,7 @@ function IntegrationsContent() {
                     {pruneResult && (
                       <div className="p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs flex items-center gap-2">
                         <Check className="w-4 h-4 shrink-0" />
-                        <span>Pruned {pruneResult.pruned_count} old backups, reclaimed {pruneResult.reclaimed_mb.toFixed(2)} MB on Cloudflare R2.</span>
+                        <span>Pruned {pruneResult.pruned_count} old backups, reclaimed {(pruneResult.reclaimed_mb ?? 0).toFixed(2)} MB on Cloudflare R2.</span>
                       </div>
                     )}
                   </div>

@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased] - 2026-11-01
 
 ### Fixed
+- **FIX-STORAGE-09 Cloudflare R2 / S3 Storage Quota Null-Safe Rendering (`apps/web/src/app/settings/integrations/page.tsx`, `apps/api/app/api/v1/storage.py`)**:
+  - Guarded Cloudflare R2 / S3 Quota & Capacity Usage card rendering with strict `configured` and numeric `typeof total_mb === 'number'` assertions, eliminating `TypeError: can't access property "toFixed", eb.storage_usage.total_mb is undefined` when viewing unconfigured or uninitialized remote buckets.
+  - Implemented nullish coalescing defaults across all metric calculations (`total_mb`, `used_percentage`, `remaining_free_gb`, `free_tier_gb`, `file_count`, `reclaimed_mb`) and dual-key category lookups (`sales_invoices`/`invoices`, `vendor_bills`/`bills`, `statutory_vault`/`statutory`, `database_backups`/`backups`).
+  - Enhanced `GET /api/v1/storage/s3-config` to return structured zero-metric usage schemas for configured buckets awaiting initial sync and `None` when unconfigured.
 - **FIX-PAYROLL-08 Statutory & Bank CMS Export Authorization Credentials (`apps/web/src/app/payroll/page.tsx`)**:
   - Replaced ad-hoc `localStorage.getItem('token')` fetch logic in `handleDownloadFile` with standardized `fetchRawApi` from `@/lib/api`.
   - Resolves HTTP 401 Unauthorized (`Authentication credentials not provided`) error when downloading HDFC ENet, ICICI CMS, SBI CMP, EPFO ECR, ESIC, PT returns, and Form 16A PDF certificates.

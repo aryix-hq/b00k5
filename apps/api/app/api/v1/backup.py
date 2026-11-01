@@ -16,18 +16,19 @@ from sqlalchemy import select, desc
 from pydantic import BaseModel
 
 from app.core.database import get_db
-from app.core.iam import require_super_admin_or_owner, get_optional_tenant, get_current_tenant
+from app.core.iam import require_super_admin_or_owner
 from app.models.tenant import User, Tenant
 from app.models.backup import DatabaseBackupLog
 from app.services.db_backup import DatabaseBackupManager
-from app.schemas.system import BackupLogResponse
 from app.api.v1.system import (
     trigger_database_backup,
     list_database_backup_logs,
     list_backup_snapshots,
     create_minio_checkpoint,
     restore_minio_checkpoint,
-    RestoreCheckpointRequest
+    RestoreCheckpointRequest,
+    BackupLogResponse,
+    get_optional_tenant
 )
 
 router = APIRouter()

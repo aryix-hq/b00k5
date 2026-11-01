@@ -34,13 +34,29 @@ export default function GlobalError({ error, reset }: GlobalErrorProps) {
             </div>
           )}
 
-          <div className="flex gap-3">
+          <div className="flex flex-col sm:flex-row gap-3">
             <button
-              onClick={() => reset()}
-              className="w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-lg transition-all shadow-lg shadow-emerald-950/40"
+              onClick={() => {
+                if (typeof window !== 'undefined') {
+                  window.location.reload();
+                } else {
+                  reset();
+                }
+              }}
+              className="flex-1 flex items-center justify-center gap-2 py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-lg transition-all shadow-lg shadow-emerald-950/40"
             >
               <RefreshCw className="w-3.5 h-3.5" />
               Reload Application
+            </button>
+            <button
+              onClick={() => {
+                if (typeof window !== 'undefined') {
+                  window.location.href = '/dashboard';
+                }
+              }}
+              className="flex-1 flex items-center justify-center gap-2 py-2.5 px-4 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-lg transition-all border border-slate-700"
+            >
+              Dashboard
             </button>
           </div>
         </div>

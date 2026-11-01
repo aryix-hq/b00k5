@@ -317,6 +317,8 @@ class ContractorPaymentResponse(ContractorPaymentBase):
     disbursement_journal_id: Optional[uuid.UUID] = None
     payout_utr: Optional[str] = None
     payout_date: Optional[date] = None
+    cancellation_reason: Optional[str] = None
+    cancelled_at: Optional[datetime] = None
     contractor_name: Optional[str] = None
     contractor_pan: Optional[str] = None
     contractor_code: Optional[str] = None
@@ -360,6 +362,22 @@ class QuickContractorPaymentRequest(BaseModel):
     bank_ifsc_code: Optional[str] = None
     disburse_immediately: bool = True
     contra_bank_account_code: str = "1010"
+
+
+class ContractorPaymentStrikeOffRequest(BaseModel):
+    reason: str = Field(..., min_length=3, max_length=500, description="Statutory reason or audit note for voiding/striking off payment")
+
+
+class ContractorPaymentStrikeOffResponse(BaseModel):
+    success: bool
+    message: str
+    payment_id: str
+    payment_number: str
+    status: str
+    cancellation_reason: Optional[str] = None
+    reversal_accrual_entry: Optional[str] = None
+    reversal_disbursement_entry: Optional[str] = None
+
 
 
 

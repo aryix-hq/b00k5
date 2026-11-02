@@ -11,7 +11,8 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, s
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_
-from app.api.deps import get_db
+from app.api.deps import get_db, get_current_tenant, get_current_user
+from app.models.tenant import Tenant, User
 HAVE_FASTAPI = True
 
 from app.core.config import settings
@@ -146,8 +147,24 @@ async def upload_document_endpoint(
 async def get_presigned_url_endpoint(
     bucket: str,
     object_name: str,
-    expires_in: int = 3600
+    expires_in: int = 3600,
+    tenant: Tenant = Depends(get_current_tenant),
+    current_user: User = Depends(get_current_user)
 ):
+    """
+    Generates a secure presigned download URL for an authorized tenant object.
+    Enforces authentication and tenant isolation boundaries (SEC-01).
+    """
+    tenant_str = str(tenant.id)
+    user_role = (getattr(current_user, "role", "") or "").lower()
+    is_super_admin = getattr(current_user, "is_super_admin", False) or user_role in ("super_admin", "owner")
+    if not is_super_admin:
+        if not object_name.startswith(f"{tenant_str}/") and f"/{tenant_str}/" not in object_name and tenant_str not in object_name:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: You do not have permission to generate presigned URLs for objects outside your company vault."
+            )
+
     url = storage_manager.generate_presigned_url(bucket, object_name, expires_in)
     return PresignedUrlResponse(
         file_name=object_name.split("/")[-1],
@@ -157,16 +174,21 @@ async def get_presigned_url_endpoint(
         expires_in_seconds=expires_in
     )
 
+
 @router.get("/sync-status/{sync_id}")
 async def get_sync_status(
     sync_id: uuid.UUID,
+    tenant: Tenant = Depends(get_current_tenant),
     db: Optional[AsyncSession] = Depends(get_db) if HAVE_FASTAPI else None
 ):
     if not db:
         return {"sync_id": str(sync_id), "status": "synced"}
 
     from app.models.cloud_sync import CloudSyncLedger
-    stmt = select(CloudSyncLedger).where(CloudSyncLedger.id == sync_id)
+    stmt = select(CloudSyncLedger).where(
+        CloudSyncLedger.id == sync_id,
+        CloudSyncLedger.tenant_id == tenant.id
+    )
     res = await db.execute(stmt)
     record = res.scalar_one_or_none()
     if not record:
@@ -179,9 +201,6 @@ async def get_sync_status(
         "sha256_checksum": record.sha256_checksum,
         "synced_at": record.synced_at.isoformat() if record.synced_at else None
     }
-
-from app.api.deps import get_current_tenant, get_current_user
-from app.models.tenant import Tenant, User
 from app.models.vault import DocumentVault
 from app.models.bank import BankStatement
 from app.models.cloud_sync import CloudSyncLedger

@@ -159,7 +159,7 @@ interface ContractorPayment {
   tds_rate: number;
   tds_amount: number;
   net_payable: number;
-  status: 'pending' | 'approved' | 'disbursed' | 'struck_off' | 'cancelled';
+  status: 'pending' | 'approved' | 'disbursed' | 'reconciled' | 'struck_off' | 'cancelled';
   accrual_journal_id?: string;
   disbursement_journal_id?: string;
   payout_utr?: string;
@@ -425,6 +425,10 @@ export default function PayrollPage() {
   };
 
   const openStrikeOffModal = (payment: ContractorPayment) => {
+    if (payment.status === 'reconciled') {
+      alert(`Statutory Invariant: Contractor payment #${payment.payment_number} has already been reconciled with the bank statement. Money has physically cleared the bank account. Under CARO 2020 and double-entry rules, reconciled transactions cannot be struck off.`);
+      return;
+    }
     setTargetPayment(payment);
     setStrikeOffReason('Test transaction or clerical error voided');
     setErrorMsg(null);
@@ -1789,7 +1793,15 @@ export default function PayrollPage() {
                                     Form 16A
                                   </button>
                                 )}
-                                {!isStruckOff && (
+                                {!isStruckOff && p.status === 'reconciled' ? (
+                                  <span
+                                    className="px-2 py-1 rounded bg-slate-800 text-slate-500 text-xs inline-flex items-center gap-1 cursor-not-allowed"
+                                    title="Reconciled with Bank Statement. Under statutory accounting rules, reconciled transactions cannot be struck off."
+                                  >
+                                    <Lock className="w-3 h-3 text-slate-500" />
+                                    Reconciled
+                                  </span>
+                                ) : !isStruckOff ? (
                                   <button
                                     onClick={() => openStrikeOffModal(p)}
                                     className="px-2 py-1 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 text-xs transition inline-flex items-center gap-1"
@@ -1798,7 +1810,7 @@ export default function PayrollPage() {
                                     <Ban className="w-3 h-3" />
                                     Strike Off
                                   </button>
-                                )}
+                                ) : null}
                                 {isStruckOff && (
                                   <span className="text-[11px] text-slate-500 italic">GL Balanced</span>
                                 )}

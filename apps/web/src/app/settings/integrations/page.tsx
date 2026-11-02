@@ -137,13 +137,14 @@ function IntegrationsContent() {
   const [pruningBackups, setPruningBackups] = useState<boolean>(false);
   const [pruneResult, setPruneResult] = useState<{ pruned_count: number; reclaimed_mb: number } | null>(null);
 
-  // Update URL on tab/provider switch using standard browser history to avoid Next.js App Router flight reducer null pointer crashes
+  // Update URL on tab/provider switch preserving Next.js internal router state
   const handleTabChange = (tab: 'cloud' | 'backups' | 'restore') => {
     setActiveTab(tab);
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
       params.set('tab', tab);
-      window.history.replaceState({}, '', `/settings/integrations?${params.toString()}`);
+      const state = window.history.state || {};
+      window.history.replaceState(state, '', `/settings/integrations?${params.toString()}`);
     }
   };
 
@@ -152,7 +153,8 @@ function IntegrationsContent() {
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
       params.set('provider', provider);
-      window.history.replaceState({}, '', `/settings/integrations?${params.toString()}`);
+      const state = window.history.state || {};
+      window.history.replaceState(state, '', `/settings/integrations?${params.toString()}`);
     }
   };
 
@@ -370,7 +372,7 @@ function IntegrationsContent() {
       const res = await fetchApi('/api/v1/system/backup-database', {
         method: 'POST'
       });
-      setBackupStatus(`Database backup snapshot successfully created: ${res.filename} (${(res.file_size_bytes / 1024).toFixed(1)} KB)`);
+      setBackupStatus(`Database backup snapshot successfully created: ${res.filename} (${(((res.file_size_bytes || 0) / 1024)).toFixed(1)} KB)`);
       await fetchLogs();
       await fetchMinioSnapshots();
       await fetchS3Config();
@@ -1053,7 +1055,7 @@ function IntegrationsContent() {
                               {log.filename}
                             </td>
                             <td className="px-4 py-3 text-slate-300">
-                              {(log.file_size_bytes / 1024).toFixed(1)} KB
+                              {(((log.file_size_bytes || 0) / 1024)).toFixed(1)} KB
                             </td>
                             <td className="px-4 py-3 text-slate-400 truncate max-w-[120px]" title={log.sha256_checksum}>
                               {log.sha256_checksum ? log.sha256_checksum.substring(0, 12) + '...' : 'N/A'}
@@ -1062,7 +1064,7 @@ function IntegrationsContent() {
                               {log.gdrive_file_id || 'Local/S3'}
                             </td>
                             <td className="px-4 py-3 text-slate-400">
-                              {log.duration_seconds ? `${log.duration_seconds.toFixed(2)}s` : 'N/A'}
+                              {typeof log.duration_seconds === 'number' ? `${log.duration_seconds.toFixed(2)}s` : 'N/A'}
                             </td>
                             <td className="px-4 py-3">
                               <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${
@@ -1166,7 +1168,7 @@ function IntegrationsContent() {
                               {snap.filename}
                             </td>
                             <td className="px-4 py-3 text-slate-300">
-                              {(snap.size_bytes / 1024).toFixed(1)} KB
+                              {(((snap.size_bytes || 0) / 1024)).toFixed(1)} KB
                             </td>
                             <td className="px-4 py-3 text-slate-400 truncate max-w-[200px]" title={snap.object_key}>
                               {snap.object_key}
@@ -1221,7 +1223,7 @@ function IntegrationsContent() {
                   </div>
                   <div className="flex justify-between">
                     <span className="text-slate-500">Snapshot Size:</span>
-                    <span className="font-mono text-slate-300">{(targetSnapshot.size_bytes / 1024).toFixed(1)} KB</span>
+                    <span className="font-mono text-slate-300">{(((targetSnapshot?.size_bytes || 0) / 1024)).toFixed(1)} KB</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-slate-500">Timestamp:</span>

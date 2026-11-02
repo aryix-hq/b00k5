@@ -28,6 +28,7 @@ import {
   Ban,
   UploadCloud,
   Calendar,
+  Lock,
   FileCheck
 } from 'lucide-react';
 import { fetchApi } from '@/lib/api';
@@ -1112,16 +1113,25 @@ export default function ExpensesHubPage() {
                                 >
                                   <Edit2 className="w-4 h-4" />
                                 </button>
-                                <button
-                                  onClick={() => {
-                                    setStrikeOffItem(item);
-                                    setStrikeOffReason('Cancelled / reversed per statutory review');
-                                  }}
-                                  title="Strike Off Expense (MCA Section 128 & Rule 3 Reversal)"
-                                  className="p-1.5 rounded hover:bg-rose-950 text-slate-400 hover:text-rose-400 transition"
-                                >
-                                  <Ban className="w-4 h-4" />
-                                </button>
+                                {item.settlement_status === 'reconciled' ? (
+                                  <span
+                                    title="Reconciled with Bank Statement. Under CARO 2020 rules, reconciled expenses cannot be struck off."
+                                    className="p-1.5 text-slate-600 cursor-not-allowed inline-flex items-center"
+                                  >
+                                    <Lock className="w-4 h-4 text-slate-600" />
+                                  </span>
+                                ) : (
+                                  <button
+                                    onClick={() => {
+                                      setStrikeOffItem(item);
+                                      setStrikeOffReason('Cancelled / reversed per statutory review');
+                                    }}
+                                    title="Strike Off Expense (MCA Section 128 & Rule 3 Reversal)"
+                                    className="p-1.5 rounded hover:bg-rose-950 text-slate-400 hover:text-rose-400 transition"
+                                  >
+                                    <Ban className="w-4 h-4" />
+                                  </button>
+                                )}
                               </>
                             )}
                           </td>

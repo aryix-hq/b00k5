@@ -1693,6 +1693,45 @@ async def strike_off_expense(
     if ctx.role == "employee" and exp.employee_id != current_user.id:
         raise HTTPException(status_code=403, detail="Employees may only delete/strike-off their own expense claims.")
 
+    if exp.status in ["struck_off", "cancelled"]:
+        raise HTTPException(status_code=400, detail="Expense record has already been struck off.")
+
+    if exp.settlement_status == "reconciled":
+        raise HTTPException(
+            status_code=400,
+            detail="Statutory Invariant Violation: Cannot strike off an expense that has been reconciled with the bank feed. "
+                   "Money has physically cleared the bank account. Under CARO 2020 rules, voiding a cleared expense creates unresolvable BRS drift."
+        )
+
+    # Check if original journal entry is matched to any reconciled bank statement line
+    if exp.journal_entry_number:
+        orig_je_check = (
+            await db.execute(
+                select(JournalEntry).where(
+                    JournalEntry.tenant_id == tenant.id,
+                    JournalEntry.entry_number == exp.journal_entry_number,
+                )
+            )
+        ).scalars().first()
+        if orig_je_check:
+            from app.models.bank import BankStatementLine
+            reconciled_line = (
+                await db.execute(
+                    select(BankStatementLine).where(
+                        BankStatementLine.tenant_id == tenant.id,
+                        BankStatementLine.matched_journal_entry_id == orig_je_check.id,
+                        BankStatementLine.reconciliation_status == 'reconciled'
+                    )
+                )
+            ).scalars().first()
+            if reconciled_line:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Statutory Invariant Violation: Cannot strike off expense '{exp.merchant_name}'. "
+                           f"The associated journal entry is matched and reconciled against bank statement line "
+                           f"#{reconciled_line.line_number} (Ref: {reconciled_line.reference_number or 'N/A'})."
+                )
+
     old_status = exp.status
     exp.status = "struck_off"
     exp.settlement_status = "voided"

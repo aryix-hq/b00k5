@@ -1641,12 +1641,44 @@ async def strike_off_invoice(
             "status": "cancelled"
         }
 
+    if inv.status in ["paid", "reconciled"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Statutory Invariant Violation: Invoice {inv.invoice_number} is marked as {inv.status.upper()}. "
+                   "Payment has already been collected and/or reconciled in the bank feed. Under Section 34 of the CGST Act 2017 "
+                   "and ICAI accounting standards, paid invoices cannot be struck off. You must issue a formal Credit Note and disburse a customer refund."
+        )
+
+    # Statutory Audit Guard: Check if invoice collection journal is reconciled with bank feed
+    from app.models.bank import BankStatementLine
+    reconciled_line = (
+        await db.execute(
+            select(BankStatementLine).where(
+                BankStatementLine.tenant_id == tenant.id,
+                BankStatementLine.reconciliation_status == 'reconciled',
+                BankStatementLine.matched_journal_entry_id.in_(
+                    select(JournalEntry.id).where(
+                        JournalEntry.tenant_id == tenant.id,
+                        JournalEntry.reference_id == inv.id
+                    )
+                )
+            )
+        )
+    ).scalars().first()
+    if reconciled_line:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Statutory Invariant Violation: Cannot strike off invoice {inv.invoice_number}. "
+                   f"The payment is reconciled with bank statement line #{reconciled_line.line_number}. "
+                   "Under CARO 2020 and ICAI rules, reconciled collections cannot be voided. A Credit Note must be issued."
+        )
+
     from datetime import date as dt_date
     reversal_jv_number = f"JV-INV-REVERSAL-{inv.invoice_number}-{uuid.uuid4().hex[:6].upper()}"
     rev_entry = JournalEntry(
         tenant_id=tenant.id,
         entry_number=reversal_jv_number,
-        entry_date=inv.issue_date,  # Match original invoice issue date so period balance sheet reflects strike-off
+        entry_date=dt_date.today(),  # Ind AS 8 / AS-5: Recognise cancellation in current active fiscal period
         reference_type="invoice_strike_off",
         reference_id=inv.id,
         narration=f"Strike-off / Cancellation of Invoice {inv.invoice_number}: {reason or 'Voided by Administrator'}",

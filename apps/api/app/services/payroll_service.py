@@ -1510,6 +1510,32 @@ class PayrollService:
             raise ValueError("Contractor payment record not found.")
         if payment.status in ["struck_off", "cancelled"]:
             raise ValueError("Contractor payment has already been struck off.")
+        if payment.status == "reconciled":
+            raise ValueError(
+                "Statutory Invariant Violation: Cannot strike off a contractor payment that has been reconciled with the bank statement. "
+                "Money has physically cleared the bank account. To adjust, record a refund receipt or unmatch the bank statement line first."
+            )
+
+        # Statutory Audit Guard: Block strike-off if disbursement or accrual is reconciled against bank feed
+        from app.models.bank import BankStatementLine
+        check_jvs = [j for j in [payment.disbursement_journal_id, payment.accrual_journal_id] if j]
+        if check_jvs:
+            reconciled_line = (
+                await session.execute(
+                    select(BankStatementLine).where(
+                        BankStatementLine.tenant_id == tenant_id,
+                        BankStatementLine.matched_journal_entry_id.in_(check_jvs),
+                        BankStatementLine.reconciliation_status == 'reconciled'
+                    )
+                )
+            ).scalars().first()
+            if reconciled_line:
+                raise ValueError(
+                    f"Statutory Invariant Violation: Cannot strike off payment #{payment.payment_number}. "
+                    f"The associated disbursement journal is matched and reconciled against bank statement line "
+                    f"#{reconciled_line.line_number} (Ref: {reconciled_line.reference_number or 'N/A'}). "
+                    "Under CARO 2020 and ICAI standards, striking off a cleared transaction creates an unresolvable BRS drift."
+                )
 
         contractor = await PayrollService.get_contractor(session, tenant_id, payment.contractor_id)
         c_name = contractor.name if contractor else "Contractor"

@@ -553,10 +553,13 @@ class DatabaseBackupManager:
                 env=env,
                 check=False
             )
-            if res.returncode in [0, 1]: # pg_restore returns 1 for harmless warnings
+            if res.returncode in [0, 1]:  # pg_restore returns 0 on complete success, 1 for harmless non-fatal warnings
+                if res.returncode == 1:
+                    logger.info(f"pg_restore completed with non-fatal warnings: {res.stderr.decode('utf-8', errors='ignore')[:300]}")
                 return True
-            logger.warning(f"pg_restore warning/notice: {res.stderr.decode('utf-8', errors='ignore')}")
-            return True
+            err_msg = res.stderr.decode('utf-8', errors='ignore')
+            logger.error(f"pg_restore fatal failure (exit code {res.returncode}): {err_msg}")
+            return False
         except Exception as e:
             logger.error(f"pg_restore execution failed: {e}")
             return False

@@ -31,6 +31,7 @@ import {
   Shield,
   ShieldCheck,
   FolderLock,
+  Lock,
   AlertTriangle
 } from 'lucide-react';
 import Link from 'next/link';
@@ -389,7 +390,11 @@ export default function InvoicesPage() {
     }
   };
 
-  const handleStrikeOffInvoice = async (invId: string, invNum: string) => {
+  const handleStrikeOffInvoice = async (invId: string, invNum: string, status?: string) => {
+    if (status === 'paid' || status === 'reconciled') {
+      alert(`Statutory Invariant: Invoice ${invNum} is already marked as ${status.toUpperCase()}. Paid and reconciled invoices cannot be struck off. Under Section 34 of the CGST Act 2017, you must issue a formal Credit Note.`);
+      return;
+    }
     if (!window.confirm(`Are you sure you want to strike off Invoice ${invNum}?\n\nThis will reverse the Double-Entry journal entries (Sales & Receivables) in your General Ledger and void the invoice.`)) {
       return;
     }
@@ -1076,14 +1081,23 @@ export default function InvoicesPage() {
                               />
                             </label>
                           )}
-                          {!userRole.includes('auditor') && !userRole.includes('ca') && inv.status !== 'cancelled' && inv.status !== 'struck_off' && (
-                            <button
-                              onClick={() => handleStrikeOffInvoice(inv.id, inv.invoice_number)}
-                              className="px-2 py-1 rounded bg-rose-950/40 hover:bg-rose-900/70 border border-rose-800/60 text-rose-300 hover:text-white text-[10px] font-semibold inline-flex items-center gap-1 transition"
-                              title="Strike off / Cancel invoice and reverse ledger postings"
-                            >
-                              <Ban className="w-3 h-3" /> Strike Off
-                            </button>
+                          {!userRole.includes('auditor') && !userRole.includes('ca') && (
+                            inv.status === 'paid' || inv.status === 'reconciled' ? (
+                              <span
+                                className="px-2 py-1 rounded bg-slate-800 text-slate-500 text-[10px] font-medium inline-flex items-center gap-1 cursor-not-allowed"
+                                title="Settled invoice cannot be struck off. Under CGST Sec 34, issue a Credit Note."
+                              >
+                                <Lock className="w-3 h-3 text-slate-500" /> Settled
+                              </span>
+                            ) : inv.status !== 'cancelled' && inv.status !== 'struck_off' ? (
+                              <button
+                                onClick={() => handleStrikeOffInvoice(inv.id, inv.invoice_number, inv.status)}
+                                className="px-2 py-1 rounded bg-rose-950/40 hover:bg-rose-900/70 border border-rose-800/60 text-rose-300 hover:text-white text-[10px] font-semibold inline-flex items-center gap-1 transition"
+                                title="Strike off / Cancel invoice and reverse ledger postings"
+                              >
+                                <Ban className="w-3 h-3" /> Strike Off
+                              </button>
+                            ) : null
                           )}
                         </div>
                       </td>

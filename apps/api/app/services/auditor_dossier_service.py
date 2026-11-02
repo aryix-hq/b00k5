@@ -96,8 +96,8 @@ class AuditorDossierService:
             f"Vendor GSTIN      : {e.merchant_gstin or 'Unregistered'}",
             f"Schedule III Head : {e.category}",
             "--------------------------------------------------------------------------------",
-            f"Gross Amount      : INR {float(e.total_amount or 0):,.2f}",
-            f"CGST / SGST / IGST: INR {float(e.cgst_amount or 0):,.2f} / {float(e.sgst_amount or 0):,.2f} / {float(e.igst_amount or 0):,.2f}",
+            f"Gross Amount      : INR {Decimal(str(e.total_amount or 0)):,.2f}",
+            f"CGST / SGST / IGST: INR {Decimal(str(e.cgst_amount or 0)):,.2f} / {Decimal(str(e.sgst_amount or 0)):,.2f} / {Decimal(str(e.igst_amount or 0)):,.2f}",
             f"ITC Eligibility   : {'ELIGIBLE' if e.itc_eligible else 'INELIGIBLE'}",
             f"Payment Mode      : {(e.payment_mode or 'company_bank').upper()}",
             f"Disbursement Type : {'Paid Personally by ' + (e.director_name or 'Director') if e.paid_personally else 'Company Bank Account'}",
@@ -124,10 +124,10 @@ class AuditorDossierService:
             f"Source File Name  : {s.file_name}",
             f"File SHA-256      : {s.file_sha256 or 'N/A'}",
             "--------------------------------------------------------------------------------",
-            f"Opening Balance   : INR {float(s.opening_balance or 0):,.2f}",
-            f"Total Deposits    : INR {float(s.total_deposits or 0):,.2f}",
-            f"Total Withdrawals : INR {float(s.total_withdrawals or 0):,.2f}",
-            f"Closing Balance   : INR {float(s.closing_balance or 0):,.2f}",
+            f"Opening Balance   : INR {Decimal(str(s.opening_balance or 0)):,.2f}",
+            f"Total Deposits    : INR {Decimal(str(s.total_deposits or 0)):,.2f}",
+            f"Total Withdrawals : INR {Decimal(str(s.total_withdrawals or 0)):,.2f}",
+            f"Closing Balance   : INR {Decimal(str(s.closing_balance or 0)):,.2f}",
             "--------------------------------------------------------------------------------",
             "DATE       | REF / CHANNEL    | DESCRIPTION                  | DEBIT      | CREDIT     | BALANCE",
             "--------------------------------------------------------------------------------"
@@ -140,9 +140,9 @@ class AuditorDossierService:
                 d_str = l.transaction_date.isoformat() if l.transaction_date else "N/A"
                 ref = f"{(l.payment_channel or 'TXN')[:6]}/{(l.reference_number or '')[:8]}".ljust(16)
                 desc = (l.description or "")[:28].ljust(28)
-                w_str = f"{float(l.withdrawal_amount or 0):10.2f}"
-                dep_str = f"{float(l.deposit_amount or 0):10.2f}"
-                bal_str = f"{float(l.running_balance or 0):10.2f}"
+                w_str = f"{Decimal(str(l.withdrawal_amount or 0)):10.2f}"
+                dep_str = f"{Decimal(str(l.deposit_amount or 0)):10.2f}"
+                bal_str = f"{Decimal(str(l.running_balance or 0)):10.2f}"
                 lines.append(f"{d_str} | {ref} | {desc} | {w_str} | {dep_str} | {bal_str}")
         lines.extend([
             "================================================================================",
@@ -531,10 +531,10 @@ class AuditorDossierService:
                     s.account_number,
                     s.statement_from.isoformat() if s.statement_from else "N/A",
                     s.statement_to.isoformat() if s.statement_to else "N/A",
-                    f"{float(s.opening_balance or 0):.2f}",
-                    f"{float(s.total_deposits or 0):.2f}",
-                    f"{float(s.total_withdrawals or 0):.2f}",
-                    f"{float(s.closing_balance or 0):.2f}",
+                    f"{Decimal(str(s.opening_balance or 0)):.2f}",
+                    f"{Decimal(str(s.total_deposits or 0)):.2f}",
+                    f"{Decimal(str(s.total_withdrawals or 0)):.2f}",
+                    f"{Decimal(str(s.closing_balance or 0)):.2f}",
                     len(stmt_lines),
                     s.file_name,
                     (s.status or "parsed").upper()
@@ -570,7 +570,7 @@ class AuditorDossierService:
             brs_writer = csv.writer(brs_csv_io)
             brs_writer.writerow(["Bank_Name", "Account_Number", "Statement_Balance_INR", "Ledger_Book_Balance_INR", "Unreconciled_Difference_INR", "Status"])
             for s in statements:
-                stmt_bal = float(s.closing_balance or 0)
+                stmt_bal = Decimal(str(s.closing_balance or 0))
                 brs_writer.writerow([s.bank_name, s.account_number, f"{stmt_bal:.2f}", f"{stmt_bal:.2f}", "0.00", "RECONCILED & BALANCED"])
             brs_csv_data = brs_csv_io.getvalue().encode("utf-8-sig")
             arc_brs = f"04_BANKING_CASH_AND_TREASURY_RECONCILIATION/BRS_Summary_FY{fy_label}.csv"
@@ -609,11 +609,11 @@ class AuditorDossierService:
                     c_gstin,
                     inv.place_of_supply or "29",
                     "YES" if inv.is_interstate else "NO",
-                    f"{float(inv.subtotal or 0):.2f}",
-                    f"{float(inv.cgst_total or 0):.2f}",
-                    f"{float(inv.sgst_total or 0):.2f}",
-                    f"{float(inv.igst_total or 0):.2f}",
-                    f"{float(inv.grand_total or 0):.2f}",
+                    f"{Decimal(str(inv.subtotal or 0)):.2f}",
+                    f"{Decimal(str(inv.cgst_total or 0)):.2f}",
+                    f"{Decimal(str(inv.sgst_total or 0)):.2f}",
+                    f"{Decimal(str(inv.igst_total or 0)):.2f}",
+                    f"{Decimal(str(inv.grand_total or 0)):.2f}",
                     inv.status.upper()
                 ])
 
@@ -628,7 +628,7 @@ class AuditorDossierService:
                 else:
                     age_cat = "> 180 Days (Overdue)"
 
-                out_amt = float(inv.grand_total or 0) if inv.status in ('sent', 'overdue', 'partially_paid') else 0.0
+                out_amt = Decimal(str(inv.grand_total or 0)) if inv.status in ('sent', 'overdue', 'partially_paid') else Decimal("0.00")
                 debtors_writer.writerow([c_name, inv.invoice_number, str(inv.due_date or 'N/A'), f"{out_amt:.2f}", age_cat, inv.status.upper()])
 
                 # Invoice PDF
@@ -715,15 +715,15 @@ class AuditorDossierService:
                     m_folder,
                     e.merchant_name,
                     e.category,
-                    f"{float(e.total_amount):.2f}",
+                    f"{Decimal(str(e.total_amount or 0)):.2f}",
                     e.payment_mode or "company_bank",
                     "YES" if e.paid_personally else "NO",
                     e.director_name or "",
                     e.merchant_gstin or "",
                     "YES" if e.itc_eligible else "NO",
-                    f"{float(e.cgst_amount or 0):.2f}",
-                    f"{float(e.sgst_amount or 0):.2f}",
-                    f"{float(e.igst_amount or 0):.2f}",
+                    f"{Decimal(str(e.cgst_amount or 0)):.2f}",
+                    f"{Decimal(str(e.sgst_amount or 0)):.2f}",
+                    f"{Decimal(str(e.igst_amount or 0)):.2f}",
                     e.status.upper(),
                     e.settlement_status.upper(),
                     e.notes or ""
@@ -734,11 +734,11 @@ class AuditorDossierService:
                     e.merchant_name,
                     e.merchant_gstin or "Unregistered",
                     str(e.expense_date or 'N/A'),
-                    f"{float(e.total_amount):.2f}",
+                    f"{Decimal(str(e.total_amount or 0)):.2f}",
                     "ELIGIBLE" if e.itc_eligible else "INELIGIBLE / BLOCKED",
-                    f"{float(e.cgst_amount or 0):.2f}",
-                    f"{float(e.sgst_amount or 0):.2f}",
-                    f"{float(e.igst_amount or 0):.2f}",
+                    f"{Decimal(str(e.cgst_amount or 0)):.2f}",
+                    f"{Decimal(str(e.sgst_amount or 0)):.2f}",
+                    f"{Decimal(str(e.igst_amount or 0)):.2f}",
                     "Available in GSTR-2B" if e.itc_eligible else "Section 17(5) Ineligible"
                 ])
 
@@ -747,7 +747,7 @@ class AuditorDossierService:
                 age_cat = "< 45 Days (MSME Compliant)" if days_exp <= 45 else "> 45 Days (Sec 43B(h) Review)"
                 creditors_writer.writerow([
                     e.merchant_name, v_no, str(e.expense_date or 'N/A'),
-                    f"{float(e.total_amount):.2f}", "Verified MSME" if "msme" in (e.notes or "").lower() else "Standard Vendor",
+                    f"{Decimal(str(e.total_amount or 0)):.2f}", "Verified MSME" if "msme" in (e.notes or "").lower() else "Standard Vendor",
                     age_cat
                 ])
 
@@ -804,8 +804,8 @@ class AuditorDossierService:
             ])
             payroll_writer.writerow([
                 fy_label, "Full-Time Personnel / Contractors", len(expenses) // 3 or 1,
-                f"{float(total_expenses * Decimal('0.35')):.2f}", "0.00", "0.00", "0.00",
-                f"{float(total_expenses * Decimal('0.035')):.2f}", "COMPLIANT & TIMELY DEPOSITED"
+                f"{(total_expenses * Decimal('0.35')):.2f}", "0.00", "0.00", "0.00",
+                f"{(total_expenses * Decimal('0.035')):.2f}", "COMPLIANT & TIMELY DEPOSITED"
             ])
             payroll_csv_data = payroll_csv_io.getvalue().encode("utf-8-sig")
             arc_payroll_csv = f"07_PAYROLL_PERSONNEL_AND_LABOR_LAW_COMPLIANCE/Payroll_And_Personnel_Summary_FY{fy_label}.csv"

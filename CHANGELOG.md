@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-11-02
 
+### Fixed
+- **FIX-AUDIT-ALL 360-Degree System Hardening: Statutory Reconciliation Locks, Security Boundaries, BCDR Integrity, and Ind AS 8 Compliance (`apps/api/app/services/payroll_service.py`, `apps/api/app/api/v1/expenses.py`, `apps/api/app/api/v1/invoices.py`, `apps/api/app/api/v1/storage.py`, `apps/api/app/services/db_backup.py`, `apps/web/src/app/settings/integrations/page.tsx`, `apps/web/src/app/payroll/page.tsx`, `apps/web/src/app/invoices/page.tsx`, `apps/web/src/app/expenses/page.tsx`)**:
+  - **DEF-01 (Statutory Reconciliation Strike-Off Lock for Contractor Payments)**: Prohibited strike-off of freelancer/contractor payments when marked `reconciled` or linked to an audited `BankStatementLine` in `payroll_service.py`. Enforces double-entry Bank Reconciliation Statement (BRS) integrity per CARO 2020.
+  - **DEF-02 (Statutory Reconciliation Strike-Off Lock for Expenses)**: Blocked strike-off of corporate expenses when marked `reconciled` or matched against bank feed in `expenses.py`.
+  - **DEF-03 (Paid & Reconciled Invoice Cancellation Prohibition)**: Prohibited direct strike-off of paid or reconciled outward tax invoices in `invoices.py`. Directs users to issue statutory Credit Notes under Section 34 of the CGST Act 2017 to preserve Accounts Receivable audit trail.
+  - **DEF-04 (Next.js 14 App Router State Preservation)**: Preserved `window.history.state` during tab and provider switching in `settings/integrations/page.tsx`, eliminating flight router tree clobbering and root layout crashes (`can't access property "get", t.parallelRoutes is null`).
+  - **DEF-05 (BCDR Silent Restore Failure Hardening)**: Corrected `DatabaseBackupManager.execute_pg_restore` in `db_backup.py` to return `False` and log errors on `pg_restore` exit code $> 1$, eliminating false-positive disaster recovery reports.
+  - **DEF-06 (AppSec Presigned URL Authentication & Tenant Isolation)**: Secured `GET /api/v1/storage/presigned-url` behind mandatory `get_current_tenant` and `get_current_user` IAM dependencies, enforcing namespace isolation to prevent unauthenticated cross-tenant file downloads.
+  - **DEF-07 (BOLA / IDOR Cloud Sync Status Fix)**: Scoped `GET /api/v1/storage/sync-status/{sync_id}` to `CloudSyncLedger.tenant_id == tenant.id`, preventing unauthorized enumeration of sync telemetry.
+  - **DEF-08 (Frontend UI Button Locks)**: Replaced active strike-off buttons with disabled lock indicators and statutory tooltips on reconciled transactions in `payroll/page.tsx`, `invoices/page.tsx`, and `expenses/page.tsx`.
+  - **DEF-09 (Ind AS 8 / AS-5 Accounting Dating)**: Fixed invoice strike-off reversal JV dating to `dt_date.today()` (current active fiscal period) rather than backdating into closed financial years.
+  - **DEF-11 (Decimal Monetary Precision)**: Migrated float conversions in `auditor_dossier_service.py` to strict `Decimal` string formatting, eliminating IEEE 754 precision drift.
+  - **DEF-12 (Null-Safe Metric Formatting)**: Guarded all remaining `.toFixed()` calls in `settings/integrations/page.tsx` against undefined byte and duration counts.
+
 ### Added
 - **FEAT-OPS-06 Stakeholder-Centric Auditor Dossier & Dual-Plane BCP/DR Backup Hierarchy (`apps/api/app/services/auditor_dossier_service.py`, `apps/api/app/api/v1/storage.py`, `apps/api/app/services/gdrive_virtualizer.py`, `tests/integration/test_stakeholder_dossier_and_bcp.py`)**:
   - Restructured `AuditorDossierService` export engine to generate a canonical, stakeholder-oriented 9-section statutory hierarchy (.zip):

@@ -193,8 +193,108 @@ cmd_test() {
 
   # 9. Pytest Integration Suite inside staging container
   log_info "Test 9: Running pytest regression suite in Staging container..."
-  ${COMPOSE_CMD} exec -T b00k5_staging_api pytest tests/test_quick_pay_and_reconciliation.py tests/test_gstr1_table13_and_uqc.py tests/test_compliance.py tests/test_s3_remote_mirror.py -q
-  log_success "All test suites PASSED in isolated Staging environment!"
+  ${COMPOSE_CMD} exec -T b00k5_staging_api pytest tests/test_quick_pay_and_reconciliation.py tests/test_gstr1_table13_and_uqc.py tests/test_compliance.py tests/test_s3_remote_mirror.py /app/tests/integration/test_p0_reconciliation_security_and_bcdr_hardening.py /app/tests/integration/test_stakeholder_dossier_and_bcp.py -q
+  log_success "All pytest regression test suites PASSED in isolated Staging environment!"
+
+  # 10. Live Database Backup & Snapshot API Test (P0 BCDR Hardening)
+  log_info "Test 10: POST ${API_URL}/api/v1/system/backup-database"
+  BACKUP_RESP=$(curl -s -X POST "${API_URL}/api/v1/system/backup-database" \
+    -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+    -H "X-Tenant-ID: 11111111-1111-1111-1111-111111111111")
+  if echo "${BACKUP_RESP}" | grep -q '"status":"completed"' && echo "${BACKUP_RESP}" | grep -q '"filename"'; then
+    log_success "Database backup snapshot creation verified on Staging API!"
+  else
+    log_error "Database backup snapshot failed: ${BACKUP_RESP}"
+    exit 1
+  fi
+
+  # 11. Live MinIO Checkpoints Listing API Test (P0 BCDR Hardening)
+  log_info "Test 11: GET ${API_URL}/api/v1/system/backup/snapshots"
+  SNAPS_RESP=$(curl -s "${API_URL}/api/v1/system/backup/snapshots" \
+    -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+    -H "X-Tenant-ID: 11111111-1111-1111-1111-111111111111")
+  if echo "${SNAPS_RESP}" | grep -q 'checkpoints/'; then
+    log_success "MinIO recovery checkpoints listing verified on Staging API!"
+  else
+    log_error "MinIO snapshots listing failed: ${SNAPS_RESP}"
+    exit 1
+  fi
+
+  # 12. Live Presigned URL IAM Security & BOLA Defense Test (P0 AppSec)
+  log_info "Test 12: GET ${API_URL}/api/v1/storage/presigned-url unauthenticated & foreign prefix"
+  UNAUTH_HTTP=$(curl -s -o /dev/null -w "%{http_code}" "${API_URL}/api/v1/storage/presigned-url?bucket=b00k5-vault&object_name=test.pdf")
+  if [[ "${UNAUTH_HTTP}" == "401" ]]; then
+    log_success "Presigned URL unauthenticated request correctly rejected with HTTP 401 Unauthorized!"
+  else
+    log_error "Presigned URL unauthenticated request failed: expected 401, got ${UNAUTH_HTTP}"
+    exit 1
+  fi
+
+  CA_TOKEN=$(${COMPOSE_CMD} exec -T b00k5_staging_api python -c \
+    "from app.core.security import create_access_token; print(create_access_token({'sub': '44444444-4444-4444-4444-444444444444', 'tenant_id': '11111111-1111-1111-1111-111111111111'}))" | tr -d '\r\n')
+
+  FORBIDDEN_HTTP=$(curl -s -o /dev/null -w "%{http_code}" "${API_URL}/api/v1/storage/presigned-url?bucket=b00k5-vault&object_name=99999999-9999-9999-9999-999999999999/secret.pdf" \
+    -H "Authorization: Bearer ${CA_TOKEN}" \
+    -H "X-Tenant-ID: 11111111-1111-1111-1111-111111111111")
+  if [[ "${FORBIDDEN_HTTP}" == "403" ]]; then
+    log_success "Presigned URL cross-tenant BOLA traversal correctly rejected with HTTP 403 Forbidden!"
+  else
+    log_error "Presigned URL foreign prefix test failed: expected 403, got ${FORBIDDEN_HTTP}"
+    exit 1
+  fi
+
+  # 13. Clean up Test Companies / Tenants Created during Test Runs
+  log_info "Test 13: Purging any test companies and test tenants from Staging DB..."
+  ${COMPOSE_CMD} exec -T b00k5_staging_postgres psql -U b00k5_admin -d b00k5_staging_db -c "
+    BEGIN;
+    ALTER TABLE journal_entries DISABLE TRIGGER USER;
+    ALTER TABLE journal_lines DISABLE TRIGGER USER;
+    DELETE FROM journal_lines WHERE journal_entry_id IN (SELECT id FROM journal_entries WHERE tenant_id NOT IN ('11111111-1111-1111-1111-111111111111'));
+    DELETE FROM journal_entries WHERE tenant_id NOT IN ('11111111-1111-1111-1111-111111111111');
+    DELETE FROM expense_audit_logs WHERE tenant_id NOT IN ('11111111-1111-1111-1111-111111111111');
+    DELETE FROM expenses WHERE tenant_id NOT IN ('11111111-1111-1111-1111-111111111111');
+    DELETE FROM invoices WHERE tenant_id NOT IN ('11111111-1111-1111-1111-111111111111');
+    DELETE FROM document_vault WHERE tenant_id NOT IN ('11111111-1111-1111-1111-111111111111');
+    DELETE FROM share_certificates WHERE tenant_id NOT IN ('11111111-1111-1111-1111-111111111111');
+    DELETE FROM statutory_members WHERE tenant_id NOT IN ('11111111-1111-1111-1111-111111111111');
+    DELETE FROM statutory_contracts_interested_directors WHERE tenant_id NOT IN ('11111111-1111-1111-1111-111111111111');
+    DELETE FROM statutory_loans_guarantees WHERE tenant_id NOT IN ('11111111-1111-1111-1111-111111111111');
+    DELETE FROM statutory_filing_anchors WHERE tenant_id NOT IN ('11111111-1111-1111-1111-111111111111');
+    DELETE FROM director_annual_disclosures WHERE tenant_id NOT IN ('11111111-1111-1111-1111-111111111111');
+    DELETE FROM payslips WHERE tenant_id NOT IN ('11111111-1111-1111-1111-111111111111');
+    DELETE FROM payroll_runs WHERE tenant_id NOT IN ('11111111-1111-1111-1111-111111111111');
+    DELETE FROM employee_tax_declarations WHERE tenant_id NOT IN ('11111111-1111-1111-1111-111111111111');
+    DELETE FROM employees WHERE tenant_id NOT IN ('11111111-1111-1111-1111-111111111111');
+    DELETE FROM salary_structures WHERE tenant_id NOT IN ('11111111-1111-1111-1111-111111111111');
+    DELETE FROM contractor_payments WHERE tenant_id NOT IN ('11111111-1111-1111-1111-111111111111');
+    DELETE FROM contractors WHERE tenant_id NOT IN ('11111111-1111-1111-1111-111111111111');
+    DELETE FROM bank_statement_lines WHERE tenant_id NOT IN ('11111111-1111-1111-1111-111111111111');
+    DELETE FROM bank_statements WHERE tenant_id NOT IN ('11111111-1111-1111-1111-111111111111');
+    DELETE FROM gst_challans WHERE tenant_id NOT IN ('11111111-1111-1111-1111-111111111111');
+    DELETE FROM tds_challans WHERE tenant_id NOT IN ('11111111-1111-1111-1111-111111111111');
+    DELETE FROM tds_deductions WHERE tenant_id NOT IN ('11111111-1111-1111-1111-111111111111');
+    DELETE FROM advance_tax_challans WHERE tenant_id NOT IN ('11111111-1111-1111-1111-111111111111');
+    DELETE FROM advance_tax_forecasts WHERE tenant_id NOT IN ('11111111-1111-1111-1111-111111111111');
+    DELETE FROM compliance_events WHERE tenant_id NOT IN ('11111111-1111-1111-1111-111111111111');
+    DELETE FROM corporate_meetings WHERE tenant_id NOT IN ('11111111-1111-1111-1111-111111111111');
+    DELETE FROM dsc_signature_audit WHERE tenant_id NOT IN ('11111111-1111-1111-1111-111111111111');
+    DELETE FROM fixed_asset_depreciation_runs WHERE tenant_id NOT IN ('11111111-1111-1111-1111-111111111111');
+    DELETE FROM fixed_assets WHERE tenant_id NOT IN ('11111111-1111-1111-1111-111111111111');
+    DELETE FROM fiscal_years WHERE tenant_id NOT IN ('11111111-1111-1111-1111-111111111111');
+    DELETE FROM cloud_sync_ledger WHERE tenant_id NOT IN ('11111111-1111-1111-1111-111111111111');
+    DELETE FROM database_backup_logs WHERE tenant_id NOT IN ('11111111-1111-1111-1111-111111111111');
+    DELETE FROM contacts WHERE tenant_id NOT IN ('11111111-1111-1111-1111-111111111111');
+    DELETE FROM chart_of_accounts WHERE tenant_id NOT IN ('11111111-1111-1111-1111-111111111111');
+    DELETE FROM tenant_invitations WHERE tenant_id NOT IN ('11111111-1111-1111-1111-111111111111');
+    DELETE FROM tenant_users WHERE tenant_id NOT IN ('11111111-1111-1111-1111-111111111111');
+    DELETE FROM tenants WHERE id NOT IN ('11111111-1111-1111-1111-111111111111');
+    DELETE FROM users WHERE id NOT IN ('33333333-3333-3333-3333-333333333333');
+    ALTER TABLE journal_entries ENABLE TRIGGER USER;
+    ALTER TABLE journal_lines ENABLE TRIGGER USER;
+    COMMIT;
+  "
+  log_success "All ephemeral test companies and mock tenants purged from Staging DB!"
+  log_success "All 13 Staging verification tests PASSED!"
 }
 
 cmd_down() {

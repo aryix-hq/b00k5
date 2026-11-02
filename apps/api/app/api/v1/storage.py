@@ -157,7 +157,7 @@ async def get_presigned_url_endpoint(
     """
     tenant_str = str(tenant.id)
     user_role = (getattr(current_user, "role", "") or "").lower()
-    is_super_admin = getattr(current_user, "is_super_admin", False) or user_role in ("super_admin", "owner")
+    is_super_admin = bool(getattr(current_user, "is_super_admin", False))
     if not is_super_admin:
         if not object_name.startswith(f"{tenant_str}/") and f"/{tenant_str}/" not in object_name and tenant_str not in object_name:
             raise HTTPException(

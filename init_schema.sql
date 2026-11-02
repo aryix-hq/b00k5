@@ -1648,6 +1648,8 @@ CREATE TABLE IF NOT EXISTS contractor_payments (
     disbursement_journal_id UUID REFERENCES journal_entries(id) ON DELETE SET NULL,
     payout_utr VARCHAR(64),
     payout_date DATE,
+    cancellation_reason TEXT,
+    cancelled_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

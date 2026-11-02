@@ -1,4 +1,16 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+export function getApiBase(): string {
+  if (typeof window !== 'undefined') {
+    // Isolated Staging / QA environment runs on port 3001 with API on port 8001
+    if (window.location.port === '3001') {
+      return `${window.location.protocol}//${window.location.hostname}:8001`;
+    }
+    // Production runs on port 3000 with API on port 8000
+    if (window.location.port === '3000') {
+      return `${window.location.protocol}//${window.location.hostname}:8000`;
+    }
+  }
+  return process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+}
 
 export function getAuthHeaders(): Record<string, string> {
   const headers: Record<string, string> = {
@@ -36,7 +48,7 @@ export async function fetchRawApi(endpoint: string, options: RequestInit = {}): 
     ...(options.headers || {}),
   };
 
-  const response = await fetch(`${API_BASE}${endpoint}`, {
+  const response = await fetch(`${getApiBase()}${endpoint}`, {
     ...options,
     headers,
   });

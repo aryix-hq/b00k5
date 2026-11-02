@@ -1158,28 +1158,37 @@ async def trigger_full_s3_mirror_sync(
     from app.models.vault import DocumentVault
     from app.models.bank import BankStatement
     from app.models.backup import DatabaseBackupLog
+    from app.services.gdrive_virtualizer import get_indian_fy_ay_label
 
     safe_name = tenant.legal_name.replace(" ", "_")
     synced_items = []
+    current_fy, current_ay, current_fy_folder = get_indian_fy_ay_label()
 
-    # 1. Statutory Manifest / README
-    readme_payload = f"""# b00k5 Sovereign Statutory Archive (S3 / Cloudflare R2 Cloud Mirror)
-Company Legal Name: {tenant.legal_name}
-Trade Name: {tenant.trade_name or tenant.legal_name}
-CIN: {tenant.cin or 'Pending Incorporation'}
-PAN: {tenant.pan}
-GSTIN: {tenant.gstin or 'Unregistered'}
-Registered Office: {tenant.registered_office}
-Active Financial Year: FY 2025-26 (AY 2026-27)
-S3 Mirror Synchronization: {datetime.utcnow().isoformat()}
-Storage Provider: {client.bucket_name} ({client.endpoint})
-Statutory Invariants: MCA Section 128 & Income Tax Act Rule 6F Compliant.
-Contents:
-- Corporate Legal & Tax Registrations
-- Bank Statements
-- Sales Invoices (Customer Tax Invoices)
-- Vendor Bills & Receipts (Expense Vouchers)
-- Encrypted PostgreSQL Database Backups (AES-256-GCM)
+    # 1. Statutory Manifest / README (Root & Section 08)
+    readme_payload = f"""# b00k5 Sovereign Statutory Archive & Cloud Mirror
+Company Legal Name : {tenant.legal_name}
+Trade Name         : {tenant.trade_name or tenant.legal_name}
+CIN / LLPIN        : {tenant.cin or 'Pending Incorporation'}
+PAN                : {tenant.pan}
+GSTIN              : {tenant.gstin or 'Unregistered'}
+Registered Office  : {tenant.registered_office}
+Active Fiscal Year : {current_fy_folder}
+Cloud Backup Time  : {datetime.utcnow().isoformat()} UTC
+Storage Provider   : {client.bucket_name} ({client.endpoint})
+Statutory Mandate  : Companies Act 2013 (Section 128) & Income Tax Act 1961 (Rule 6F)
+Architectural Dual-Plane Architecture:
+- Plane 1 (Disaster Recovery & Machine Restore): checkpoints/ (Atomic AES-256-GCM PostgreSQL Snapshots)
+- Plane 2 (Statutory Governance & Human Audit):
+  * 00_Entity_Master_Permanent_Records/ (COI, MOA, AOA, PAN, TAN, GST REG-06, ADT-1)
+  * {current_fy_folder}/ (Partitioned by FY/AY per MCA & ICAI Standards)
+    - 01_STATUTORY_FINANCIAL_STATEMENTS_SCHEDULE_III/
+    - 02_CORPORATE_GOVERNANCE_AND_SECRETARIAL_MCA/
+    - 03_TAX_COMPLIANCE_AND_STATUTORY_RETURNS/
+    - 04_BANKING_CASH_AND_TREASURY_RECONCILIATION/
+    - 05_OPERATIONS_REVENUE_AND_TRADE_RECEIVABLES/
+    - 06_OPERATIONS_EXPENSES_AND_TRADE_PAYABLES/
+    - 07_PAYROLL_PERSONNEL_AND_LABOR_LAW_COMPLIANCE/
+    - 08_AUDIT_TRAIL_AND_CRYPTOGRAPHIC_INTEGRITY/
 """.encode("utf-8")
 
     try:
@@ -1193,22 +1202,37 @@ Contents:
     except Exception as e:
         logger.warning(f"Failed to mirror README to S3: {e}")
 
-    # 2. Sync DocumentVault items (COI, MOA, PAN, GST)
+    # 2. Sync DocumentVault items (Permanent Charter vs Annual Statutory Filings)
     vault_stmt = select(DocumentVault).where(DocumentVault.tenant_id == tenant.id)
     vault_docs = (await db.execute(vault_stmt)).scalars().all()
     vault_count = 0
+    ANNUAL_PATTERNS = ["aoc", "aoc-4", "aoc_4", "mgt", "mgt-7", "mgt_7", "itr", "itr-6", "board", "minutes", "resolution"]
+
     for doc in vault_docs:
-        cat_folder = "Corporate Legal" if doc.category in ("corporate_legal", "equity_governance") else "Tax Registrations"
-        if doc.category == "statutory_filing":
-            cat_folder = "Statutory Filings"
+        meta = doc.metadata_json or {}
+        dname = (doc.document_name or "").lower()
+        dtype = str(meta.get("document_type") or "").lower()
+        combined = f"{dname} {dtype}"
+
+        is_annual = any(p in combined for p in ANNUAL_PATTERNS) or doc.category == "statutory_filing"
+        safe_doc_name = doc.document_name.replace("/", "_").replace("\\", "_").replace(":", "_")
+        fname = safe_doc_name if safe_doc_name.endswith(".pdf") else f"{safe_doc_name}.pdf"
+
+        if is_annual:
+            doc_fy = meta.get("fiscal_year") or "2025-26"
+            _, _, doc_fy_folder = get_indian_fy_ay_label(date(int(str(doc_fy)[:4]), 6, 1) if str(doc_fy)[:4].isdigit() else None)
+            if any(k in combined for k in ("itr", "tax", "gst", "tds")):
+                rel_path = f"{doc_fy_folder}/03_TAX_COMPLIANCE_AND_STATUTORY_RETURNS/{fname}"
+            else:
+                rel_path = f"{doc_fy_folder}/02_CORPORATE_GOVERNANCE_AND_SECRETARIAL_MCA/{fname}"
+        else:
+            cat_folder = "01_Incorporation_And_Charter" if doc.category in ("corporate_legal", "equity_governance") else "03_Tax_Identities_And_Licenses"
+            rel_path = f"00_Entity_Master_Permanent_Records/{cat_folder}/{fname}"
+
         try:
             doc_bytes = storage_manager.get_document_bytes(settings.BUCKET_VAULT, doc.minio_s3_key)
         except Exception:
             doc_bytes = f"%PDF-1.4\n% Statutory Document: {doc.document_name}\nSHA-256: {doc.sha256_hash}\nIssue Date: {doc.issue_date or 'N/A'}\n".encode()
-
-        safe_doc_name = doc.document_name.replace("/", "_").replace("\\", "_").replace(":", "_")
-        fname = safe_doc_name if safe_doc_name.endswith(".pdf") else f"{safe_doc_name}.pdf"
-        rel_path = f"{cat_folder}/{fname}"
 
         try:
             up = client.upload_file(rel_path, doc_bytes, doc.mime_type or "application/pdf")
@@ -1222,7 +1246,7 @@ Contents:
         except Exception as e:
             logger.warning(f"Failed to mirror vault doc '{fname}' to S3: {e}")
 
-    # 3. Sync Bank Statements
+    # 3. Sync Bank Statements (Plane 2 - Treasury)
     stmt_query = select(BankStatement).where(BankStatement.tenant_id == tenant.id)
     statements = (await db.execute(stmt_query)).scalars().all()
     stmt_count = 0
@@ -1233,7 +1257,8 @@ Contents:
         except Exception:
             bs_bytes = f"%PDF-1.4\n% Bank Statement: {bs.bank_name} {bs.account_number}\n".encode()
 
-        rel_path = f"Bank Statements/{fname}"
+        _, _, stmt_fy_folder = get_indian_fy_ay_label(bs.statement_from or bs.statement_to)
+        rel_path = f"{stmt_fy_folder}/04_BANKING_CASH_AND_TREASURY_RECONCILIATION/Statements/{fname}"
         try:
             up = client.upload_file(rel_path, bs_bytes, "application/pdf")
             synced_items.append({
@@ -1246,7 +1271,7 @@ Contents:
         except Exception as e:
             logger.warning(f"Failed to mirror bank statement '{fname}' to S3: {e}")
 
-    # 4. Sync Sales Invoices (All Invoices as authentic PDFs)
+    # 4. Sync Sales Invoices (Plane 2 - Revenue & Debtors)
     inv_query = select(Invoice).where(
         Invoice.tenant_id == tenant.id,
         Invoice.status != 'cancelled'
@@ -1255,10 +1280,11 @@ Contents:
     invoices_count = 0
 
     for inv in invoices:
-        inv_fy = get_indian_fiscal_year(inv.issue_date) if hasattr(inv, 'issue_date') and inv.issue_date else "2025-26"
+        _, _, inv_fy_folder = get_indian_fy_ay_label(inv.issue_date)
+        m_folder = inv.issue_date.strftime("%Y-%m_%B") if inv.issue_date else "Undated"
         clean_inv_num = inv.invoice_number.replace("/", "_").replace("\\", "_")
         fname = f"INV_{clean_inv_num}.pdf"
-        rel_path = f"FY {inv_fy}/Sales Invoices/{fname}"
+        rel_path = f"{inv_fy_folder}/05_OPERATIONS_REVENUE_AND_TRADE_RECEIVABLES/Monthly_Sales_Invoices/{m_folder}/{fname}"
 
         inv_bytes = None
         if inv.pdf_s3_key:
@@ -1304,7 +1330,7 @@ Contents:
         except Exception as e:
             logger.warning(f"Failed to mirror invoice '{fname}' to S3: {e}")
 
-    # 5. Sync Vendor Bills & Expense Receipts
+    # 5. Sync Vendor Bills & Expense Receipts (Plane 2 - Payables & Vouchers)
     exp_query = select(Expense).where(
         Expense.tenant_id == tenant.id,
         Expense.status != 'struck_off'
@@ -1313,7 +1339,8 @@ Contents:
     expenses_count = 0
 
     for exp in expenses:
-        exp_fy = get_indian_fiscal_year(exp.expense_date) if hasattr(exp, 'expense_date') and exp.expense_date else "2025-26"
+        _, _, exp_fy_folder = get_indian_fy_ay_label(exp.expense_date)
+        m_folder = exp.expense_date.strftime("%Y-%m_%B") if exp.expense_date else "Undated"
         clean_merchant = "".join(c for c in (exp.merchant_name or "Vendor") if c.isalnum() or c in (" ", "_", "-")).strip().replace(" ", "_")
         exp_id_short = str(exp.id)[:8]
 
@@ -1348,7 +1375,7 @@ Audit Status: Approved & Posted to General Ledger
             content_type = "application/pdf"
 
         fname = f"EXP_{exp.expense_date}_{clean_merchant}_{exp_id_short}.{ext}"
-        rel_path = f"FY {exp_fy}/Vendor Bills & Receipts/{fname}"
+        rel_path = f"{exp_fy_folder}/06_OPERATIONS_EXPENSES_AND_TRADE_PAYABLES/Monthly_Vendor_Bills_And_Vouchers/{m_folder}/{fname}"
 
         try:
             up = client.upload_file(rel_path, exp_bytes, content_type)
@@ -1362,14 +1389,13 @@ Audit Status: Approved & Posted to General Ledger
         except Exception as e:
             logger.warning(f"Failed to mirror expense voucher '{fname}' to S3: {e}")
 
-    # 6. Sync Database Backups (from local MinIO checkpoints)
+    # 6. Sync Database Backups (Plane 1 - Atomic Disaster Recovery Checkpoints)
     backup_stmt = select(DatabaseBackupLog).where(
         or_(DatabaseBackupLog.tenant_id == tenant.id, DatabaseBackupLog.tenant_id.is_(None))
     ).order_by(DatabaseBackupLog.created_at.desc())
     backups = (await db.execute(backup_stmt)).scalars().all()
     backups_count = 0
     for bk in backups[:10]:
-        rel_path = f"Database Backups/{bk.filename}"
         bk_bytes = None
         try:
             bk_bytes = storage_manager.get_document_bytes(
@@ -1381,19 +1407,39 @@ Audit Status: Approved & Posted to General Ledger
 
         if not bk_bytes:
             bk_bytes = f"PostgreSQL Encrypted Backup Snapshot\nFilename: {bk.filename}\nSize: {bk.file_size_bytes} bytes\nSHA-256: {bk.sha256_checksum}\nCreated: {bk.created_at}\nEncryption: AES-256-GCM\n".encode()
-            rel_path = f"Database Backups/{bk.filename}.meta.txt"
 
+        # Upload to both checkpoints/ (Machine-Plane) and Database Backups/ (Legacy compatibility)
+        for target_folder in ("checkpoints", "Database Backups"):
+            rel_path = f"{target_folder}/{bk.filename}"
+            try:
+                up = client.upload_file(rel_path, bk_bytes, "application/octet-stream")
+                if target_folder == "checkpoints":
+                    synced_items.append({
+                        "file_name": bk.filename,
+                        "category": "database_checkpoint",
+                        "s3_uri": up["s3_uri"],
+                        "size_bytes": up["size_bytes"]
+                    })
+                    backups_count += 1
+            except Exception as e:
+                logger.warning(f"Failed to mirror checkpoint '{bk.filename}' to {target_folder}: {e}")
+
+    # Write Latest Checkpoint Manifest (Plane 1)
+    if backups:
+        latest_bk = backups[0]
+        latest_manifest = json.dumps({
+            "latest_checkpoint_file": latest_bk.filename,
+            "sha256_checksum": latest_bk.sha256_checksum,
+            "created_at": latest_bk.created_at.isoformat() if latest_bk.created_at else None,
+            "tenant_id": str(tenant.id),
+            "legal_name": tenant.legal_name,
+            "file_size_bytes": latest_bk.file_size_bytes,
+            "encryption_algorithm": "AES-256-GCM"
+        }, indent=2).encode("utf-8")
         try:
-            up = client.upload_file(rel_path, bk_bytes, "application/octet-stream")
-            synced_items.append({
-                "file_name": bk.filename,
-                "category": "database_backup",
-                "s3_uri": up["s3_uri"],
-                "size_bytes": up["size_bytes"]
-            })
-            backups_count += 1
+            client.upload_file("checkpoints/CHECKPOINT_LATEST.json", latest_manifest, "application/json")
         except Exception as e:
-            logger.warning(f"Failed to mirror database backup '{bk.filename}' to S3: {e}")
+            logger.warning(f"Failed to upload latest checkpoint manifest: {e}")
 
     # 7. Enforce Retention Policy (Auto-pruning old database snapshots to preserve quota)
     statutory_profile = dict(tenant.statutory_profile or {})

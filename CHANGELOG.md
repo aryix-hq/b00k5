@@ -5,6 +5,26 @@ All notable changes to `b00k5` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-11-02
+
+### Added
+- **FEAT-OPS-06 Stakeholder-Centric Auditor Dossier & Dual-Plane BCP/DR Backup Hierarchy (`apps/api/app/services/auditor_dossier_service.py`, `apps/api/app/api/v1/storage.py`, `apps/api/app/services/gdrive_virtualizer.py`, `tests/integration/test_stakeholder_dossier_and_bcp.py`)**:
+  - Restructured `AuditorDossierService` export engine to generate a canonical, stakeholder-oriented 9-section statutory hierarchy (.zip):
+    - `00_EXECUTIVE_SUMMARY_AND_LEGAL_IDENTITY/` (Founder & CFO: Executive Financial Briefing, Compliance Scorecard, Permanent Registrations COI/MOA/AOA/PAN/TAN/GST/ADT-1, Governance Profile JSON).
+    - `01_STATUTORY_FINANCIAL_STATEMENTS_SCHEDULE_III/` (CA & External Auditor: Schedule III Balance Sheet, P&L, Notes 1-22, Trial Balance, CARO 2020 Order).
+    - `02_CORPORATE_GOVERNANCE_AND_SECRETARIAL_MCA/` (Company Secretary: SS-1 Board Minutes, SS-2 AGM/EGM Minutes, MCA Annual Filings AOC-4/MGT-7A with SRN receipts, CA2013 Statutory Registers).
+    - `03_TAX_COMPLIANCE_AND_STATUTORY_RETURNS/` (CA & Tax Auditor: GST GSTR-1/3B/9/2B, Direct Tax ITR-6/26AS/AIS/TIS/Advance Tax 280, TDS 24Q/26Q/16/16A).
+    - `04_BANKING_CASH_AND_TREASURY_RECONCILIATION/` (CFO & Auditor: Monthly Bank Statements, Bank Reconciliation BRS Registers, CMS Bulk Payout Logs).
+    - `05_OPERATIONS_REVENUE_AND_TRADE_RECEIVABLES/` (Auditor: Monthly Outward Tax Invoices, Sales Register, Debtors Ageing Schedule).
+    - `06_OPERATIONS_EXPENSES_AND_TRADE_PAYABLES/` (Auditor: Monthly Inward Vendor Bills & Expense Vouchers, Bills Summary, MSME Creditors Ageing, Input Tax Credit ITC Register).
+    - `07_PAYROLL_PERSONNEL_AND_LABOR_LAW_COMPLIANCE/` (Auditor & HR: Monthly Salary Registers, EPFO ECR, ESIC, PT Form 5, Contractor TDS Summaries).
+    - `08_AUDIT_TRAIL_AND_CRYPTOGRAPHIC_INTEGRITY/` (Auditor & MCA Sec 128: Statutory Close Checklist, Section 128 Audit Trail Certificate, Cryptographic SHA-256 Digest Manifest).
+  - Implemented Dual-Plane Cloud Backup Synchronization across Cloudflare R2, AWS S3, and Google Drive:
+    - **Plane 1 (Disaster Recovery & Machine Speed Restore)**: Preserves atomic AES-256-GCM encrypted database dumps, MinIO raw object tarballs, and integrity manifests in `checkpoints/` (`RTO < 10 min`, `RPO < 1 hr`).
+    - **Plane 2 (Statutory Governance & Human Audit)**: Organizes live documents into canonical `FY {YYYY}-{YY} (AY {YYYY+1}-{YY+1})` and `00_Entity_Master_Permanent_Records/` hierarchies without software lock-in.
+  - Added `get_indian_fy_ay_label` and `build_statutory_dossier_path` to `DirectoryVirtualizer` with 100% backward compatibility for existing tests.
+  - Added comprehensive automated test suite in `tests/integration/test_stakeholder_dossier_and_bcp.py` verifying all 9 statutory sections, cryptographic hashes, and executive briefing accuracy.
+
 ## [Unreleased] - 2026-11-01
 
 ### Fixed

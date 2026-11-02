@@ -101,3 +101,4 @@ This registry documents all core business capabilities, statutory compliance eng
 | `FEAT-AUDIT-01` | Rule 3(1) Universal Audit Trail | CA (Accounts) R.3(1) | Append-only database table with triggers permanently preventing UPDATE or DELETE on audit logs. |
 | `FEAT-GST-01` | GSTR-1 Portal-Ready JSON Export | CGST Act §37 | Full JSON export covering Tables 4 (B2B), 5 (B2CL), 7 (B2CS), 9B (CDNR), 12 (HSN), and 13 (Docs). |
 | `FEAT-GST-02` | Rule 37 180-Day ITC Reversal Watchdog | CGST Rule 37 | Automated alert and journal reversal with Section 50 interest on unpaid vendor bills $>180$ days. |
+| `FEAT-OPS-06` | Stakeholder Auditor Dossier & Dual-Plane BCP Backup | CA 2013 §128 / CARO 2020 / SS-1 / SS-2 | 9-section role-aligned auditor export (.zip) with SHA-256 manifests, executive briefing, and dual-plane cloud backup (Plane 1 checkpoints/ + Plane 2 statutory archive). |

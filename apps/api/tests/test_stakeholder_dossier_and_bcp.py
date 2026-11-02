@@ -265,3 +265,4 @@ async def test_auditor_dossier_9_section_stakeholder_hierarchy():
     assert "Gross Outward Sales Turnover (Grand Total) : INR 11,800.00" in briefing
     assert "Total Inward Vendor Bills & Expenses       : INR 2,360.00" in briefing
     assert "Input Tax Credit (ITC) Eligible Claimed    : INR 360.00" in briefing
+

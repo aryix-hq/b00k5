@@ -918,8 +918,3 @@ class AuditorDossierService:
         filename = f"Auditor_Dossier_{clean_company}_FY{fy_label}.zip"
         return zip_bytes, filename
 
-        zip_bytes = zip_buffer.getvalue()
-        clean_company = re.sub(r"[^\w\s-]", "", tenant.legal_name).strip().replace(" ", "_")
-        filename = f"Auditor_Dossier_{clean_company}_FY{fy_label}.zip"
-        return zip_bytes, filename
-

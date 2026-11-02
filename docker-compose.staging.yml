@@ -155,6 +155,9 @@ services:
     build:
       context: .
       dockerfile: docker/frontend.Dockerfile
+      args:
+        - NEXT_PUBLIC_API_URL=http://localhost:8001
+        - NEXT_PUBLIC_BRIDGE_URL=http://localhost:28046
     container_name: b00k5_staging_web
     restart: "no"
     environment:

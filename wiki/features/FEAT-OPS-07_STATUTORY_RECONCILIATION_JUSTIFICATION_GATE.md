@@ -71,3 +71,4 @@ When the user triggers **"Reconcile All Statements"** (or upon statement review)
   - Automated zero-mock tests in `apps/api/tests/test_reconciliation.py`.
 - **Out-of-Scope**:
   - Modifying bank statement parser schemas or third-party OCR services.
+

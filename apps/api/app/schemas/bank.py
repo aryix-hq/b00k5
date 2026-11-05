@@ -62,6 +62,16 @@ class AllocateSuspenseRequest(BaseModel):
     target_account_id: uuid.UUID
     narration: Optional[str] = None
 
+class BatchAllocateItem(BaseModel):
+    line_id: uuid.UUID
+    target_account_id: Optional[uuid.UUID] = None
+    target_account_code: Optional[str] = None
+    narration: Optional[str] = None
+    category_tag: Optional[str] = None
+
+class BatchAllocateRequest(BaseModel):
+    allocations: List[BatchAllocateItem]
+
 class ReconciliationSummaryResponse(BaseModel):
     statement_id: uuid.UUID
     total_lines: int

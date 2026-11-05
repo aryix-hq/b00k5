@@ -100,6 +100,12 @@ export default function BankReconciliationPage() {
   const [uploadMessage, setUploadMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [batchStatementModalOpen, setBatchStatementModalOpen] = useState(false);
 
+  // Statutory Justification Gate State
+  const [statutoryModalOpen, setStatutoryModalOpen] = useState(false);
+  const [justificationLines, setJustificationLines] = useState<any[]>([]);
+  const [pendingJustificationsCount, setPendingJustificationsCount] = useState(0);
+  const [submittingAllocations, setSubmittingAllocations] = useState(false);
+
   const switchStatement = (stmt: any) => {
     if (!stmt) return;
     setCurrentStatementId(stmt.id);
@@ -199,6 +205,7 @@ export default function BankReconciliationPage() {
     loadInvoices();
     loadAccounts();
     loadStatements(selectedFY);
+    loadPendingJustifications();
   }, [selectedFY]);
 
   async function loadStatements(targetFY?: string) {
@@ -276,20 +283,183 @@ export default function BankReconciliationPage() {
     }
   };
 
+  const loadPendingJustifications = async () => {
+    try {
+      const res = await fetchApi('/api/v1/reconciliation/pending-justifications');
+      if (res && typeof res.count === 'number') {
+        setPendingJustificationsCount(res.count);
+        if (Array.isArray(res.lines)) {
+          setJustificationLines(res.lines.map((l: any) => {
+            const matchedAcc = coaAccounts.find(a => a.code === (l.suggested_account_code || '4090'));
+            return {
+              ...l,
+              selected_category: l.suggested_category || 'self_vouched',
+              selected_account_code: l.suggested_account_code || '4090',
+              selected_account_id: matchedAcc?.id,
+              narration: l.suggested_narration || ''
+            };
+          }));
+        }
+      }
+    } catch (e) {
+      console.error('Failed to load pending justifications:', e);
+    }
+  };
+
+  const applyPreset = (lineId: string, category: 'bank_fee' | 'self_vouched' | 'vendor_advance' | 'director_due' | 'suspense') => {
+    setJustificationLines(prev => prev.map(l => {
+      if (l.id !== lineId) return l;
+      let code = '4090';
+      let defaultNarr = '';
+      const ref = l.reference_number || 'N/A';
+      const payee = l.counterparty_name || l.description;
+
+      if (category === 'bank_fee') {
+        code = '4030';
+        defaultNarr = `Annual debit card fee / bank service charge debited per bank statement (${l.description}). Statutory Finance Cost (Sch III Note 18).`;
+      } else if (category === 'self_vouched') {
+        code = '4090';
+        defaultNarr = `Self-vouched operational expense paid to ${payee} (UTR: ${ref}). Tax invoice unavailable; wholly and exclusively for business (IT Act Sec 37).`;
+      } else if (category === 'vendor_advance') {
+        code = '1030';
+        defaultNarr = `Advance disbursement to ${payee} (UTR: ${ref}). Tax invoice pending receipt. Sch III Current Assets.`;
+      } else if (category === 'director_due') {
+        code = '1040';
+        defaultNarr = `Personal debit from corporate current account. Charged to Director Current Account pending immediate reimbursement (CA2013 Sec 185).`;
+      } else if (category === 'suspense') {
+        code = '2099';
+        defaultNarr = `Unidentified bank debit retained in Suspense Account (Code 2099) under investigation. Requires resolution prior to FY closure.`;
+      }
+
+      const matchedAcc = coaAccounts.find(a => a.code === code);
+      return {
+        ...l,
+        selected_category: category,
+        selected_account_code: code,
+        selected_account_id: matchedAcc?.id,
+        narration: defaultNarr
+      };
+    }));
+  };
+
+  const applyPresetToAll = (category: 'bank_fee' | 'self_vouched' | 'vendor_advance' | 'director_due' | 'suspense') => {
+    setJustificationLines(prev => prev.map(l => {
+      let code = '4090';
+      let defaultNarr = '';
+      const ref = l.reference_number || 'N/A';
+      const payee = l.counterparty_name || l.description;
+
+      if (category === 'bank_fee') {
+        code = '4030';
+        defaultNarr = `Annual debit card fee / bank service charge debited per bank statement (${l.description}). Statutory Finance Cost (Sch III Note 18).`;
+      } else if (category === 'self_vouched') {
+        code = '4090';
+        defaultNarr = `Self-vouched operational expense paid to ${payee} (UTR: ${ref}). Tax invoice unavailable; wholly and exclusively for business (IT Act Sec 37).`;
+      } else if (category === 'vendor_advance') {
+        code = '1030';
+        defaultNarr = `Advance disbursement to ${payee} (UTR: ${ref}). Tax invoice pending receipt. Sch III Current Assets.`;
+      } else if (category === 'director_due') {
+        code = '1040';
+        defaultNarr = `Personal debit from corporate current account. Charged to Director Current Account pending immediate reimbursement (CA2013 Sec 185).`;
+      } else if (category === 'suspense') {
+        code = '2099';
+        defaultNarr = `Unidentified bank debit retained in Suspense Account (Code 2099) under investigation. Requires resolution prior to FY closure.`;
+      }
+
+      const matchedAcc = coaAccounts.find(a => a.code === code);
+      return {
+        ...l,
+        selected_category: category,
+        selected_account_code: code,
+        selected_account_id: matchedAcc?.id,
+        narration: defaultNarr
+      };
+    }));
+  };
+
+  const updateLineNarration = (lineId: string, narration: string) => {
+    setJustificationLines(prev => prev.map(l => l.id === lineId ? { ...l, narration } : l));
+  };
+
+  const updateLineAccount = (lineId: string, accountCode: string) => {
+    const matchedAcc = coaAccounts.find(a => a.code === accountCode);
+    setJustificationLines(prev => prev.map(l => l.id === lineId ? {
+      ...l,
+      selected_account_code: accountCode,
+      selected_account_id: matchedAcc?.id
+    } : l));
+  };
+
+  const handleBatchAllocateSubmit = async () => {
+    if (!justificationLines.length) return;
+    setSubmittingAllocations(true);
+    try {
+      const payload = {
+        allocations: justificationLines.map(l => ({
+          line_id: l.id,
+          target_account_id: l.selected_account_id,
+          target_account_code: l.selected_account_code,
+          narration: l.narration,
+          category_tag: l.selected_category
+        }))
+      };
+      const res = await fetchApi('/api/v1/reconciliation/batch-allocate', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      });
+      setUploadMessage({
+        type: 'success',
+        text: res.message || `Successfully allocated ${res.allocated_count} transactions with statutory justifications.`
+      });
+      setStatutoryModalOpen(false);
+      setPendingJustificationsCount(0);
+      setJustificationLines([]);
+      loadStatements(selectedFY);
+    } catch (err: any) {
+      console.error('Batch allocate error:', err);
+      setUploadMessage({
+        type: 'error',
+        text: err.message || 'Failed to post statutory allocations.'
+      });
+    } finally {
+      setSubmittingAllocations(false);
+    }
+  };
+
   const handleRunGlobalSweep = async () => {
     setRunningGlobalSweep(true);
     setUploadMessage(null);
     try {
       const res = await fetchApi('/api/v1/reconciliation/reconcile-all', { method: 'POST' });
-      setUploadMessage({
-        type: 'success',
-        text: res.message || 'Global 3-Tier Reconciliation sweep complete across all bank statements!'
-      });
       const stmts = await fetchApi('/api/v1/reconciliation/statements');
       if (Array.isArray(stmts)) {
         setAvailableStatements(stmts);
         const cur = stmts.find((s: any) => s.id === currentStatementId) || stmts[0];
         if (cur) switchStatement(cur);
+      }
+      if (res.requires_statutory_justification && Array.isArray(res.suspense_lines) && res.suspense_lines.length > 0) {
+        setJustificationLines(res.suspense_lines.map((l: any) => {
+          const matchedAcc = coaAccounts.find(a => a.code === (l.suggested_account_code || '4090'));
+          return {
+            ...l,
+            selected_category: l.suggested_category || 'self_vouched',
+            selected_account_code: l.suggested_account_code || '4090',
+            selected_account_id: matchedAcc?.id,
+            narration: l.suggested_narration || ''
+          };
+        }));
+        setPendingJustificationsCount(res.suspense_lines.length);
+        setStatutoryModalOpen(true);
+        setUploadMessage({
+          type: 'success',
+          text: `Global sweep complete: ${res.tier1_reconciled} exact matches, ${res.tier2_probable} probable. Please review statutory justifications for ${res.suspense_lines.length} unbilled debits.`
+        });
+      } else {
+        setUploadMessage({
+          type: 'success',
+          text: res.message || 'Global 3-Tier Reconciliation sweep complete across all bank statements!'
+        });
+        loadPendingJustifications();
       }
     } catch (err: any) {
       setUploadMessage({ type: 'error', text: err.message || 'Failed to run global sweep.' });
@@ -709,6 +879,43 @@ export default function BankReconciliationPage() {
               >
                 ✕
               </button>
+            </div>
+          )}
+
+          {/* Statutory Justification & Classification Alert Banner */}
+          {pendingJustificationsCount > 0 && (
+            <div className="p-3.5 rounded-xl border border-amber-500/40 bg-amber-950/30 text-amber-200 flex flex-col md:flex-row items-start md:items-center justify-between gap-3 shadow-lg">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center shrink-0">
+                  <ShieldCheck className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-amber-300 text-sm">
+                      {pendingJustificationsCount} Unbilled Debits / Suspense Lines Awaiting Statutory Justification
+                    </span>
+                    <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded bg-amber-900/60 text-amber-300 border border-amber-700/60 font-semibold">
+                      CA2013 Sec 128 &amp; IT Act Sec 37
+                    </span>
+                  </div>
+                  <p className="text-xs text-amber-200/80 mt-0.5">
+                    Card fees, maintenance charges, and unbilled vendor debits must be vouchered with statutory narrations before FY closing.
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    loadPendingJustifications();
+                    setStatutoryModalOpen(true);
+                  }}
+                  className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs rounded-lg shadow-sm flex items-center gap-1.5 transition-colors"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>Review &amp; Justify ({pendingJustificationsCount})</span>
+                </button>
+              </div>
             </div>
           )}
 
@@ -1292,6 +1499,256 @@ export default function BankReconciliationPage() {
                   >
                     Done &amp; View Statements
                   </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Statutory Justification & Classification Review Gate Modal */}
+          {statutoryModalOpen && (
+            <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-5xl overflow-hidden shadow-2xl flex flex-col max-h-[92vh]">
+                {/* Modal Header */}
+                <div className="px-6 py-4 border-b border-slate-800 flex items-center justify-between bg-slate-950">
+                  <div className="flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center shrink-0">
+                      <ShieldCheck className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-base font-bold text-white">Statutory Justification &amp; Classification Review Gate</h3>
+                        <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded bg-amber-950 text-amber-300 border border-amber-800 font-semibold">
+                          CA2013 Sec 128 / IT Act Sec 37
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        Classify unbilled current account debits and bank fees with legally binding narrations before FY closing.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setStatutoryModalOpen(false)}
+                    className="text-slate-400 hover:text-white p-1.5 rounded-lg hover:bg-slate-800 transition"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+
+                {/* Batch Action Toolbar */}
+                <div className="px-6 py-2.5 bg-slate-950/60 border-b border-slate-800/80 flex flex-wrap items-center justify-between gap-3 text-xs">
+                  <div className="flex items-center gap-2">
+                    <span className="text-slate-400 font-medium">Quick Apply to All:</span>
+                    <button
+                      type="button"
+                      onClick={() => applyPresetToAll('bank_fee')}
+                      className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-sky-300 border border-sky-800/60 font-medium transition"
+                    >
+                      All Bank Fee (4030)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => applyPresetToAll('self_vouched')}
+                      className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-emerald-800/60 font-medium transition"
+                    >
+                      All Self-Vouched (4090)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => applyPresetToAll('vendor_advance')}
+                      className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-indigo-300 border border-indigo-800/60 font-medium transition"
+                    >
+                      All Vendor Advance (1030)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => applyPresetToAll('suspense')}
+                      className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-800/60 font-medium transition"
+                    >
+                      All Keep in Suspense (2099)
+                    </button>
+                  </div>
+                  <div className="text-slate-400 font-mono text-[11px]">
+                    Total Pending: <span className="text-white font-semibold">{justificationLines.length}</span> lines (₹{justificationLines.reduce((acc, l) => acc + (l.withdrawal_amount || 0), 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })})
+                  </div>
+                </div>
+
+                {/* Line Items List */}
+                <div className="p-6 overflow-y-auto space-y-4 max-h-[60vh]">
+                  {justificationLines.length === 0 ? (
+                    <div className="p-8 text-center text-slate-400">
+                      <CheckCircle2 className="w-10 h-10 text-emerald-400 mx-auto mb-2 opacity-80" />
+                      <p className="font-medium text-white">All bank debits are fully reconciled &amp; justified!</p>
+                      <p className="text-xs text-slate-500 mt-1">No unbilled debits or unclassified suspense lines detected.</p>
+                    </div>
+                  ) : (
+                    justificationLines.map((line, idx) => (
+                      <div
+                        key={line.id || idx}
+                        className="p-4 rounded-xl bg-slate-950/80 border border-slate-800 flex flex-col gap-3 transition-colors hover:border-slate-700"
+                      >
+                        {/* Transaction Header Info */}
+                        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800/60 pb-2.5">
+                          <div className="flex items-center gap-3">
+                            <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300">
+                              #{line.line_number || idx + 1}
+                            </span>
+                            <span className="text-xs font-mono text-slate-400">
+                              {line.transaction_date || 'N/A'}
+                            </span>
+                            <span className="text-xs font-semibold text-white">
+                              {line.counterparty_name || line.description}
+                            </span>
+                            {line.payment_channel && (
+                              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-800/90 text-sky-400 border border-slate-700">
+                                {line.payment_channel}
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-3">
+                            {line.reference_number && (
+                              <span className="text-[11px] font-mono text-slate-400">
+                                UTR: <span className="text-slate-200">{line.reference_number}</span>
+                              </span>
+                            )}
+                            <span className="font-mono font-bold text-rose-400 text-sm">
+                              ₹{(line.withdrawal_amount || line.deposit_amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* 1-Click Classification Presets */}
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-[11px] text-slate-400 font-medium">Classification Preset:</span>
+                          <button
+                            type="button"
+                            onClick={() => applyPreset(line.id, 'bank_fee')}
+                            className={`px-2.5 py-1 rounded text-xs font-medium transition ${
+                              line.selected_category === 'bank_fee'
+                                ? 'bg-sky-600 text-white shadow-sm ring-1 ring-sky-400'
+                                : 'bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700'
+                            }`}
+                          >
+                            Bank Fee (4030)
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => applyPreset(line.id, 'self_vouched')}
+                            className={`px-2.5 py-1 rounded text-xs font-medium transition ${
+                              line.selected_category === 'self_vouched'
+                                ? 'bg-emerald-600 text-white shadow-sm ring-1 ring-emerald-400'
+                                : 'bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700'
+                            }`}
+                          >
+                            Self-Vouched (4090)
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => applyPreset(line.id, 'vendor_advance')}
+                            className={`px-2.5 py-1 rounded text-xs font-medium transition ${
+                              line.selected_category === 'vendor_advance'
+                                ? 'bg-indigo-600 text-white shadow-sm ring-1 ring-indigo-400'
+                                : 'bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700'
+                            }`}
+                          >
+                            Vendor Advance (1030)
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => applyPreset(line.id, 'director_due')}
+                            className={`px-2.5 py-1 rounded text-xs font-medium transition ${
+                              line.selected_category === 'director_due'
+                                ? 'bg-purple-600 text-white shadow-sm ring-1 ring-purple-400'
+                                : 'bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700'
+                            }`}
+                          >
+                            Director Due (1040)
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => applyPreset(line.id, 'suspense')}
+                            className={`px-2.5 py-1 rounded text-xs font-medium transition ${
+                              line.selected_category === 'suspense'
+                                ? 'bg-amber-600 text-white shadow-sm ring-1 ring-amber-400'
+                                : 'bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700'
+                            }`}
+                          >
+                            Suspense (2099)
+                          </button>
+
+                          <div className="ml-auto flex items-center gap-2">
+                            <span className="text-[11px] text-slate-400 font-medium">Target GL:</span>
+                            <select
+                              value={line.selected_account_code || '4090'}
+                              onChange={(e) => updateLineAccount(line.id, e.target.value)}
+                              className="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1 text-xs text-white focus:outline-none focus:border-sky-500"
+                            >
+                              <option value="4030">4030 - Finance Costs &amp; Bank Charges</option>
+                              <option value="4090">4090 - Miscellaneous Business Expenses</option>
+                              <option value="1030">1030 - Prepaid Expenses &amp; Vendor Advances</option>
+                              <option value="1040">1040 - Loans &amp; Advances to Directors</option>
+                              <option value="4010">4010 - Direct Operating Expenses</option>
+                              <option value="2099">2099 - Schedule III Suspense Account</option>
+                              {coaAccounts
+                                .filter(a => !['4030', '4090', '1030', '1040', '4010', '2099'].includes(a.code))
+                                .map(acc => (
+                                  <option key={acc.id} value={acc.code}>
+                                    {acc.code} - {acc.name}
+                                  </option>
+                                ))}
+                            </select>
+                          </div>
+                        </div>
+
+                        {/* Statutory Narration */}
+                        <div>
+                          <label className="text-[11px] text-slate-400 font-medium block mb-1">
+                            Statutory Narration (Audit Trail &amp; IT Sec 37 / CA2013 Sec 128 Proof):
+                          </label>
+                          <textarea
+                            rows={2}
+                            value={line.narration || ''}
+                            onChange={(e) => updateLineNarration(line.id, e.target.value)}
+                            placeholder="Specify business purpose, payee, and statutory grounds..."
+                            className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-200 font-mono focus:outline-none focus:border-amber-500 transition-colors"
+                          />
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+
+                {/* Modal Footer */}
+                <div className="px-6 py-4 border-t border-slate-800 bg-slate-950 flex flex-wrap items-center justify-between gap-3">
+                  <div className="text-xs text-slate-400">
+                    <span className="font-semibold text-white">Invariant:</span> Every statutory allocation posts a balanced double-entry voucher (Debit = Credit) directly to the General Ledger.
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setStatutoryModalOpen(false)}
+                      className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold rounded-lg transition"
+                    >
+                      Review Later
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleBatchAllocateSubmit}
+                      disabled={submittingAllocations || justificationLines.length === 0}
+                      className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold text-xs rounded-lg flex items-center gap-1.5 shadow-lg transition-colors"
+                    >
+                      {submittingAllocations ? (
+                        <>
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          <span>Posting Allocations...</span>
+                        </>
+                      ) : (
+                        <>
+                          <ShieldCheck className="w-4 h-4" />
+                          <span>Post All Statutory Allocations ({justificationLines.length})</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>

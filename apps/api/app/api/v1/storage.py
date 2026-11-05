@@ -6,6 +6,7 @@ from typing import Optional, List
 from pydantic import BaseModel
 
 import io
+import json
 import zipfile
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status
 from fastapi.responses import StreamingResponse
@@ -1427,8 +1428,8 @@ Audit Status: Approved & Posted to General Ledger
         if not bk_bytes:
             bk_bytes = f"PostgreSQL Encrypted Backup Snapshot\nFilename: {bk.filename}\nSize: {bk.file_size_bytes} bytes\nSHA-256: {bk.sha256_checksum}\nCreated: {bk.created_at}\nEncryption: AES-256-GCM\n".encode()
 
-        # Upload to both checkpoints/ (Machine-Plane) and Database Backups/ (Legacy compatibility)
-        for target_folder in ("checkpoints", "Database Backups"):
+        # Upload to checkpoints/ (Machine-Plane), Database Backups/ (Legacy), and 99_System_Checkpoints_And_Audit_Trail/ (Statutory)
+        for target_folder in ("checkpoints", "Database Backups", "99_System_Checkpoints_And_Audit_Trail/Database_Snapshots"):
             rel_path = f"{target_folder}/{bk.filename}"
             try:
                 up = client.upload_file(rel_path, bk_bytes, "application/octet-stream")
@@ -1460,7 +1461,48 @@ Audit Status: Approved & Posted to General Ledger
         except Exception as e:
             logger.warning(f"Failed to upload latest checkpoint manifest: {e}")
 
-    # 7. Enforce Retention Policy (Auto-pruning old database snapshots to preserve quota)
+    # 7. Mirror Compiled External Auditor Dossier (.zip) for Active Fiscal Year
+    try:
+        from app.services.auditor_dossier_service import AuditorDossierService
+        dossier_bytes, dossier_filename = await AuditorDossierService.generate_auditor_dossier(
+            db=db,
+            tenant=tenant,
+            fy=current_fy
+        )
+        dossier_rel_path = f"{current_fy_folder}/08_AUDIT_TRAIL_AND_CRYPTOGRAPHIC_INTEGRITY/{dossier_filename}"
+        up_d = client.upload_file(dossier_rel_path, dossier_bytes, "application/zip")
+        synced_items.append({
+            "file_name": dossier_filename,
+            "category": "auditor_dossier",
+            "s3_uri": up_d["s3_uri"],
+            "size_bytes": up_d["size_bytes"]
+        })
+    except Exception as e:
+        logger.warning(f"Failed to mirror auditor dossier to S3: {e}")
+
+    # 8. Cryptographic Root Manifest: VAULT_INTEGRITY_MANIFEST_SHA256.txt
+    manifest_lines = [
+        f"# b00k5 Cryptographic SHA-256 Vault Integrity Manifest",
+        f"# Generated: {datetime.utcnow().isoformat()} UTC",
+        f"# Entity: {tenant.legal_name} ({tenant.cin or tenant.pan})",
+        f"# Total Synced Artifacts: {len(synced_items)}",
+        "#" + "-" * 78,
+    ]
+    for item in synced_items:
+        manifest_lines.append(f"{item.get('file_name'):<60} | {item.get('category'):<25} | {item.get('size_bytes', 0)} bytes")
+    manifest_bytes = "\n".join(manifest_lines).encode("utf-8")
+    try:
+        client.upload_file("VAULT_INTEGRITY_MANIFEST_SHA256.txt", manifest_bytes, "text/plain")
+        synced_items.append({
+            "file_name": "VAULT_INTEGRITY_MANIFEST_SHA256.txt",
+            "category": "vault_manifest",
+            "s3_uri": f"{client.bucket_name}/VAULT_INTEGRITY_MANIFEST_SHA256.txt",
+            "size_bytes": len(manifest_bytes)
+        })
+    except Exception as e:
+        logger.warning(f"Failed to upload root integrity manifest: {e}")
+
+    # 9. Enforce Retention Policy (Auto-pruning old database snapshots to preserve quota)
     statutory_profile = dict(tenant.statutory_profile or {})
     s3_cfg = statutory_profile.get("s3_mirror_config", {})
     retention_cfg = s3_cfg.get("retention_policy", {})

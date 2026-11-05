@@ -278,3 +278,4 @@ async def test_reconcile_all_triggers_statutory_gate():
         assert first_line["suggested_account_code"] == "4030"
         assert first_line["suggested_category"] == "bank_fee"
         assert "Statutory Finance Cost" in first_line["suggested_narration"]
+

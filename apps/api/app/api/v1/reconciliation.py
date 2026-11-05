@@ -13,7 +13,8 @@ from app.models.bank import BankStatement, BankStatementLine
 from app.models.ledger import ChartOfAccounts, JournalEntry, JournalLine
 from app.schemas.bank import (
     BankStatementResponse, BankStatementLineResponse,
-    ConfirmMatchRequest, AllocateSuspenseRequest, ReconciliationSummaryResponse
+    ConfirmMatchRequest, AllocateSuspenseRequest, ReconciliationSummaryResponse,
+    BatchAllocateRequest, BatchAllocateItem
 )
 from app.services.bank_parser import IndianBankPDFParser, compute_line_fingerprint
 from app.services.reconciliation_engine import ReconciliationEngine
@@ -417,6 +418,42 @@ async def execute_reconciliation(
     await db.commit()
     return summary
 
+def suggest_statutory_justification(line: BankStatementLine) -> Dict[str, str]:
+    desc = (line.description or "").upper()
+    cp = (line.counterparty_name or "").upper()
+    ref = line.reference_number or "N/A"
+    combined = f"{desc} {cp}"
+
+    if any(k in combined for k in ["DEBIT CARD", "CARD FEE", "ANNUAL FEE", "ISSUANCE", "SMS CHG", "CHARGES", "CHG", "AMC", "MIN BAL", "POS CHG", "BANK CHG", "PENALTY"]):
+        return {
+            "suggested_category": "bank_fee",
+            "suggested_account_code": "4030",
+            "suggested_account_name": "Finance Costs & Bank Charges",
+            "suggested_narration": f"Annual debit card fee / bank service charge debited per bank statement ({line.description}). Statutory Finance Cost (Sch III Note 18)."
+        }
+    elif any(k in combined for k in ["ADVANCE", "ADV TO", "BOOKING ADV"]):
+        return {
+            "suggested_category": "vendor_advance",
+            "suggested_account_code": "1030",
+            "suggested_account_name": "Prepaid Expenses & Vendor Advances",
+            "suggested_narration": f"Advance disbursement to {line.counterparty_name or 'vendor'} (UTR: {ref}). Tax invoice pending receipt."
+        }
+    elif any(k in combined for k in ["DIRECTOR", "PERSONAL", "ATM WDL", "SELF WDL"]):
+        return {
+            "suggested_category": "director_due",
+            "suggested_account_code": "1040",
+            "suggested_account_name": "Loans & Advances to Directors / Director Current Account",
+            "suggested_narration": f"Personal debit from corporate current account. Charged to Director Current Account pending immediate reimbursement (CA2013 Sec 185)."
+        }
+    else:
+        # Default self-vouched business operational expense
+        return {
+            "suggested_category": "self_vouched",
+            "suggested_account_code": "4090",
+            "suggested_account_name": "Miscellaneous Business Expenses",
+            "suggested_narration": f"Self-vouched operational expense paid to {line.counterparty_name or line.description[:50]} (UTR: {ref}). Tax invoice unavailable; wholly and exclusively for business (IT Act Sec 37)."
+        }
+
 @router.post("/reconcile-all")
 async def reconcile_all_statements(
     ctx: IAMContext = Depends(require_owner),
@@ -426,6 +463,8 @@ async def reconcile_all_statements(
     tenant = ctx.tenant
     """
     Executes 3-Tier Reconciliation sweep across all statements for the tenant in 1 click.
+    If any bank debits/withdrawals remain unmatched or routed to Suspense, returns them
+    in `suspense_lines` to trigger the Statutory Justification & Classification Review Gate.
     """
     stmts_res = await db.execute(select(BankStatement).where(BankStatement.tenant_id == tenant.id))
     stmts = stmts_res.scalars().all()
@@ -446,6 +485,45 @@ async def reconcile_all_statements(
         total_tier3 += res.get("tier3_suspense", 0)
 
     await db.commit()
+
+    # Query all lines needing statutory justification (suspense_posted or pending withdrawals > 0)
+    suspense_stmt = select(BankStatementLine).where(
+        BankStatementLine.tenant_id == tenant.id,
+        or_(
+            BankStatementLine.reconciliation_status == "suspense_posted",
+            and_(
+                BankStatementLine.reconciliation_status.in_(["pending", "probable_match"]),
+                BankStatementLine.withdrawal_amount > Decimal("0.00")
+            )
+        )
+    ).order_by(BankStatementLine.transaction_date.desc(), BankStatementLine.line_number)
+    unjustified_lines = (await db.execute(suspense_stmt)).scalars().all()
+
+    formatted_suspense = []
+    for line in unjustified_lines:
+        sug = suggest_statutory_justification(line)
+        formatted_suspense.append({
+            "id": str(line.id),
+            "statement_id": str(line.statement_id),
+            "line_number": line.line_number,
+            "transaction_date": line.transaction_date.isoformat() if line.transaction_date else None,
+            "withdrawal_amount": float(line.withdrawal_amount),
+            "deposit_amount": float(line.deposit_amount),
+            "description": line.description,
+            "counterparty_name": line.counterparty_name,
+            "reference_number": line.reference_number,
+            "payment_channel": line.payment_channel,
+            "reconciliation_tier": line.reconciliation_tier,
+            "reconciliation_status": line.reconciliation_status,
+            "notes": line.notes,
+            "suggested_category": sug["suggested_category"],
+            "suggested_account_code": sug["suggested_account_code"],
+            "suggested_account_name": sug["suggested_account_name"],
+            "suggested_narration": sug["suggested_narration"]
+        })
+
+    requires_gate = len(formatted_suspense) > 0
+
     return {
         "success": True,
         "total_statements": len(stmts),
@@ -453,7 +531,209 @@ async def reconcile_all_statements(
         "tier1_reconciled": total_tier1,
         "tier2_probable": total_tier2,
         "tier3_suspense": total_tier3,
-        "message": f"Global Reconciliation Complete across {len(stmts)} statements: {total_tier1} Tier 1 exact matched, {total_tier2} Tier 2 probable, {total_tier3} routed to Suspense."
+        "requires_statutory_justification": requires_gate,
+        "pending_justifications_count": len(formatted_suspense),
+        "suspense_lines": formatted_suspense,
+        "message": (
+            f"Global Reconciliation Sweep Complete: {total_tier1} Tier 1 exact matched, {total_tier2} Tier 2 probable, "
+            f"{len(formatted_suspense)} unbilled debits awaiting Statutory Justification."
+            if requires_gate else
+            f"Global Reconciliation Complete across {len(stmts)} statements: {total_tier1} exact matched, {total_tier2} probable."
+        )
+    }
+
+@router.get("/pending-justifications")
+async def get_pending_justifications(
+    statement_id: Optional[uuid.UUID] = None,
+    ctx: IAMContext = Depends(require_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Retrieves all unbilled debits and suspense records awaiting statutory justification
+    across all statements (or for a specific statement) for the active tenant.
+    """
+    tenant = ctx.tenant
+    conditions = [
+        BankStatementLine.tenant_id == tenant.id,
+        or_(
+            BankStatementLine.reconciliation_status == "suspense_posted",
+            and_(
+                BankStatementLine.reconciliation_status.in_(["pending", "probable_match"]),
+                BankStatementLine.withdrawal_amount > Decimal("0.00")
+            )
+        )
+    ]
+    if statement_id:
+        conditions.append(BankStatementLine.statement_id == statement_id)
+
+    stmt = select(BankStatementLine).where(*conditions).order_by(
+        BankStatementLine.transaction_date.desc(),
+        BankStatementLine.line_number
+    )
+    unjustified_lines = (await db.execute(stmt)).scalars().all()
+
+    formatted_suspense = []
+    for line in unjustified_lines:
+        sug = suggest_statutory_justification(line)
+        formatted_suspense.append({
+            "id": str(line.id),
+            "statement_id": str(line.statement_id),
+            "line_number": line.line_number,
+            "transaction_date": line.transaction_date.isoformat() if line.transaction_date else None,
+            "withdrawal_amount": float(line.withdrawal_amount),
+            "deposit_amount": float(line.deposit_amount),
+            "description": line.description,
+            "counterparty_name": line.counterparty_name,
+            "reference_number": line.reference_number,
+            "payment_channel": line.payment_channel,
+            "reconciliation_tier": line.reconciliation_tier,
+            "reconciliation_status": line.reconciliation_status,
+            "notes": line.notes,
+            "suggested_category": sug["suggested_category"],
+            "suggested_account_code": sug["suggested_account_code"],
+            "suggested_account_name": sug["suggested_account_name"],
+            "suggested_narration": sug["suggested_narration"]
+        })
+
+    return {
+        "count": len(formatted_suspense),
+        "lines": formatted_suspense
+    }
+
+@router.post("/batch-allocate")
+async def batch_allocate_lines(
+    payload: BatchAllocateRequest,
+    ctx: IAMContext = Depends(require_owner),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Batch allocates multiple statement lines with statutory justifications and account classifications.
+    Posts balanced double-entry Journal Entries (Debit = Credit) and marks lines as reconciled.
+    """
+    current_user = ctx.user
+    tenant = ctx.tenant
+
+    if not payload.allocations:
+        return {"success": True, "allocated_count": 0, "message": "No lines submitted for allocation."}
+
+    # Pre-fetch or ensure key COA accounts
+    bank_acc = await LedgerService.get_account_by_code(db, tenant.id, "1010")
+    if not bank_acc:
+        bank_acc = await LedgerService.ensure_account(db, tenant.id, "1010", "Bank Current Account", "asset", "cash_and_bank", "debit")
+
+    suspense_acc = await LedgerService.get_account_by_code(db, tenant.id, "2099")
+    if not suspense_acc:
+        suspense_acc = await LedgerService.ensure_account(db, tenant.id, "2099", "Schedule III Suspense Account", "liability", "suspense", "credit")
+
+    allocated_count = 0
+    results = []
+
+    for item in payload.allocations:
+        line = await db.get(BankStatementLine, item.line_id)
+        if not line or line.tenant_id != tenant.id:
+            continue
+
+        # If user explicitly chooses to keep in suspense (Code 2099)
+        if item.category_tag == "suspense" or item.target_account_code == "2099":
+            line.reconciliation_status = "suspense_posted"
+            line.reconciliation_tier = "tier3_suspense"
+            line.notes = item.narration or "Retained in Schedule III Suspense Account (Code 2099) pending investigation."
+            allocated_count += 1
+            results.append({"line_id": str(line.id), "status": "kept_in_suspense"})
+            continue
+
+        # Resolve target account
+        target_acc = None
+        if item.target_account_id:
+            target_acc = await db.get(ChartOfAccounts, item.target_account_id)
+        if not target_acc and item.target_account_code:
+            target_acc = await LedgerService.get_account_by_code(db, tenant.id, item.target_account_code)
+            if not target_acc:
+                acc_defs = {
+                    "4030": ("Finance Costs & Bank Charges", "expense", "bank_charges", "debit"),
+                    "4090": ("Miscellaneous Business Expenses", "expense", "other_expenses", "debit"),
+                    "1030": ("Prepaid Expenses & Vendor Advances", "asset", "current_assets", "debit"),
+                    "1040": ("Loans & Advances to Directors", "asset", "loans_and_advances", "debit"),
+                    "4010": ("Direct Operating Expenses", "expense", "direct_expenses", "debit"),
+                }
+                if item.target_account_code in acc_defs:
+                    name, a_type, sub_t, norm = acc_defs[item.target_account_code]
+                    target_acc = await LedgerService.ensure_account(db, tenant.id, item.target_account_code, name, a_type, sub_t, norm)
+
+        if not target_acc or target_acc.tenant_id != tenant.id:
+            continue
+
+        is_deposit = line.deposit_amount > Decimal("0.00")
+        amount = line.deposit_amount if is_deposit else line.withdrawal_amount
+        if amount <= Decimal("0.00"):
+            line.reconciliation_status = "reconciled"
+            line.notes = "Zero-value line reconciled"
+            allocated_count += 1
+            continue
+
+        # Check for existing suspense journal entry
+        existing_suspense_je = None
+        if line.suspense_journal_id:
+            existing_suspense_je = await db.get(JournalEntry, line.suspense_journal_id)
+        if not existing_suspense_je:
+            suspense_q = select(JournalEntry).where(
+                JournalEntry.tenant_id == tenant.id,
+                JournalEntry.reference_type == "suspense_posting",
+                JournalEntry.reference_id == line.id
+            )
+            existing_suspense_je = (await db.execute(suspense_q)).scalar_one_or_none()
+
+        stmt_short = str(line.statement_id)[:8].upper()
+        line_short = str(line.id)[:6].upper()
+        final_narration = item.narration or f"Statutory allocation of #{line.line_number} to {target_acc.name} ({target_acc.code})"
+        entry_id = uuid.uuid4()
+
+        entry = JournalEntry(
+            id=entry_id,
+            tenant_id=tenant.id,
+            entry_number=f"JV-ALLOC-{stmt_short}-{line.line_number}-{line_short}",
+            entry_date=line.transaction_date,
+            reference_type="suspense_allocation",
+            reference_id=line.id,
+            narration=final_narration,
+            status="posted",
+            is_posted=True,
+            created_by=current_user.id
+        )
+        db.add(entry)
+        await db.flush()
+
+        contra_acc = suspense_acc if existing_suspense_je else bank_acc
+        contra_desc = f"Clear Suspense 2099 ({target_acc.code})" if existing_suspense_je else f"Bank debit via {line.payment_channel or 'statement'}"
+
+        if is_deposit:
+            # Debit contra (Suspense/Bank), Credit target account
+            db.add_all([
+                JournalLine(id=uuid.uuid4(), journal_entry_id=entry_id, tenant_id=tenant.id, account_id=contra_acc.id, debit_amount=amount, credit_amount=Decimal("0.00"), description=contra_desc),
+                JournalLine(id=uuid.uuid4(), journal_entry_id=entry_id, tenant_id=tenant.id, account_id=target_acc.id, debit_amount=Decimal("0.00"), credit_amount=amount, description=f"Allocated to {target_acc.name}")
+            ])
+        else:
+            # Debit target account (Expense/Advance), Credit contra (Suspense/Bank)
+            db.add_all([
+                JournalLine(id=uuid.uuid4(), journal_entry_id=entry_id, tenant_id=tenant.id, account_id=target_acc.id, debit_amount=amount, credit_amount=Decimal("0.00"), description=f"Statutory charge to {target_acc.name}"),
+                JournalLine(id=uuid.uuid4(), journal_entry_id=entry_id, tenant_id=tenant.id, account_id=contra_acc.id, debit_amount=Decimal("0.00"), credit_amount=amount, description=contra_desc)
+            ])
+
+        line.matched_journal_entry_id = entry_id
+        line.reconciliation_status = "reconciled"
+        line.reconciliation_tier = "tier1_exact"
+        line.confidence_score = Decimal("100.00")
+        line.notes = f"Statutory Allocation ({target_acc.code}): {final_narration}"
+        allocated_count += 1
+        results.append({"line_id": str(line.id), "status": "reconciled", "journal_id": str(entry.id)})
+
+    await db.commit()
+
+    return {
+        "success": True,
+        "allocated_count": allocated_count,
+        "results": results,
+        "message": f"Successfully allocated and reconciled {allocated_count} statement transactions with statutory justifications."
     }
 
 @router.post("/lines/{line_id}/allocate-suspense")

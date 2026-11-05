@@ -318,7 +318,16 @@ function IntegrationsContent() {
 
   const fetchLogs = async () => {
     try {
-      const data = await fetchApi('/api/v1/system/backup-logs');
+      let data;
+      try {
+        data = await fetchApi('/api/v1/system/backup-logs');
+      } catch (e: any) {
+        if (e.message?.includes('not found') || e.message?.includes('404')) {
+          data = await fetchApi('/api/v1/backup/logs');
+        } else {
+          throw e;
+        }
+      }
       setLogs(Array.isArray(data) ? data : []);
     } catch (e) {
       console.warn('Failed to fetch backup logs:', e);
@@ -338,7 +347,16 @@ function IntegrationsContent() {
 
   const fetchMinioSnapshots = async () => {
     try {
-      const res = await fetchApi('/api/v1/system/backup/snapshots');
+      let res;
+      try {
+        res = await fetchApi('/api/v1/system/backup/snapshots');
+      } catch (e: any) {
+        if (e.message?.includes('not found') || e.message?.includes('404')) {
+          res = await fetchApi('/api/v1/backup/snapshots');
+        } else {
+          throw e;
+        }
+      }
       if (res) {
         const list = Array.isArray(res) ? res : (res.snapshots || []);
         setMinioSnapshots(list);
@@ -352,9 +370,16 @@ function IntegrationsContent() {
     setCreatingCheckpoint(true);
     setCheckpointStatus(null);
     try {
-      const res = await fetchApi('/api/v1/system/backup/checkpoint', {
-        method: 'POST'
-      });
+      let res;
+      try {
+        res = await fetchApi('/api/v1/system/backup/checkpoint', { method: 'POST' });
+      } catch (e: any) {
+        if (e.message?.includes('not found') || e.message?.includes('404')) {
+          res = await fetchApi('/api/v1/backup/checkpoint', { method: 'POST' });
+        } else {
+          throw e;
+        }
+      }
       setCheckpointStatus(res.filename ? `Local MinIO Checkpoint snapshot created: ${res.filename}` : (res.message || 'Local MinIO Checkpoint snapshot created successfully.'));
       await fetchMinioSnapshots();
     } catch (err: any) {
@@ -369,9 +394,16 @@ function IntegrationsContent() {
     setBackupStatus(null);
     setErrorMsg(null);
     try {
-      const res = await fetchApi('/api/v1/system/backup-database', {
-        method: 'POST'
-      });
+      let res;
+      try {
+        res = await fetchApi('/api/v1/system/backup-database', { method: 'POST' });
+      } catch (e: any) {
+        if (e.message?.includes('not found') || e.message?.includes('404')) {
+          res = await fetchApi('/api/v1/backup/trigger', { method: 'POST' });
+        } else {
+          throw e;
+        }
+      }
       setBackupStatus(`Database backup snapshot successfully created: ${res.filename} (${(((res.file_size_bytes || 0) / 1024)).toFixed(1)} KB)`);
       await fetchLogs();
       await fetchMinioSnapshots();

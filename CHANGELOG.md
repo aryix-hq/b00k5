@@ -5,6 +5,17 @@ All notable changes to `b00k5` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-11-05
+
+### Fixed
+- **FIX-DB-RECOVERY-DISK-ENOSPC-GUARD PostgreSQL Recovery Mode Permanent Prevention & Backup Endpoint Resilience (`bin/disk-guard.sh`, `bin/prod-deploy.sh`, `docker-compose.prod.yml`, `apps/api/app/models/backup.py`, `init_schema.sql`, `apps/api/app/api/v1/backup.py`, `apps/web/src/app/settings/integrations/page.tsx`, `apps/web/src/lib/api.ts`)**:
+  - **Docker VM ENOSPC Root Cause Resolution**: Diagnosed PostgreSQL crash recovery loop (`PANIC: could not write to file "pg_logical/replorigin_checkpoint.tmp": No space left on device`) caused by Docker Desktop VM disk (`/dev/vda1`) reaching 100% capacity due to 19.24 GB unpruned BuildKit build cache. Reclaimed disk space, allowing PostgreSQL to complete checkpointing and resume normal read/write operations (`pg_is_in_recovery = false`).
+  - **Automated Pre-Flight & Post-Build Disk Guard Tooling (`bin/disk-guard.sh`, `bin/prod-deploy.sh`)**: Added automated Docker VM disk capacity inspection before deployment (triggering automated BuildKit cache prune if headroom $< 5$ GB), post-build cleanup (`docker builder prune -f --keep-storage 2GB`), and explicit `SELECT pg_is_in_recovery()` verification during service readiness polling.
+  - **Container Log Rotation Limits (`docker-compose.prod.yml`)**: Added standard `json-file` log rotation with `max-size: "10m"` and `max-file: "3"` across all services to prevent unbounded `/var/lib/docker/containers/` disk growth.
+  - **Database Backup Log URI Column Expansion (`apps/api/app/models/backup.py`, `init_schema.sql`)**: Altered `database_backup_logs.gdrive_file_id` to `TEXT` (was `VARCHAR(128)`), eliminating fatal `value too long for type character varying(128)` crashes when dual MinIO + Cloudflare R2 / S3 mirror URIs (231+ characters) are stored.
+  - **Unified Backup Route Aliases (`apps/api/app/api/v1/backup.py`)**: Added canonical router aliases for `/api/v1/backup/backup-database` and `/api/v1/backup/backup-logs` alongside `/api/v1/backup/trigger` and `/api/v1/system/backup-database`.
+  - **Client-Side Fallback Routing & Context-Aware 404 Logging (`apps/web/src/app/settings/integrations/page.tsx`, `apps/web/src/lib/api.ts`)**: Added automatic dual-route fallback in `page.tsx` for backup snapshot and checkpoint actions, and upgraded `fetchRawApi` to report `Endpoint not found: ${endpoint}` rather than bare `"Not Found"`.
+
 ## [Unreleased] - 2026-11-02
 
 ### Fixed

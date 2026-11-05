@@ -61,6 +61,9 @@ export async function fetchRawApi(endpoint: string, options: RequestInit = {}): 
     } catch (e) {
       // not JSON
     }
+    if (response.status === 404 && errorDetail === 'Not Found') {
+      errorDetail = `Endpoint not found: ${endpoint}`;
+    }
     throw new Error(errorDetail);
   }
 

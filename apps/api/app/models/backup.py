@@ -14,7 +14,7 @@ class DatabaseBackupLog(Base):
     file_size_bytes = Column(BigInteger, nullable=False)
     sha256_checksum = Column(String(64), nullable=False)
     encryption_algorithm = Column(String(32), default="AES-256-GCM")
-    gdrive_file_id = Column(String(128), nullable=True)
+    gdrive_file_id = Column(Text, nullable=True)
     gdrive_folder_path = Column(Text, nullable=True)
     status = Column(String(32), default="completed")
     duration_seconds = Column(Numeric(6, 2), default=0.00)

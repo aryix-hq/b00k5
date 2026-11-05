@@ -5,34 +5,49 @@
 #   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 # ==============================================================================
 
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   b00k5_api:
     environment:
       - APP_ENV=${APP_ENV:-development}
     restart: always
+    logging: *default-logging
 
   b00k5_web:
     environment:
       - NODE_ENV=production
     restart: always
+    logging: *default-logging
 
   b00k5_worker_ocr:
     restart: always
+    logging: *default-logging
 
   b00k5_worker_reconcile:
     restart: always
+    logging: *default-logging
 
   b00k5_worker_sync:
     restart: always
+    logging: *default-logging
 
   b00k5_postgres:
     restart: always
+    logging: *default-logging
 
   b00k5_redis:
     restart: always
+    logging: *default-logging
 
   b00k5_minio:
     restart: always
+    logging: *default-logging
 
   b00k5_bridge_mock:
     restart: always
+    logging: *default-logging

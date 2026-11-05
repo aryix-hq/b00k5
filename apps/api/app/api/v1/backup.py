@@ -35,6 +35,7 @@ router = APIRouter()
 
 
 @router.post("/trigger", response_model=BackupLogResponse)
+@router.post("/backup-database", response_model=BackupLogResponse)
 async def backup_trigger_alias(
     current_admin: User = Depends(require_super_admin_or_owner),
     tenant: Optional[Tenant] = Depends(get_optional_tenant),
@@ -45,6 +46,7 @@ async def backup_trigger_alias(
 
 
 @router.get("/logs", response_model=List[BackupLogResponse])
+@router.get("/backup-logs", response_model=List[BackupLogResponse])
 async def backup_logs_alias(
     limit: int = Query(20, ge=1, le=100),
     tenant: Optional[Tenant] = Depends(get_optional_tenant),

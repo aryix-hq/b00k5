@@ -749,7 +749,7 @@ CREATE TABLE IF NOT EXISTS database_backup_logs (
     file_size_bytes BIGINT NOT NULL,
     sha256_checksum VARCHAR(64) NOT NULL,
     encryption_algorithm VARCHAR(32) DEFAULT 'AES-256-GCM',
-    gdrive_file_id VARCHAR(128),
+    gdrive_file_id TEXT,
     gdrive_folder_path TEXT,
     status VARCHAR(32) DEFAULT 'completed',
     duration_seconds NUMERIC(6, 2) DEFAULT 0.00,

@@ -66,7 +66,19 @@ check_prerequisites() {
   fi
   log_success "Configuration file (.env) verified."
 
-  # 3. TypeScript compilation check on apps/web
+  # 3. Docker VM Disk Headroom Check (Protects against PostgreSQL ENOSPC Crash Recovery)
+  if [[ -f "${SCRIPT_DIR}/disk-guard.sh" ]]; then
+    log_info "Verifying Docker VM storage capacity headroom..."
+    bash "${SCRIPT_DIR}/disk-guard.sh" status || true
+    DOCKER_AVAIL_KB=$(docker run --rm alpine df -k / 2>/dev/null | awk 'NR==2 {print $4}' || echo "10000000")
+    if [[ "$DOCKER_AVAIL_KB" -lt 5242880 ]]; then
+      log_warn "Docker VM disk headroom low (<5 GB free: ${DOCKER_AVAIL_KB} KB). Running automated BuildKit and layer cache prune..."
+      docker builder prune -f || true
+      docker image prune -f || true
+    fi
+  fi
+
+  # 4. TypeScript compilation check on apps/web
   if [[ -d "apps/web" ]] && command -v npx >/dev/null 2>&1; then
     log_info "Verifying Next.js TypeScript type safety (tsc --noEmit)..."
     if (cd apps/web && npx tsc --noEmit); then
@@ -84,9 +96,13 @@ cmd_up() {
   log_info "Step 2/4: Building and launching production container fleet..."
   ${COMPOSE_CMD} up -d --build
 
+  # Post-build prune to release build cache overhead
+  log_info "Post-build cache cleanup to prevent Docker VM disk bloat..."
+  docker builder prune -f --keep-storage 2GB >/dev/null 2>&1 || true
+
   log_info "Step 3/4: Awaiting service health and readiness..."
   
-  # Await PostgreSQL
+  # Await PostgreSQL & Recovery Mode Assert
   echo -n "  - Waiting for PostgreSQL (b00k5_postgres)..."
   PG_RETRIES=30
   until docker exec b00k5_postgres pg_isready -U b00k5_admin -d b00k5_db >/dev/null 2>&1 || [[ $PG_RETRIES -eq 0 ]]; do
@@ -96,10 +112,26 @@ cmd_up() {
   done
   echo ""
   if [[ $PG_RETRIES -eq 0 ]]; then
-    log_error "PostgreSQL failed to report healthy within 60s."
+    log_error "PostgreSQL failed to report ready within 60s."
     exit 1
   fi
-  log_success "PostgreSQL is healthy and accepting connections."
+
+  # Assert PostgreSQL is NOT trapped in recovery mode
+  PG_IN_RECOVERY=$(docker exec b00k5_postgres psql -U b00k5_admin -d b00k5_db -t -c "SELECT pg_is_in_recovery();" 2>/dev/null | tr -d ' ' || echo "f")
+  if [[ "$PG_IN_RECOVERY" == "t" ]]; then
+    log_warn "PostgreSQL is currently in crash recovery mode. Waiting for recovery checkpoint to complete..."
+    RECOVERY_WAIT=30
+    while [[ "$PG_IN_RECOVERY" == "t" && $RECOVERY_WAIT -gt 0 ]]; do
+      sleep 2
+      PG_IN_RECOVERY=$(docker exec b00k5_postgres psql -U b00k5_admin -d b00k5_db -t -c "SELECT pg_is_in_recovery();" 2>/dev/null | tr -d ' ' || echo "f")
+      ((RECOVERY_WAIT--))
+    done
+    if [[ "$PG_IN_RECOVERY" == "t" ]]; then
+      log_error "PostgreSQL is trapped in recovery mode! Run 'bash bin/disk-guard.sh fix-recovery'."
+      exit 1
+    fi
+  fi
+  log_success "PostgreSQL is healthy, active (read/write), and not in recovery mode."
 
   # Await FastAPI
   echo -n "  - Waiting for Core Financial API (b00k5_api on port 8000)..."

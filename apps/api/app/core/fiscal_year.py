@@ -11,11 +11,63 @@ Statutory Rules:
 
 import re
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timezone, timedelta
 from typing import Tuple, Optional, Dict, Any, List
 from dateutil import parser
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+
+
+IST = timezone(timedelta(hours=5, minutes=30), name="IST")
+
+
+def to_ist(dt: Optional[datetime]) -> Optional[datetime]:
+    """Converts a naive (assumed UTC) or tz-aware datetime to IST (UTC+05:30)."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc).astimezone(IST)
+    return dt.astimezone(IST)
+
+
+def format_indian_date(d: Optional[date | datetime | str]) -> str:
+    """
+    Formats a date, datetime, or date string to Indian standard DD/MM/YYYY.
+    Returns 'N/A' if None or unparseable.
+    """
+    if not d:
+        return "N/A"
+    if isinstance(d, datetime):
+        d = to_ist(d).date()
+    elif isinstance(d, str):
+        s = d.strip()
+        if re.match(r"^\d{2}/\d{2}/\d{4}$", s):
+            return s
+        if re.match(r"^\d{4}-\d{2}-\d{2}", s):
+            parts = s.split("T")[0].split("-")
+            return f"{parts[2]}/{parts[1]}/{parts[0]}"
+        try:
+            d = parser.parse(s, dayfirst=True).date()
+        except Exception:
+            return d
+    return d.strftime("%d/%m/%Y")
+
+
+def format_indian_datetime(dt: Optional[datetime | str], include_seconds: bool = True) -> str:
+    """
+    Formats a datetime to Indian standard DD/MM/YYYY hh:mm:ss AM/PM IST.
+    """
+    if not dt:
+        return "N/A"
+    if isinstance(dt, str):
+        try:
+            dt = parser.parse(dt)
+        except Exception:
+            return dt
+    dt_ist = to_ist(dt)
+    if include_seconds:
+        return dt_ist.strftime("%d/%m/%Y %I:%M:%S %p IST")
+    return dt_ist.strftime("%d/%m/%Y %I:%M %p IST")
 
 
 def parse_indian_date(date_str: str) -> date:

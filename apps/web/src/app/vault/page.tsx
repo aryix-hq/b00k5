@@ -26,6 +26,7 @@ import {
   Loader2
 } from 'lucide-react';
 import { fetchApi } from '@/lib/api';
+import { formatIndianDate } from '@/lib/date-utils';
 
 const categories = [
   { id: 'all', label: 'All Vault Items' },
@@ -675,7 +676,7 @@ export default function DocumentLockerPage() {
                     </div>
                     <div className="flex items-center justify-between text-[11px]">
                       <span>Size: {(doc.file_size_bytes / 1024).toFixed(1)} KB</span>
-                      <span>Added: {doc.created_at.split('T')[0]}</span>
+                      <span>Added: {formatIndianDate(doc.created_at)}</span>
                     </div>
                   </div>
                 </div>

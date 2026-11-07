@@ -258,7 +258,7 @@ async def test_auditor_dossier_9_section_stakeholder_hierarchy():
     # Cryptographic SHA-256 Manifest Verification
     manifest_content = zf.read("AUDIT_AUTHENTICITY_MANIFEST_SHA256.txt").decode("utf-8")
     assert "FINANCIAL YEAR: 2025-26" in manifest_content
-    assert "PERIOD COVERED: 2025-04-01 to 2026-03-31" in manifest_content
+    assert "PERIOD COVERED: 01/04/2025 to 31/03/2026" in manifest_content
 
     # Executive Briefing content validation
     briefing = zf.read("00_EXECUTIVE_SUMMARY_AND_LEGAL_IDENTITY/01_Executive_Financial_And_Compliance_Briefing.txt").decode("utf-8")

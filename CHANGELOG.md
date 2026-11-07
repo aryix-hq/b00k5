@@ -5,6 +5,18 @@ All notable changes to `b00k5` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-11-07
+
+### Fixed
+- **FIX-AUDIT-INDIAN-DATETIME-AND-PAYROLL-INTEGRITY Statutory Indian Date/Time Formatting & Zero-Synthetic Payroll Invariant (`apps/api/app/services/auditor_dossier_service.py`, `apps/api/app/core/fiscal_year.py`, `apps/api/app/services/document_assembly.py`, `apps/api/app/api/v1/storage.py`, `apps/web/src/lib/date-utils.ts`, `apps/web/src/app/vault/page.tsx`, `tests/integration/test_auditor_dossier_indian_datetime_and_payroll_integrity.py`)**:
+  - **Critical Financial Defect (Synthetic Payroll Fabrication Elimination)**: Completely eliminated synthetic placeholder calculation (`len(expenses) // 3 or 1`, `total_expenses * Decimal('0.35')` -> ₹11,730.89, and `total_expenses * Decimal('0.035')` -> ₹1,173.09) in Section 7 of `AuditorDossierService`. Refactored Section 7 to query primary database tables (`PayrollRun`, `Payslip`, `ContractorPayment`, and `Employee`).
+  - **Statutory NIL Return Accuracy**: For entities with zero salaried headcount or active payroll disbursements (such as ARYIX OPC in target FY), accurately reports `0` headcount, `₹0.00` gross, `₹0.00` PF/ESI/PT/TDS, and statutory NIL status (`NIL APPLICABILITY - NO SALARIED PERSONNEL / DISBURSEMENTS`, `NIL RETURN - ZERO ACTIVE CONTRACTUAL DISBURSEMENTS`, `NIL REMUNERATION DRAWN - NO SALARY WITHDRAWAL IN TARGET FY`).
+  - **Labor Law Applicability Declaration**: Generated `07_PAYROLL_PERSONNEL_AND_LABOR_LAW_COMPLIANCE/Statutory_Labor_And_Payroll_Declaration.txt` certifying Section 128 accounting compliance, EPFO non-applicability (below 20-employee statutory threshold), ESIC non-applicability (below 10-employee statutory threshold), and Chapter XVII-B TDS withholding summary.
+  - **Granular Disbursement Registers**: Dynamically generates `Contractor_Disbursements_Register_FY{fy}.csv` and `Salaried_Payroll_Register_FY{fy}.csv` whenever disbursements exist.
+  - **Canonical Indian Date & Time Formats**: Implemented standard `format_indian_date` (`DD/MM/YYYY`) and `format_indian_datetime` (`DD/MM/YYYY hh:mm:ss A IST`, UTC+05:30) in `app/core/fiscal_year.py` and `apps/web/src/lib/date-utils.ts`. Applied across all dossier CSV registers, `AUDIT_AUTHENTICITY_MANIFEST_SHA256.txt`, `01_Executive_Financial_And_Compliance_Briefing.txt`, `STATUTORY_CLOSE_AND_MCA_CHECKLIST.txt`, `DocumentAssemblyService` secretarial PDFs, and frontend vault views.
+  - **Cloudflare R2 Sovereign Mirror Dual-FY Sync**: Enhanced R2 mirror engine in `storage.py` to compile and sync certified Auditor Dossiers for all active financial years (`FY 2025-26` and `FY 2026-27`) with root-level copies for immediate 1-click CA download.
+  - **Automated Regression Suite**: Created `tests/integration/test_auditor_dossier_indian_datetime_and_payroll_integrity.py` asserting zero synthetic values, labor declaration validity, and Indian date/time regex compliance.
+
 ## [Unreleased] - 2026-11-05
 
 ### Added

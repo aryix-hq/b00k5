@@ -1461,24 +1461,28 @@ Audit Status: Approved & Posted to General Ledger
         except Exception as e:
             logger.warning(f"Failed to upload latest checkpoint manifest: {e}")
 
-    # 7. Mirror Compiled External Auditor Dossier (.zip) for Active Fiscal Year
-    try:
-        from app.services.auditor_dossier_service import AuditorDossierService
-        dossier_bytes, dossier_filename = await AuditorDossierService.generate_auditor_dossier(
-            db=db,
-            tenant=tenant,
-            fy=current_fy
-        )
-        dossier_rel_path = f"{current_fy_folder}/08_AUDIT_TRAIL_AND_CRYPTOGRAPHIC_INTEGRITY/{dossier_filename}"
-        up_d = client.upload_file(dossier_rel_path, dossier_bytes, "application/zip")
-        synced_items.append({
-            "file_name": dossier_filename,
-            "category": "auditor_dossier",
-            "s3_uri": up_d["s3_uri"],
-            "size_bytes": up_d["size_bytes"]
-        })
-    except Exception as e:
-        logger.warning(f"Failed to mirror auditor dossier to S3: {e}")
+    # 7. Mirror Compiled External Auditor Dossier (.zip) for All Active Financial Years
+    for fy_target in ["2025-26", "2026-27"]:
+        try:
+            from app.services.auditor_dossier_service import AuditorDossierService
+            dossier_bytes, dossier_filename = await AuditorDossierService.generate_auditor_dossier(
+                db=db,
+                tenant=tenant,
+                fy=fy_target
+            )
+            fy_folder_name = f"FY_{fy_target}"
+            dossier_rel_path = f"{fy_folder_name}/08_AUDIT_TRAIL_AND_CRYPTOGRAPHIC_INTEGRITY/{dossier_filename}"
+            up_d = client.upload_file(dossier_rel_path, dossier_bytes, "application/zip")
+            # Root-level copy for instant single-click auditor access
+            client.upload_file(dossier_filename, dossier_bytes, "application/zip")
+            synced_items.append({
+                "file_name": dossier_filename,
+                "category": f"auditor_dossier_{fy_target}",
+                "s3_uri": up_d["s3_uri"],
+                "size_bytes": up_d["size_bytes"]
+            })
+        except Exception as e:
+            logger.warning(f"Failed to mirror auditor dossier for {fy_target} to S3: {e}")
 
     # 8. Cryptographic Root Manifest: VAULT_INTEGRITY_MANIFEST_SHA256.txt
     manifest_lines = [

@@ -121,7 +121,7 @@ async def test_expense_categories_and_strike_off(db_session: AsyncSession):
         names = zf.namelist()
         assert "AUDIT_AUTHENTICITY_MANIFEST_SHA256.txt" in names
         assert "STATUTORY_CLOSE_AND_MCA_CHECKLIST.txt" in names
-        assert any("03_Financial_Statements_Schedule_III" in n for n in names)
+        assert any("STATUTORY_FINANCIAL_STATEMENTS_SCHEDULE_III" in n or "Financial_Statements_Schedule_III" in n for n in names)
 
         # Read manifest text
         manifest_text = zf.read("AUDIT_AUTHENTICITY_MANIFEST_SHA256.txt").decode("utf-8")

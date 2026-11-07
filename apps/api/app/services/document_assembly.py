@@ -1,7 +1,8 @@
 import io
 import hashlib
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from typing import Dict, Any, List, Optional
+from app.core.fiscal_year import format_indian_date, format_indian_datetime
 
 class DocumentAssemblyService:
     """
@@ -73,7 +74,7 @@ class DocumentAssemblyService:
             "",
             "--------------------------------------------------------------------------------",
             "CERTIFIED TRUE COPY OF MINUTES",
-            f"Date of Signing: {datetime.utcnow().strftime('%Y-%m-%d')}",
+            f"Date of Signing: {format_indian_date(date.today())}",
             f"Place: {reg_office.split(',')[-2].strip() if ',' in reg_office else 'Bengaluru, India'}"
         ])
 
@@ -105,7 +106,7 @@ class DocumentAssemblyService:
             "--------------------------------------------------------------------------------",
             "NOTICE OF BOARD MEETING U/S 173(3) OF COMPANIES ACT 2013",
             f"Notice Reference: {meeting_no}",
-            f"Date of Notice: {data.get('notice_date', date.today().strftime('%Y-%m-%d'))}",
+            f"Date of Notice: {format_indian_date(data.get('notice_date') or date.today())}",
             "--------------------------------------------------------------------------------",
             "To All Directors of the Company:",
             f"Notice is hereby given that the {meeting_no} meeting of the Board of Directors will be held as follows:",
@@ -198,7 +199,7 @@ class DocumentAssemblyService:
             f"Regd. Office: {reg_office}",
             "--------------------------------------------------------------------------------",
             f"STATUTORY SOURCE-OF-TRUTH VERIFIED EXTRACT: {doc_code.upper()}",
-            f"Extracted Date: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}",
+            f"Extracted Date: {format_indian_datetime(datetime.now(timezone.utc))}",
             "--------------------------------------------------------------------------------",
             f"Legal Entity: {company_name}",
             f"Document Code: {doc_code.upper()}",
@@ -249,7 +250,7 @@ class DocumentAssemblyService:
             "--------------------------------------------------------------------------------",
             "CERTIFIED TRUE STATUTORY EXTRACT",
             "Generated via b00k5 Financial OS | Hash: SHA-256 Verified",
-            f"Date of Certification: {date.today().strftime('%Y-%m-%d')}"
+            f"Date of Certification: {format_indian_date(date.today())}"
         ])
 
         return cls._create_pdf_document(title, lines)
@@ -268,7 +269,7 @@ class DocumentAssemblyService:
         director_din = data.get("director_din") or ""
         amount = str(data.get("amount", "0.00"))
         financial_year = data.get("financial_year", "2025-26")
-        decl_date = data.get("declaration_date", date.today().strftime("%Y-%m-%d"))
+        decl_date = format_indian_date(data.get("declaration_date") or date.today())
 
         lines = [
             f"{company_name}",
